@@ -1,4 +1,4 @@
-/* GST Cloud Bridge — v1.9.6
+/* GST Cloud Bridge — v2.0.0 (Batch Multi-Client Queue)
  * Fixes over v1.8.0:
  *  - E-Com TCS: columns ab table header se pehchane jate hain (pehle GSTIN ka "07" / serial no. gross ban jata tha)
  *  - Har section ka status (ok / empty / uncertain / failed) screen tak jata hai — fail hone par "Koi notice nahi" nahi dikhega
@@ -11,7 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "1.9.6"; } })();
+const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "2.0.0"; } })();
 
 /* ======================= PURE HELPERS (browser ke bina testable) ======================= */
 
@@ -270,13 +270,47 @@ function startServer() {
   const sessions = new Map();
   const SESSION_TTL_MS = 20 * 60 * 1000;
   let lastDebug = { message: "No fetch run yet." };
+  let sharedBrowser = null;
+  let browserLaunchPromise = null;
+  let fetchQueueTail = Promise.resolve();
+
+  function runInFetchQueue(fn) {
+    const run = fetchQueueTail.then(fn, fn);
+    fetchQueueTail = run.then(() => {}, () => {});
+    return run;
+  }
+
+  async function getSharedBrowser() {
+    if (sharedBrowser && sharedBrowser.isConnected()) return sharedBrowser;
+    if (!browserLaunchPromise) {
+      browserLaunchPromise = chromium.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-extensions",
+          "--disable-background-networking", "--no-zygote", "--disable-blink-features=AutomationControlled"]
+      }).then(b => {
+        sharedBrowser = b;
+        b.on("disconnected", () => { if (sharedBrowser === b) sharedBrowser = null; });
+        browserLaunchPromise = null;
+        return b;
+      }).catch(err => {
+        browserLaunchPromise = null;
+        throw err;
+      });
+    }
+    return browserLaunchPromise;
+  }
 
   async function closeSession(sessionId) {
     const s = sessions.get(sessionId);
     if (!s) return;
     sessions.delete(sessionId);
     try { await s.context.close(); } catch (_) {}
-    try { await s.browser.close(); } catch (_) {}
+    // Close shared browser only when no sessions remain (frees RAM cleanly)
+    if (sessions.size === 0 && sharedBrowser) {
+      const b = sharedBrowser;
+      sharedBrowser = null;
+      try { await b.close(); } catch (_) {}
+    }
   }
   setInterval(() => {
     const now = Date.now();
@@ -300,12 +334,18 @@ function startServer() {
   app.post("/api/gst/init-login", async (req, res) => {
     let browser, context;
     try {
-      for (const oldId of Array.from(sessions.keys())) await closeSession(oldId);
-      browser = await chromium.launch({
-        headless: true,
-        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-extensions",
-          "--disable-background-networking", "--no-zygote", "--disable-blink-features=AutomationControlled"]
-      });
+      const keepOthers = !!req.body?.keepOthers;
+      if (!keepOthers) {
+        for (const [oldId, oldS] of Array.from(sessions.entries())) {
+          if (!oldS.busy) await closeSession(oldId);
+        }
+      } else {
+        // In batch mode, keep active fetching sessions alive, but cap idle contexts to protect 512MB RAM
+        for (const [oldId, oldS] of Array.from(sessions.entries())) {
+          if (!oldS.loggedIn && !oldS.busy) await closeSession(oldId);
+        }
+      }
+      browser = await getSharedBrowser();
       context = await browser.newContext({
         viewport: { width: 1366, height: 860 },
         userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -337,7 +377,10 @@ function startServer() {
       res.json({ ok: true, sessionId, captchaBase64: "data:image/png;base64," + captchaBuffer.toString("base64") });
     } catch (err) {
       try { if (context) await context.close(); } catch (_) {}
-      try { if (browser) await browser.close(); } catch (_) {}
+      if (sessions.size === 0 && sharedBrowser) {
+        const b = sharedBrowser; sharedBrowser = null;
+        try { await b.close(); } catch (_) {}
+      }
       res.status(500).json({ ok: false, error: err.message || "Init login failed" });
     }
   });
@@ -536,12 +579,13 @@ function startServer() {
   }
 
   app.post("/api/gst/fetch-all", async (req, res) => {
-    const { sessionId, fy, month } = req.body || {};
+    const { sessionId, fy, month, autoClose } = req.body || {};
     const s = getSession(sessionId);
     if (!s || !s.loggedIn) return res.status(401).json({ ok: false, error: "Portal se connected nahi hai. Pehle login karein." });
     if (s.busy) return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
 
     s.busy = true;
+    await runInFetchQueue(async () => {
     const { page } = s;
     const dbg = { timestamp: new Date().toISOString(), version: VERSION, fy: fy || "2026-27", month: String(month || "10").padStart(2, "0"), steps: {} };
     const result = {
@@ -795,7 +839,9 @@ function startServer() {
       res.json(result);
     } finally {
       s.busy = false;
+      if (autoClose) await closeSession(sessionId);
     }
+    });
   });
 
   app.post("/api/gst/upload-gstr1", async (req, res) => {
