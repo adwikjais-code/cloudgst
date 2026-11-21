@@ -1,4 +1,4 @@
-/* GST Cloud Bridge — v2.1.0 (Fast Resource Blocking + Smart Waits + Batch Queue)
+/* GST Cloud Bridge — v2.1.1 (Fast Resource Blocking + Smart Waits + Batch Queue)
  * Fixes over v1.8.0:
  *  - E-Com TCS: columns ab table header se pehchane jate hain (pehle GSTIN ka "07" / serial no. gross ban jata tha)
  *  - Har section ka status (ok / empty / uncertain / failed) screen tak jata hai — fail hone par "Koi notice nahi" nahi dikhega
@@ -11,7 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "2.1.0"; } })();
+const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "2.1.1"; } })();
 
 /* ======================= PURE HELPERS (browser ke bina testable) ======================= */
 
@@ -340,9 +340,13 @@ function startServer() {
           if (!oldS.busy) await closeSession(oldId);
         }
       } else {
-        // In batch mode, keep active fetching sessions alive, but cap idle contexts to protect 512MB RAM
-        for (const [oldId, oldS] of Array.from(sessions.entries())) {
-          if (!oldS.loggedIn && !oldS.busy) await closeSession(oldId);
+        // Allow 2 unlogged Captcha sessions simultaneously (current client + next prefetched client)
+        const unlogged = Array.from(sessions.entries())
+          .filter(([, st]) => !st.loggedIn && !st.busy)
+          .sort((a, b) => a[1].lastActive - b[1].lastActive);
+        while (unlogged.length >= 2) {
+          const [oldestId] = unlogged.shift();
+          await closeSession(oldestId);
         }
       }
       browser = await getSharedBrowser();
