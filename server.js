@@ -18,7 +18,6 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "25mb" }));
 
-// Optional API Secret Guard
 app.use((req, res, next) => {
   if (req.path === "/health") return next();
   if (!API_SECRET) return next();
@@ -29,7 +28,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// In-memory Playwright session store (auto-expires after 20 min idle)
 const sessions = new Map();
 const SESSION_TTL_MS = 20 * 60 * 1000;
 
@@ -79,6 +77,7 @@ app.get("/health", (req, res) => {
   res.json({
     ok: true,
     service: "gst-cloud-bridge",
+    version: "1.4.0",
     activeSessions: sessions.size,
     timestamp: new Date().toISOString()
   });
@@ -88,10 +87,11 @@ app.get("/health", (req, res) => {
 app.post("/api/gst/init-login", async (req, res) => {
   let browser, context;
   try {
-    // Close any stale sessions to stay safely within 512MB RAM on Render Free tier
+    // Close stale sessions to stay within 512MB RAM on Render Free tier
     for (const oldId of Array.from(sessions.keys())) {
       await closeSession(oldId);
     }
+
     browser = await chromium.launch({
       headless: true,
       args: [
@@ -115,7 +115,7 @@ app.post("/api/gst/init-login", async (req, res) => {
     await page.goto("https://services.gst.gov.in/services/login", { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#username", { timeout: 30000 });
 
-    // GST Portal keeps #imgCaptcha hidden until user types into #username and triggers input/blur
+    // GST Portal keeps #imgCaptcha hidden until user types into #username
     await page.click("#username");
     await page.locator("#username").pressSequentially(String(req.body?.username || "gstuser"), { delay: 60 });
     await page.click("#user_pass");
@@ -140,7 +140,7 @@ app.post("/api/gst/init-login", async (req, res) => {
       context,
       page,
       loggedIn: false,
-      gstin: "",
+      busy: false,
       lastActive: Date.now()
     });
 
@@ -161,7 +161,10 @@ app.post("/api/gst/submit-login", async (req, res) => {
   const { sessionId, username, password, captcha } = req.body || {};
   const s = getSession(sessionId);
   if (!s) return res.status(404).json({ ok: false, error: "Session expired. Dobara Connect karein." });
+  if (s.loggedIn) return res.json({ ok: true, status: "logged_in", url: s.page.url() });
+  if (s.busy) return res.status(429).json({ ok: false, error: "Login already in progress, thoda wait karein." });
 
+  s.busy = true;
   const { page } = s;
   try {
     await page.fill("#username", String(username || "").trim());
@@ -170,20 +173,13 @@ app.post("/api/gst/submit-login", async (req, res) => {
 
     await Promise.all([
       page.click("button[type='submit'], button:has-text('LOGIN')"),
-      page.waitForTimeout(3500)
+      page.waitForTimeout(4500)
     ]);
 
-    // Check if OTP modal/page appeared
     const otpInput = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]");
     if (otpInput && await otpInput.isVisible()) {
-      return res.json({ ok: true, status: "otp_required", message: "GST Portal ne OTP manga hai. Registered mobile/email OTP enter karein." });
+      return res.json({ ok: true, status: "otp_required", message: "GST Portal ne OTP manga hai." });
     }
-
-    // Check for login error message
-    const errMsg = await page.evaluate(() => {
-      const el = document.querySelector(".err, .alert-danger, .text-danger, [ng-if*='err']");
-      return el ? el.innerText.trim() : "";
-    });
 
     const url = page.url();
     if (url.includes("/auth/") || url.includes("fowelcome") || url.includes("dashboard")) {
@@ -191,9 +187,13 @@ app.post("/api/gst/submit-login", async (req, res) => {
       return res.json({ ok: true, status: "logged_in", url });
     }
 
-    // Refresh captcha if login failed
+    const errMsg = await page.evaluate(() => {
+      const el = document.querySelector(".err, .alert-danger, .text-danger, [ng-if*='err']");
+      return el ? el.innerText.trim() : "";
+    });
+
     let newCaptcha = null;
-    const capEl = await page.$("#imgCaptcha");
+    const capEl = await page.$("#imgCaptcha, img[src*='captcha' i]");
     if (capEl) {
       const buf = await capEl.screenshot({ type: "png" });
       newCaptcha = "data:image/png;base64," + buf.toString("base64");
@@ -206,10 +206,12 @@ app.post("/api/gst/submit-login", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  } finally {
+    s.busy = false;
   }
 });
 
-// 3. SUBMIT OTP (if prompted)
+// 3. SUBMIT OTP
 app.post("/api/gst/submit-otp", async (req, res) => {
   const { sessionId, otp } = req.body || {};
   const s = getSession(sessionId);
@@ -222,7 +224,7 @@ app.post("/api/gst/submit-otp", async (req, res) => {
 
     await otpInput.fill(String(otp || "").trim());
     await page.click("button:has-text('VALIDATE'), button:has-text('SUBMIT'), button[type='submit']");
-    await page.waitForTimeout(3500);
+    await page.waitForTimeout(4000);
 
     const url = page.url();
     if (url.includes("/auth/") || url.includes("fowelcome") || url.includes("dashboard")) {
@@ -235,45 +237,74 @@ app.post("/api/gst/submit-otp", async (req, res) => {
   }
 });
 
-// Helper: Navigate to Returns Dashboard & select FY + Quarter + Month
-async function selectReturnPeriod(page, fy, monthNum) {
-  await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" });
+// Helper: Open Welcome Dashboard safely
+async function ensureWelcomePage(page) {
+  if (!page.url().includes("fowelcome")) {
+    await page.goto("https://services.gst.gov.in/services/auth/fowelcome", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(2500);
+  }
+  // Dismiss any GST portal advisory popup modal if present
+  const closeModal = page.locator("button:has-text('CLOSE'), button:has-text('OK'), button.close, .modal button:has-text('Later')").first();
+  if (await closeModal.isVisible().catch(() => false)) {
+    await closeModal.click().catch(() => {});
+    await page.waitForTimeout(500);
+  }
+}
+
+// Helper: Navigate to Returns Dashboard via button/menu (avoids accessdenied SSO error)
+async function openReturnsDashboardAndSearch(page, fy, monthNum) {
+  if (!page.url().includes("/returns/auth/dashboard")) {
+    await ensureWelcomePage(page);
+    const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD')").first();
+    if (await retBtn.isVisible().catch(() => false)) {
+      await Promise.all([
+        retBtn.click(),
+        page.waitForLoadState("domcontentloaded").catch(() => {})
+      ]);
+      await page.waitForTimeout(3000);
+    } else {
+      await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(3000);
+    }
+  }
+
   await page.waitForSelector("select[name='fin'], #fin", { timeout: 25000 });
 
   const monthName = getMonthName(monthNum);
   const quarterName = getQuarterForMonth(monthNum);
 
-  // Select Financial Year (e.g. "2026-27")
   await page.selectOption("select[name='fin'], #fin", { label: fy }).catch(async () => {
     await page.selectOption("select[name='fin'], #fin", fy).catch(() => {});
   });
   await page.waitForTimeout(800);
 
-  // Select Quarter if present
   const qSel = await page.$("select[name='quarter'], #quarter");
   if (qSel) {
     await page.selectOption("select[name='quarter'], #quarter", { label: quarterName }).catch(() => {});
     await page.waitForTimeout(800);
   }
 
-  // Select Period / Month
   await page.selectOption("select[name='mon'], #mon", { label: monthName }).catch(async () => {
     await page.selectOption("select[name='mon'], #mon", String(monthNum)).catch(() => {});
   });
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(600);
 
   await page.click("button:has-text('SEARCH'), button[type='submit']");
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(3000);
 }
 
-// 4. FETCH ALL 3 ITEMS: Notices, GSTR-2B, E-Commerce Platform Gross Taxable Amount (TCS)
+// 4. FETCH ALL 3 ITEMS: Notices, GSTR-2B, E-Commerce Gross Taxable Amount (TCS)
 app.post("/api/gst/fetch-all", async (req, res) => {
   const { sessionId, fy, month } = req.body || {};
   const s = getSession(sessionId);
   if (!s || !s.loggedIn) {
     return res.status(401).json({ ok: false, error: "Portal se connected nahi hai. Pehle login karein." });
   }
+  if (s.busy) {
+    return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
+  }
 
+  s.busy = true;
   const { page } = s;
   const result = {
     ok: true,
@@ -285,134 +316,167 @@ app.post("/api/gst/fetch-all", async (req, res) => {
     warnings: []
   };
 
-  // --- A. FETCH NOTICES & ORDERS ---
   try {
-    await page.goto("https://services.gst.gov.in/services/auth/viewnotices", { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(3000);
+    // --- A. FETCH NOTICES & ORDERS (via top navbar menu -> never triggers accessdenied) ---
+    try {
+      await ensureWelcomePage(page);
+      const servicesMenu = page.locator("a:has-text('Services'), li:has-text('Services')").first();
+      await servicesMenu.hover().catch(() => {});
+      await servicesMenu.click().catch(() => {});
+      await page.waitForTimeout(500);
 
-    const noticeRows = await page.evaluate(() => {
-      const rows = [];
-      const trs = document.querySelectorAll("table tbody tr");
-      trs.forEach(tr => {
-        const tds = Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim());
-        if (tds.length >= 4 && !tds[0].toLowerCase().includes("no records")) {
-          rows.push({
-            refNo: tds[0] || "",
-            issuedBy: tds[1] || "",
-            type: tds[2] || "",
-            description: tds[3] || "",
-            issueDate: tds[4] || "",
-            dueDate: tds[5] || "",
-            amount: tds[6] || ""
+      const userServices = page.locator("a:has-text('User Services')").first();
+      await userServices.hover().catch(() => {});
+      await userServices.click().catch(() => {});
+      await page.waitForTimeout(500);
+
+      const viewNoticesLink = page.locator("a:has-text('View Notices and Orders')").first();
+      if (await viewNoticesLink.count()) {
+        await viewNoticesLink.click({ force: true });
+        await page.waitForTimeout(3500);
+
+        const noticeRows = await page.evaluate(() => {
+          const rows = [];
+          const trs = document.querySelectorAll("table tbody tr");
+          trs.forEach(tr => {
+            const tds = Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim());
+            if (tds.length >= 4 && !tds.join(" ").toLowerCase().includes("no records")) {
+              rows.push({
+                refNo: tds[0] || "",
+                issuedBy: tds[1] || "",
+                type: tds[2] || "",
+                description: tds[3] || "",
+                issueDate: tds[4] || "",
+                dueDate: tds[5] || "",
+                amount: tds[6] || ""
+              });
+            }
           });
-        }
-      });
-      return rows;
-    });
-    result.notices = noticeRows;
-  } catch (err) {
-    result.warnings.push("Notices fetch issue: " + err.message);
-  }
-
-  // --- B. FETCH GSTR-2B ---
-  try {
-    await selectReturnPeriod(page, result.fy, result.month);
-
-    // Click GSTR-2B DOWNLOAD button on Returns Dashboard
-    const gstr2bCard = page.locator("div, .card, .panel").filter({ hasText: /GSTR-?2B/i }).first();
-    const downloadBtn = gstr2bCard.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')").first();
-
-    if (await downloadBtn.count()) {
-      await downloadBtn.click();
-      await page.waitForTimeout(2500);
-
-      // Intercept JSON download from "GENERATE JSON FILE TO DOWNLOAD"
-      const genJsonBtn = page.locator("button:has-text('GENERATE JSON'), a:has-text('GENERATE JSON')").first();
-      if (await genJsonBtn.count()) {
-        const [download] = await Promise.all([
-          page.waitForEvent("download", { timeout: 25000 }).catch(() => null),
-          genJsonBtn.click()
-        ]);
-        if (download) {
-          const tmpPath = await download.path();
-          const rawJson = fs.readFileSync(tmpPath, "utf8");
-          const parsed = JSON.parse(rawJson);
-          result.gstr2b.fileName = download.suggestedFilename() || `GSTR2B_${result.month}${result.fy.slice(0, 4)}.json`;
-          result.gstr2b.jsonBase64 = "data:application/json;base64," + Buffer.from(rawJson, "utf8").toString("base64");
-
-          // Extract ITC Summary from official GSTR-2B JSON schema
-          const itcSum = parsed?.data?.itcsumm?.itcavl?.nonrevsup || {};
-          const ineligible = parsed?.data?.itcsumm?.itcunavl?.nonrevsup || {};
-          result.gstr2b.summary = {
-            igst: Number(itcSum.igst || 0),
-            cgst: Number(itcSum.cgst || 0),
-            sgst: Number(itcSum.sgst || 0),
-            cess: Number(itcSum.cess || 0),
-            ineligibleTotal: Number(ineligible.igst || 0) + Number(ineligible.cgst || 0) + Number(ineligible.sgst || 0),
-            b2bSuppliersCount: Array.isArray(parsed?.data?.docdata?.b2b) ? parsed.data.docdata.b2b.length : 0,
-            cdnrCount: Array.isArray(parsed?.data?.docdata?.cdnr) ? parsed.data.docdata.cdnr.length : 0
-          };
-        }
-      }
-    } else {
-      result.warnings.push("GSTR-2B card ya Download button is period ke liye nahi mila.");
-    }
-  } catch (err) {
-    result.warnings.push("GSTR-2B fetch issue: " + err.message);
-  }
-
-  // --- C. FETCH E-COMMERCE PLATFORM GROSS TAXABLE AMOUNT (TDS / TCS CREDIT RECEIVED) ---
-  try {
-    await selectReturnPeriod(page, result.fy, result.month);
-
-    const tcsCard = page.locator("div, .card, .panel").filter({ hasText: /TDS and TCS Credit Received/i }).first();
-    const prepBtn = tcsCard.locator("button:has-text('PREPARE ONLINE'), a:has-text('PREPARE ONLINE'), button:has-text('VIEW')").first();
-
-    if (await prepBtn.count()) {
-      await prepBtn.click();
-      await page.waitForTimeout(3000);
-
-      // Click TCS Credit Received tile
-      const tcsTile = page.locator("div, a, button").filter({ hasText: /TCS Credit Received/i }).first();
-      if (await tcsTile.count()) {
-        await tcsTile.click();
-        await page.waitForTimeout(2500);
-      }
-
-      const tcsRows = await page.evaluate(() => {
-        const out = [];
-        const trs = document.querySelectorAll("table tbody tr");
-        trs.forEach(tr => {
-          const tds = Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim());
-          if (tds.length >= 6 && /[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]/i.test(tds.join(" "))) {
-            const nums = tds.map(v => parseFloat(v.replace(/,/g, ""))).filter(n => !isNaN(n));
-            out.push({
-              ecoGstin: tds.find(v => /^[0-9]{2}[A-Z0-9]{13}$/i.test(v)) || tds[0],
-              ecoName: tds[1] || tds[2] || "E-Commerce Operator",
-              grossTaxableAmount: nums[0] || 0,
-              netValueSupplies: nums[1] || nums[0] || 0,
-              tcsIgst: nums[2] || 0,
-              tcsCgst: nums[3] || 0,
-              tcsSgst: nums[4] || 0,
-              rawCells: tds
-            });
-          }
+          return rows;
         });
-        return out;
-      });
-
-      result.ecommerceTcs.rows = tcsRows;
-      result.ecommerceTcs.totalGrossTaxable = tcsRows.reduce((acc, r) => acc + (r.grossTaxableAmount || 0), 0);
-      result.ecommerceTcs.totalNetValue = tcsRows.reduce((acc, r) => acc + (r.netValueSupplies || 0), 0);
-      result.ecommerceTcs.totalTcs = tcsRows.reduce((acc, r) => acc + (r.tcsIgst + r.tcsCgst + r.tcsSgst), 0);
-    } else {
-      result.warnings.push("TDS/TCS Credit Received tile is period ke liye nahi mila.");
+        result.notices = noticeRows;
+      } else {
+        result.warnings.push("View Notices and Orders menu link nahi mila.");
+      }
+    } catch (err) {
+      result.warnings.push("Notices fetch issue: " + err.message);
     }
-  } catch (err) {
-    result.warnings.push("E-Commerce TCS fetch issue: " + err.message);
-  }
 
-  res.json(result);
+    // --- B. FETCH GSTR-2B ---
+    try {
+      await openReturnsDashboardAndSearch(page, result.fy, result.month);
+
+      const gstr2bCard = page.locator("div.card, div.panel, div[class*='tile'], div[class*='box']").filter({ hasText: /GSTR-?2B/i }).first();
+      const downloadBtn = gstr2bCard.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')").first();
+
+      if (await downloadBtn.count()) {
+        await downloadBtn.click();
+        await page.waitForTimeout(3000);
+
+        const genJsonBtn = page.locator("button:has-text('GENERATE JSON'), a:has-text('GENERATE JSON')").first();
+        if (await genJsonBtn.count()) {
+          let download = null;
+          const dlPromise = page.waitForEvent("download", { timeout: 15000 }).catch(() => null);
+          await genJsonBtn.click();
+          download = await dlPromise;
+
+          // If GST Portal shows "Click here to download - File 1" async link
+          if (!download) {
+            await page.waitForTimeout(3000);
+            const fileLink = page.locator("a:has-text('Click here to download'), a:has-text('File 1')").first();
+            if (await fileLink.count()) {
+              const dlPromise2 = page.waitForEvent("download", { timeout: 20000 }).catch(() => null);
+              await fileLink.click();
+              download = await dlPromise2;
+            }
+          }
+
+          if (download) {
+            const tmpPath = await download.path();
+            const rawJson = fs.readFileSync(tmpPath, "utf8");
+            const parsed = JSON.parse(rawJson);
+            result.gstr2b.fileName = download.suggestedFilename() || `GSTR2B_${result.month}${result.fy.slice(0, 4)}.json`;
+            result.gstr2b.jsonBase64 = "data:application/json;base64," + Buffer.from(rawJson, "utf8").toString("base64");
+
+            const itcSum = parsed?.data?.itcsumm?.itcavl?.nonrevsup || {};
+            const ineligible = parsed?.data?.itcsumm?.itcunavl?.nonrevsup || {};
+            result.gstr2b.summary = {
+              igst: Number(itcSum.igst || 0),
+              cgst: Number(itcSum.cgst || 0),
+              sgst: Number(itcSum.sgst || 0),
+              cess: Number(itcSum.cess || 0),
+              ineligibleTotal: Number(ineligible.igst || 0) + Number(ineligible.cgst || 0) + Number(ineligible.sgst || 0),
+              b2bSuppliersCount: Array.isArray(parsed?.data?.docdata?.b2b) ? parsed.data.docdata.b2b.length : 0,
+              cdnrCount: Array.isArray(parsed?.data?.docdata?.cdnr) ? parsed.data.docdata.cdnr.length : 0
+            };
+          } else {
+            result.warnings.push("GSTR-2B JSON download trigger nahi hua.");
+          }
+        } else {
+          result.warnings.push("GSTR-2B GENERATE JSON button nahi mila.");
+        }
+      } else {
+        result.warnings.push("GSTR-2B card ya Download button is period ke liye nahi mila.");
+      }
+    } catch (err) {
+      result.warnings.push("GSTR-2B fetch issue: " + err.message);
+    }
+
+    // --- C. FETCH E-COMMERCE GROSS TAXABLE AMOUNT (TDS/TCS Credit Received) ---
+    try {
+      await openReturnsDashboardAndSearch(page, result.fy, result.month);
+
+      const tcsCard = page.locator("div.card, div.panel, div[class*='tile'], div[class*='box']").filter({ hasText: /TDS and TCS credit received/i }).first();
+      const prepBtn = tcsCard.locator("button:has-text('PREPARE ONLINE'), a:has-text('PREPARE ONLINE'), button:has-text('VIEW')").first();
+
+      if (await prepBtn.count()) {
+        await prepBtn.click();
+        await page.waitForTimeout(3500);
+
+        const tcsTile = page.locator("div, a, button").filter({ hasText: /TCS Credit Received/i }).first();
+        if (await tcsTile.count()) {
+          await tcsTile.click();
+          await page.waitForTimeout(3000);
+        }
+
+        const tcsRows = await page.evaluate(() => {
+          const out = [];
+          const trs = document.querySelectorAll("table tbody tr");
+          trs.forEach(tr => {
+            const tds = Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim());
+            const gstinMatch = tds.find(v => /^[0-9]{2}[A-Z0-9]{13}$/i.test(v));
+            if (tds.length >= 5 && gstinMatch) {
+              const nums = tds.map(v => parseFloat(v.replace(/[₹,\s]/g, ""))).filter(n => !isNaN(n));
+              out.push({
+                ecoGstin: gstinMatch,
+                ecoName: tds.find(v => v !== gstinMatch && isNaN(parseFloat(v.replace(/[₹,\s]/g, ""))) && v.length > 2) || "E-Commerce Operator",
+                grossTaxableAmount: nums[0] || 0,
+                netValueSupplies: nums[1] || nums[0] || 0,
+                tcsIgst: nums[2] || 0,
+                tcsCgst: nums[3] || 0,
+                tcsSgst: nums[4] || 0,
+                rawCells: tds
+              });
+            }
+          });
+          return out;
+        });
+
+        result.ecommerceTcs.rows = tcsRows;
+        result.ecommerceTcs.totalGrossTaxable = tcsRows.reduce((acc, r) => acc + (r.grossTaxableAmount || 0), 0);
+        result.ecommerceTcs.totalNetValue = tcsRows.reduce((acc, r) => acc + (r.netValueSupplies || 0), 0);
+        result.ecommerceTcs.totalTcs = tcsRows.reduce((acc, r) => acc + (r.tcsIgst + r.tcsCgst + r.tcsSgst), 0);
+      } else {
+        result.warnings.push("TDS/TCS Credit Received tile is period ke liye nahi mila.");
+      }
+    } catch (err) {
+      result.warnings.push("E-Commerce TCS fetch issue: " + err.message);
+    }
+
+    res.json(result);
+  } finally {
+    s.busy = false;
+  }
 });
 
 // 5. UPLOAD GSTR-1 JSON (Prepare Offline -> Upload JSON)
@@ -425,29 +489,33 @@ app.post("/api/gst/upload-gstr1", async (req, res) => {
   if (!jsonContent) {
     return res.status(400).json({ ok: false, error: "GSTR-1 JSON content missing hai." });
   }
+  if (s.busy) {
+    return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
+  }
 
+  s.busy = true;
   const { page } = s;
   const tmpFile = path.join(os.tmpdir(), fileName || `GSTR1_${Date.now()}.json`);
   try {
     const jsonStr = typeof jsonContent === "string" ? jsonContent : JSON.stringify(jsonContent, null, 2);
     fs.writeFileSync(tmpFile, jsonStr, "utf8");
 
-    await selectReturnPeriod(page, fy || "2026-27", String(month || "10").padStart(2, "0"));
+    await openReturnsDashboardAndSearch(page, fy || "2026-27", String(month || "10").padStart(2, "0"));
 
-    const gstr1Card = page.locator("div, .card, .panel").filter({ hasText: /GSTR-?1/i }).first();
+    const gstr1Card = page.locator("div.card, div.panel, div[class*='tile'], div[class*='box']").filter({ hasText: /GSTR-?1/i }).first();
     const offlineBtn = gstr1Card.locator("button:has-text('PREPARE OFFLINE'), a:has-text('PREPARE OFFLINE')").first();
     if (!(await offlineBtn.count())) {
       throw new Error("GSTR-1 PREPARE OFFLINE button nahi mila.");
     }
     await offlineBtn.click();
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(3000);
 
     const fileInput = await page.$("input[type='file']");
     if (!fileInput) {
       throw new Error("JSON upload input field nahi mila.");
     }
     await fileInput.setInputFiles(tmpFile);
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(4500);
 
     const statusInfo = await page.evaluate(() => {
       const tr = document.querySelector("table tbody tr");
@@ -467,6 +535,7 @@ app.post("/api/gst/upload-gstr1", async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   } finally {
+    s.busy = false;
     try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch (_) {}
   }
 });
@@ -479,5 +548,5 @@ app.post("/api/gst/logout", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`GST Cloud Bridge running on port ${PORT}`);
+  console.log(`GST Cloud Bridge v1.4.0 running on port ${PORT}`);
 });
