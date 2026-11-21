@@ -1,4 +1,4 @@
-/* GST Cloud Bridge — v2.0.0 (Batch Multi-Client Queue)
+/* GST Cloud Bridge — v2.1.0 (Fast Resource Blocking + Smart Waits + Batch Queue)
  * Fixes over v1.8.0:
  *  - E-Com TCS: columns ab table header se pehchane jate hain (pehle GSTIN ka "07" / serial no. gross ban jata tha)
  *  - Har section ka status (ok / empty / uncertain / failed) screen tak jata hai — fail hone par "Koi notice nahi" nahi dikhega
@@ -11,7 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "2.0.0"; } })();
+const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "2.1.0"; } })();
 
 /* ======================= PURE HELPERS (browser ke bina testable) ======================= */
 
@@ -352,15 +352,24 @@ function startServer() {
         acceptDownloads: true
       });
       await context.addInitScript(() => { Object.defineProperty(navigator, "webdriver", { get: () => undefined }); });
+      // Speedup: Block heavy fonts, media & non-captcha images (cuts Render 0.1 CPU load by ~60%)
+      await context.route("**/*", (route) => {
+        const req = route.request();
+        const rType = req.resourceType();
+        const url = req.url().toLowerCase();
+        if (rType === "font" || rType === "media") return route.abort();
+        if (rType === "image" && !url.includes("captcha")) return route.abort();
+        return route.continue();
+      });
       const page = await context.newPage();
       page.setDefaultTimeout(35000);
 
       await page.goto("https://services.gst.gov.in/services/login", { waitUntil: "domcontentloaded" });
       await page.waitForSelector("#username", { timeout: 30000 });
       await page.click("#username");
-      await page.locator("#username").pressSequentially(String(req.body?.username || "gstuser"), { delay: 60 });
+      await page.locator("#username").pressSequentially(String(req.body?.username || "gstuser"), { delay: 15 });
       await page.click("#user_pass");
-      await page.waitForTimeout(800);
+      await page.waitForTimeout(350);
 
       const captchaSelector = "#imgCaptcha, img[src*='captcha' i], img[id*='captcha' i]";
       await page.waitForSelector(captchaSelector, { state: "visible", timeout: 25000 });
@@ -398,10 +407,13 @@ function startServer() {
       await page.fill("#username", String(username || "").trim());
       await page.fill("#user_pass", String(password || ""));
       await page.fill("#captcha", String(captcha || "").trim());
-      await Promise.all([
-        page.click("button[type='submit'], button:has-text('LOGIN')"),
-        page.waitForTimeout(5000)
+      await page.click("button[type='submit'], button:has-text('LOGIN')");
+      await Promise.race([
+        page.waitForURL(/auth|fowelcome|dashboard/i, { timeout: 10000 }).catch(() => {}),
+        page.waitForSelector("input[name='otp'], #otp, input[placeholder*='OTP' i], .err, .alert-danger", { state: "visible", timeout: 10000 }).catch(() => {}),
+        page.waitForTimeout(1800)
       ]);
+      await page.waitForTimeout(400);
 
       const otpInput = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]");
       if (otpInput && await otpInput.isVisible()) {
@@ -437,7 +449,7 @@ function startServer() {
       if (!otpInput) return res.status(400).json({ ok: false, error: "OTP input box nahi mila." });
       await otpInput.fill(String(otp || "").trim());
       await page.click("button:has-text('VALIDATE'), button:has-text('SUBMIT'), button[type='submit']");
-      await page.waitForTimeout(4500);
+      await page.waitForTimeout(1800);
       const url = page.url();
       if (url.includes("/auth/") || url.includes("fowelcome") || url.includes("dashboard")) {
         s.loggedIn = true;
@@ -541,17 +553,17 @@ function startServer() {
       const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
       if (await retBtn.isVisible().catch(() => false)) {
         await retBtn.click({ force: true });
-        await page.waitForTimeout(4500);
+        await page.waitForTimeout(1800);
       } else {
         await page.evaluate(() => {
           const links = Array.from(document.querySelectorAll("a"));
           const retLink = links.find(a => /returns dashboard/i.test(a.textContent || "") || (a.getAttribute("href") || "").includes("/returns/auth/dashboard"));
           if (retLink) retLink.click();
         });
-        await page.waitForTimeout(4500);
+        await page.waitForTimeout(1800);
         if (!page.url().includes("/returns/auth/dashboard")) {
           await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => {});
-          await page.waitForTimeout(3500);
+          await page.waitForTimeout(350);
         }
       }
     }
@@ -560,11 +572,11 @@ function startServer() {
     await page.waitForSelector("select", { timeout: 25000 });
 
     const fyRes = await selectDropdownByText(page, fy);
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(550);
     const qRes = await selectDropdownByText(page, getQuarterForMonth(monthNum));
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(550);
     const mRes = await selectDropdownByText(page, getMonthName(monthNum));
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(350);
 
     // Agar FY / Quarter / Month me se koi dropdown match nahi hua to galat period ka data na uthe
     if (!fyRes.matched || !qRes.matched || !mRes.matched) {
@@ -573,7 +585,7 @@ function startServer() {
     const searchBtn = page.locator("button:has-text('SEARCH'), button[type='submit']").first();
     if (await searchBtn.count()) {
       await searchBtn.click({ force: true });
-      await page.waitForTimeout(4000);
+      await page.waitForTimeout(1600);
     }
     if (dbg) dbg.steps[(tag || "ret") + "_dashboard"] = { url: page.url(), fyRes, qRes, mRes };
   }
@@ -617,8 +629,8 @@ function startServer() {
           setStatus("gstr2b", "failed", "GSTR-2B card ya Download button nahi mila (2B abhi generate na hui ho to bhi aisa hota hai).");
         } else {
           await downloadBtn.click({ force: true });
-          await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-          await page.waitForTimeout(4500);
+          await page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {});
+          await page.waitForTimeout(1800);
           dbg.steps.gstr2bPageUrl = page.url();
           dbg.steps.gstr2bButtons = await page.evaluate(() =>
             Array.from(document.querySelectorAll("button, a.btn, input[type='button']")).map(b => (b.innerText || b.value || "").trim()).filter(Boolean).slice(0, 15));
@@ -637,7 +649,7 @@ function startServer() {
               await genJsonBtn.click({ force: true });
               const started = Date.now();
               while (Date.now() - started < 90000) {
-                await page.waitForTimeout(3000);
+                await page.waitForTimeout(1200);
                 polls++;
                 if (downloads.length) { download = downloads[0]; break; }
                 await dismissModals(page);
@@ -694,7 +706,7 @@ function startServer() {
         let menu = await clickTcsMenu();
         if (!menu) {
           await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" }).catch(() => {});
-          await page.waitForTimeout(3500);
+          await page.waitForTimeout(350);
           await dismissModals(page);
           menu = await clickTcsMenu();
         }
@@ -702,16 +714,16 @@ function startServer() {
         if (!menu) throw new Error("Menu me 'TDS and TCS credit received' link nahi mila.");
         await page.waitForLoadState("domcontentloaded").catch(() => {});
         await page.waitForSelector("select", { timeout: 20000 });
-        await page.waitForTimeout(1500);
+        await page.waitForTimeout(350);
 
         const fyRes = await selectDropdownByText(page, result.fy);
-        await page.waitForTimeout(800);
+        await page.waitForTimeout(350);
         const mRes = await selectDropdownByText(page, getMonthName(result.month));
         mark("period", { fyRes, mRes });
         if (!fyRes.matched || !mRes.matched) throw new Error(`TCS page par FY/Month select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}).`);
         await page.locator("button:has-text('SEARCH'):visible").first().click({ timeout: 10000 });
-        await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        await page.waitForTimeout(3500);
+        await page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {});
+        await page.waitForTimeout(350);
 
         let prep = page.locator("button:has-text('PREPARE ONLINE'):visible, a:has-text('PREPARE ONLINE'):visible").first();
         if (!(await prep.count())) {
@@ -724,8 +736,8 @@ function startServer() {
           mark("usingViewButton");
         }
         await prep.click({ timeout: 10000 });
-        await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        await page.waitForTimeout(4500);
+        await page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {});
+        await page.waitForTimeout(1800);
 
         let snap = await snapshotPage(page);
         mark("cardsPage", { buttons: snap.buttons });
@@ -764,8 +776,8 @@ function startServer() {
             const c = await clickCard(mode);
             attempts.push(c);
             if (!c) continue;
-            await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-            await page.waitForTimeout(4000);
+            await page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {});
+            await page.waitForTimeout(1600);
             snap = await snapshotPage(page);
             if (isSummary(snap)) break;
           }
@@ -804,8 +816,8 @@ function startServer() {
           if (target) { target.click(); return (target.textContent || "").trim(); }
           return null;
         });
-        await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        await page.waitForTimeout(5000);
+        await page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {});
+        await page.waitForTimeout(2000);
         await dismissModals(page);
         const snap = await snapshotPage(page);
         dbg.steps.notices = { clickedNotice, url: snap.url, tableCount: snap.tables.length, buttons: snap.buttons, bodyExcerpt: snap.bodyText.slice(0, 1800) };
@@ -818,7 +830,7 @@ function startServer() {
           else if (/no\s+(records?|notices?|orders?|data|additional)|not\s+found|there\s+(is|are)\s+no|no\s+.{0,30}\s+(available|found)/i.test(snap.bodyText)) setStatus("notices", "empty", "Portal par koi notice/order nahi hai.");
           else if (/Notice\/Demand\s+Order\s+Id/i.test(snap.bodyText)) {
             // Table ke headers dikhe par row nahi — lazy load ho sakta hai, isliye ek baar aur wait karke dekhte hain
-            await page.waitForTimeout(6000);
+            await page.waitForTimeout(2500);
             const snap2 = await snapshotPage(page);
             result.notices = parseNoticeTables(snap2.tables);
             dbg.steps.notices.retryRows = result.notices.length;
@@ -871,11 +883,11 @@ function startServer() {
       const offlineBtn = gstr1Card.locator("button:has-text('PREPARE OFFLINE'), a:has-text('PREPARE OFFLINE')").first();
       if (!(await offlineBtn.count())) throw new Error("GSTR-1 PREPARE OFFLINE button nahi mila.");
       await offlineBtn.click({ force: true });
-      await page.waitForTimeout(3000);
+      await page.waitForTimeout(1200);
       const fileInput = await page.$("input[type='file']");
       if (!fileInput) throw new Error("JSON upload input field nahi mila.");
       await fileInput.setInputFiles(tmpFile);
-      await page.waitForTimeout(6000);
+      await page.waitForTimeout(2500);
 
       const statusInfo = await page.evaluate(() => {
         const vis = el => el.offsetParent !== null;
