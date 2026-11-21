@@ -1,0 +1,553 @@
+const express = require("express");
+const cors = require("cors");
+const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const { chromium } = require("playwright");
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const API_SECRET = (process.env.API_SECRET || "").trim();
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
+
+app.use(cors({
+  origin: ALLOWED_ORIGIN === "*" ? true : ALLOWED_ORIGIN.split(",").map(s => s.trim()),
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "x-api-secret"]
+}));
+app.use(express.json({ limit: "25mb" }));
+
+app.use((req, res, next) => {
+  if (req.path === "/health") return next();
+  if (!API_SECRET) return next();
+  const provided = String(req.headers["x-api-secret"] || "").trim();
+  if (provided !== API_SECRET) {
+    return res.status(401).json({ ok: false, error: "Unauthorized: Invalid x-api-secret" });
+  }
+  next();
+});
+
+const sessions = new Map();
+const SESSION_TTL_MS = 20 * 60 * 1000;
+
+async function closeSession(sessionId) {
+  const s = sessions.get(sessionId);
+  if (!s) return;
+  sessions.delete(sessionId);
+  try { await s.context.close(); } catch (_) {}
+  try { await s.browser.close(); } catch (_) {}
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, s] of sessions.entries()) {
+    if (now - s.lastActive > SESSION_TTL_MS) {
+      closeSession(id);
+    }
+  }
+}, 60 * 1000);
+
+function getSession(sessionId) {
+  const s = sessions.get(sessionId);
+  if (!s) return null;
+  s.lastActive = Date.now();
+  return s;
+}
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"
+];
+
+function getMonthName(mm) {
+  const idx = parseInt(mm, 10) - 1;
+  return MONTH_NAMES[idx] || "October";
+}
+
+function getQuarterForMonth(mm) {
+  const m = parseInt(mm, 10);
+  if (m >= 4 && m <= 6) return "Quarter 1 (Apr - Jun)";
+  if (m >= 7 && m <= 9) return "Quarter 2 (Jul - Sep)";
+  if (m >= 10 && m <= 12) return "Quarter 3 (Oct - Dec)";
+  return "Quarter 4 (Jan - Mar)";
+}
+
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    service: "gst-cloud-bridge",
+    version: "1.4.0",
+    activeSessions: sessions.size,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 1. INIT LOGIN -> Open GST Portal Login Page & Return CAPTCHA Image
+app.post("/api/gst/init-login", async (req, res) => {
+  let browser, context;
+  try {
+    // Close stale sessions to stay within 512MB RAM on Render Free tier
+    for (const oldId of Array.from(sessions.keys())) {
+      await closeSession(oldId);
+    }
+
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--no-zygote",
+        "--disable-blink-features=AutomationControlled"
+      ]
+    });
+    context = await browser.newContext({
+      viewport: { width: 1366, height: 860 },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+      acceptDownloads: true
+    });
+    const page = await context.newPage();
+    page.setDefaultTimeout(35000);
+
+    await page.goto("https://services.gst.gov.in/services/login", { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#username", { timeout: 30000 });
+
+    // GST Portal keeps #imgCaptcha hidden until user types into #username
+    await page.click("#username");
+    await page.locator("#username").pressSequentially(String(req.body?.username || "gstuser"), { delay: 60 });
+    await page.click("#user_pass");
+    await page.waitForTimeout(800);
+
+    const captchaSelector = "#imgCaptcha, img[src*='captcha' i], img[id*='captcha' i]";
+    await page.waitForSelector(captchaSelector, { state: "visible", timeout: 25000 });
+    await page.waitForFunction((sel) => {
+      const img = document.querySelector(sel);
+      return img && img.complete && img.naturalWidth > 0;
+    }, captchaSelector, { timeout: 20000 }).catch(() => {});
+
+    const captchaEl = await page.$(captchaSelector);
+    if (!captchaEl) {
+      throw new Error("GST Portal CAPTCHA image load nahi ho payi.");
+    }
+    const captchaBuffer = await captchaEl.screenshot({ type: "png" });
+    const sessionId = crypto.randomUUID();
+
+    sessions.set(sessionId, {
+      browser,
+      context,
+      page,
+      loggedIn: false,
+      busy: false,
+      lastActive: Date.now()
+    });
+
+    res.json({
+      ok: true,
+      sessionId,
+      captchaBase64: "data:image/png;base64," + captchaBuffer.toString("base64")
+    });
+  } catch (err) {
+    try { if (context) await context.close(); } catch (_) {}
+    try { if (browser) await browser.close(); } catch (_) {}
+    res.status(500).json({ ok: false, error: err.message || "Init login failed" });
+  }
+});
+
+// 2. SUBMIT LOGIN -> Username + Password + Captcha
+app.post("/api/gst/submit-login", async (req, res) => {
+  const { sessionId, username, password, captcha } = req.body || {};
+  const s = getSession(sessionId);
+  if (!s) return res.status(404).json({ ok: false, error: "Session expired. Dobara Connect karein." });
+  if (s.loggedIn) return res.json({ ok: true, status: "logged_in", url: s.page.url() });
+  if (s.busy) return res.status(429).json({ ok: false, error: "Login already in progress, thoda wait karein." });
+
+  s.busy = true;
+  const { page } = s;
+  try {
+    await page.fill("#username", String(username || "").trim());
+    await page.fill("#user_pass", String(password || ""));
+    await page.fill("#captcha", String(captcha || "").trim());
+
+    await Promise.all([
+      page.click("button[type='submit'], button:has-text('LOGIN')"),
+      page.waitForTimeout(4500)
+    ]);
+
+    const otpInput = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]");
+    if (otpInput && await otpInput.isVisible()) {
+      return res.json({ ok: true, status: "otp_required", message: "GST Portal ne OTP manga hai." });
+    }
+
+    const url = page.url();
+    if (url.includes("/auth/") || url.includes("fowelcome") || url.includes("dashboard")) {
+      s.loggedIn = true;
+      return res.json({ ok: true, status: "logged_in", url });
+    }
+
+    const errMsg = await page.evaluate(() => {
+      const el = document.querySelector(".err, .alert-danger, .text-danger, [ng-if*='err']");
+      return el ? el.innerText.trim() : "";
+    });
+
+    let newCaptcha = null;
+    const capEl = await page.$("#imgCaptcha, img[src*='captcha' i]");
+    if (capEl) {
+      const buf = await capEl.screenshot({ type: "png" });
+      newCaptcha = "data:image/png;base64," + buf.toString("base64");
+    }
+
+    return res.status(400).json({
+      ok: false,
+      error: errMsg || "Login fail hua (Username, Password ya Captcha check karein).",
+      captchaBase64: newCaptcha
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  } finally {
+    s.busy = false;
+  }
+});
+
+// 3. SUBMIT OTP
+app.post("/api/gst/submit-otp", async (req, res) => {
+  const { sessionId, otp } = req.body || {};
+  const s = getSession(sessionId);
+  if (!s) return res.status(404).json({ ok: false, error: "Session expired." });
+
+  const { page } = s;
+  try {
+    const otpInput = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]");
+    if (!otpInput) return res.status(400).json({ ok: false, error: "OTP input box nahi mila." });
+
+    await otpInput.fill(String(otp || "").trim());
+    await page.click("button:has-text('VALIDATE'), button:has-text('SUBMIT'), button[type='submit']");
+    await page.waitForTimeout(4000);
+
+    const url = page.url();
+    if (url.includes("/auth/") || url.includes("fowelcome") || url.includes("dashboard")) {
+      s.loggedIn = true;
+      return res.json({ ok: true, status: "logged_in", url });
+    }
+    return res.status(400).json({ ok: false, error: "OTP invalid ya verify nahi ho paya." });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Helper: Open Welcome Dashboard safely
+async function ensureWelcomePage(page) {
+  if (!page.url().includes("fowelcome")) {
+    await page.goto("https://services.gst.gov.in/services/auth/fowelcome", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(2500);
+  }
+  // Dismiss any GST portal advisory popup modal if present
+  const closeModal = page.locator("button:has-text('CLOSE'), button:has-text('OK'), button.close, .modal button:has-text('Later')").first();
+  if (await closeModal.isVisible().catch(() => false)) {
+    await closeModal.click().catch(() => {});
+    await page.waitForTimeout(500);
+  }
+}
+
+// Helper: Navigate to Returns Dashboard via button/menu (avoids accessdenied SSO error)
+async function openReturnsDashboardAndSearch(page, fy, monthNum) {
+  if (!page.url().includes("/returns/auth/dashboard")) {
+    await ensureWelcomePage(page);
+    const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD')").first();
+    if (await retBtn.isVisible().catch(() => false)) {
+      await Promise.all([
+        retBtn.click(),
+        page.waitForLoadState("domcontentloaded").catch(() => {})
+      ]);
+      await page.waitForTimeout(3000);
+    } else {
+      await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(3000);
+    }
+  }
+
+  await page.waitForSelector("select[name='fin'], #fin", { timeout: 25000 });
+
+  const monthName = getMonthName(monthNum);
+  const quarterName = getQuarterForMonth(monthNum);
+
+  await page.selectOption("select[name='fin'], #fin", { label: fy }).catch(async () => {
+    await page.selectOption("select[name='fin'], #fin", fy).catch(() => {});
+  });
+  await page.waitForTimeout(800);
+
+  const qSel = await page.$("select[name='quarter'], #quarter");
+  if (qSel) {
+    await page.selectOption("select[name='quarter'], #quarter", { label: quarterName }).catch(() => {});
+    await page.waitForTimeout(800);
+  }
+
+  await page.selectOption("select[name='mon'], #mon", { label: monthName }).catch(async () => {
+    await page.selectOption("select[name='mon'], #mon", String(monthNum)).catch(() => {});
+  });
+  await page.waitForTimeout(600);
+
+  await page.click("button:has-text('SEARCH'), button[type='submit']");
+  await page.waitForTimeout(3000);
+}
+
+// 4. FETCH ALL 3 ITEMS: Notices, GSTR-2B, E-Commerce Gross Taxable Amount (TCS)
+app.post("/api/gst/fetch-all", async (req, res) => {
+  const { sessionId, fy, month } = req.body || {};
+  const s = getSession(sessionId);
+  if (!s || !s.loggedIn) {
+    return res.status(401).json({ ok: false, error: "Portal se connected nahi hai. Pehle login karein." });
+  }
+  if (s.busy) {
+    return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
+  }
+
+  s.busy = true;
+  const { page } = s;
+  const result = {
+    ok: true,
+    fy: fy || "2026-27",
+    month: String(month || "10").padStart(2, "0"),
+    notices: [],
+    gstr2b: { summary: null, jsonBase64: null, fileName: null },
+    ecommerceTcs: { rows: [], totalGrossTaxable: 0, totalNetValue: 0, totalTcs: 0 },
+    warnings: []
+  };
+
+  try {
+    // --- A. FETCH NOTICES & ORDERS (via top navbar menu -> never triggers accessdenied) ---
+    try {
+      await ensureWelcomePage(page);
+      const servicesMenu = page.locator("a:has-text('Services'), li:has-text('Services')").first();
+      await servicesMenu.hover().catch(() => {});
+      await servicesMenu.click().catch(() => {});
+      await page.waitForTimeout(500);
+
+      const userServices = page.locator("a:has-text('User Services')").first();
+      await userServices.hover().catch(() => {});
+      await userServices.click().catch(() => {});
+      await page.waitForTimeout(500);
+
+      const viewNoticesLink = page.locator("a:has-text('View Notices and Orders')").first();
+      if (await viewNoticesLink.count()) {
+        await viewNoticesLink.click({ force: true });
+        await page.waitForTimeout(3500);
+
+        const noticeRows = await page.evaluate(() => {
+          const rows = [];
+          const trs = document.querySelectorAll("table tbody tr");
+          trs.forEach(tr => {
+            const tds = Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim());
+            if (tds.length >= 4 && !tds.join(" ").toLowerCase().includes("no records")) {
+              rows.push({
+                refNo: tds[0] || "",
+                issuedBy: tds[1] || "",
+                type: tds[2] || "",
+                description: tds[3] || "",
+                issueDate: tds[4] || "",
+                dueDate: tds[5] || "",
+                amount: tds[6] || ""
+              });
+            }
+          });
+          return rows;
+        });
+        result.notices = noticeRows;
+      } else {
+        result.warnings.push("View Notices and Orders menu link nahi mila.");
+      }
+    } catch (err) {
+      result.warnings.push("Notices fetch issue: " + err.message);
+    }
+
+    // --- B. FETCH GSTR-2B ---
+    try {
+      await openReturnsDashboardAndSearch(page, result.fy, result.month);
+
+      const gstr2bCard = page.locator("div.card, div.panel, div[class*='tile'], div[class*='box']").filter({ hasText: /GSTR-?2B/i }).first();
+      const downloadBtn = gstr2bCard.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')").first();
+
+      if (await downloadBtn.count()) {
+        await downloadBtn.click();
+        await page.waitForTimeout(3000);
+
+        const genJsonBtn = page.locator("button:has-text('GENERATE JSON'), a:has-text('GENERATE JSON')").first();
+        if (await genJsonBtn.count()) {
+          let download = null;
+          const dlPromise = page.waitForEvent("download", { timeout: 15000 }).catch(() => null);
+          await genJsonBtn.click();
+          download = await dlPromise;
+
+          // If GST Portal shows "Click here to download - File 1" async link
+          if (!download) {
+            await page.waitForTimeout(3000);
+            const fileLink = page.locator("a:has-text('Click here to download'), a:has-text('File 1')").first();
+            if (await fileLink.count()) {
+              const dlPromise2 = page.waitForEvent("download", { timeout: 20000 }).catch(() => null);
+              await fileLink.click();
+              download = await dlPromise2;
+            }
+          }
+
+          if (download) {
+            const tmpPath = await download.path();
+            const rawJson = fs.readFileSync(tmpPath, "utf8");
+            const parsed = JSON.parse(rawJson);
+            result.gstr2b.fileName = download.suggestedFilename() || `GSTR2B_${result.month}${result.fy.slice(0, 4)}.json`;
+            result.gstr2b.jsonBase64 = "data:application/json;base64," + Buffer.from(rawJson, "utf8").toString("base64");
+
+            const itcSum = parsed?.data?.itcsumm?.itcavl?.nonrevsup || {};
+            const ineligible = parsed?.data?.itcsumm?.itcunavl?.nonrevsup || {};
+            result.gstr2b.summary = {
+              igst: Number(itcSum.igst || 0),
+              cgst: Number(itcSum.cgst || 0),
+              sgst: Number(itcSum.sgst || 0),
+              cess: Number(itcSum.cess || 0),
+              ineligibleTotal: Number(ineligible.igst || 0) + Number(ineligible.cgst || 0) + Number(ineligible.sgst || 0),
+              b2bSuppliersCount: Array.isArray(parsed?.data?.docdata?.b2b) ? parsed.data.docdata.b2b.length : 0,
+              cdnrCount: Array.isArray(parsed?.data?.docdata?.cdnr) ? parsed.data.docdata.cdnr.length : 0
+            };
+          } else {
+            result.warnings.push("GSTR-2B JSON download trigger nahi hua.");
+          }
+        } else {
+          result.warnings.push("GSTR-2B GENERATE JSON button nahi mila.");
+        }
+      } else {
+        result.warnings.push("GSTR-2B card ya Download button is period ke liye nahi mila.");
+      }
+    } catch (err) {
+      result.warnings.push("GSTR-2B fetch issue: " + err.message);
+    }
+
+    // --- C. FETCH E-COMMERCE GROSS TAXABLE AMOUNT (TDS/TCS Credit Received) ---
+    try {
+      await openReturnsDashboardAndSearch(page, result.fy, result.month);
+
+      const tcsCard = page.locator("div.card, div.panel, div[class*='tile'], div[class*='box']").filter({ hasText: /TDS and TCS credit received/i }).first();
+      const prepBtn = tcsCard.locator("button:has-text('PREPARE ONLINE'), a:has-text('PREPARE ONLINE'), button:has-text('VIEW')").first();
+
+      if (await prepBtn.count()) {
+        await prepBtn.click();
+        await page.waitForTimeout(3500);
+
+        const tcsTile = page.locator("div, a, button").filter({ hasText: /TCS Credit Received/i }).first();
+        if (await tcsTile.count()) {
+          await tcsTile.click();
+          await page.waitForTimeout(3000);
+        }
+
+        const tcsRows = await page.evaluate(() => {
+          const out = [];
+          const trs = document.querySelectorAll("table tbody tr");
+          trs.forEach(tr => {
+            const tds = Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim());
+            const gstinMatch = tds.find(v => /^[0-9]{2}[A-Z0-9]{13}$/i.test(v));
+            if (tds.length >= 5 && gstinMatch) {
+              const nums = tds.map(v => parseFloat(v.replace(/[₹,\s]/g, ""))).filter(n => !isNaN(n));
+              out.push({
+                ecoGstin: gstinMatch,
+                ecoName: tds.find(v => v !== gstinMatch && isNaN(parseFloat(v.replace(/[₹,\s]/g, ""))) && v.length > 2) || "E-Commerce Operator",
+                grossTaxableAmount: nums[0] || 0,
+                netValueSupplies: nums[1] || nums[0] || 0,
+                tcsIgst: nums[2] || 0,
+                tcsCgst: nums[3] || 0,
+                tcsSgst: nums[4] || 0,
+                rawCells: tds
+              });
+            }
+          });
+          return out;
+        });
+
+        result.ecommerceTcs.rows = tcsRows;
+        result.ecommerceTcs.totalGrossTaxable = tcsRows.reduce((acc, r) => acc + (r.grossTaxableAmount || 0), 0);
+        result.ecommerceTcs.totalNetValue = tcsRows.reduce((acc, r) => acc + (r.netValueSupplies || 0), 0);
+        result.ecommerceTcs.totalTcs = tcsRows.reduce((acc, r) => acc + (r.tcsIgst + r.tcsCgst + r.tcsSgst), 0);
+      } else {
+        result.warnings.push("TDS/TCS Credit Received tile is period ke liye nahi mila.");
+      }
+    } catch (err) {
+      result.warnings.push("E-Commerce TCS fetch issue: " + err.message);
+    }
+
+    res.json(result);
+  } finally {
+    s.busy = false;
+  }
+});
+
+// 5. UPLOAD GSTR-1 JSON (Prepare Offline -> Upload JSON)
+app.post("/api/gst/upload-gstr1", async (req, res) => {
+  const { sessionId, fy, month, jsonContent, fileName } = req.body || {};
+  const s = getSession(sessionId);
+  if (!s || !s.loggedIn) {
+    return res.status(401).json({ ok: false, error: "Portal se connected nahi hai. Pehle login karein." });
+  }
+  if (!jsonContent) {
+    return res.status(400).json({ ok: false, error: "GSTR-1 JSON content missing hai." });
+  }
+  if (s.busy) {
+    return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
+  }
+
+  s.busy = true;
+  const { page } = s;
+  const tmpFile = path.join(os.tmpdir(), fileName || `GSTR1_${Date.now()}.json`);
+  try {
+    const jsonStr = typeof jsonContent === "string" ? jsonContent : JSON.stringify(jsonContent, null, 2);
+    fs.writeFileSync(tmpFile, jsonStr, "utf8");
+
+    await openReturnsDashboardAndSearch(page, fy || "2026-27", String(month || "10").padStart(2, "0"));
+
+    const gstr1Card = page.locator("div.card, div.panel, div[class*='tile'], div[class*='box']").filter({ hasText: /GSTR-?1/i }).first();
+    const offlineBtn = gstr1Card.locator("button:has-text('PREPARE OFFLINE'), a:has-text('PREPARE OFFLINE')").first();
+    if (!(await offlineBtn.count())) {
+      throw new Error("GSTR-1 PREPARE OFFLINE button nahi mila.");
+    }
+    await offlineBtn.click();
+    await page.waitForTimeout(3000);
+
+    const fileInput = await page.$("input[type='file']");
+    if (!fileInput) {
+      throw new Error("JSON upload input field nahi mila.");
+    }
+    await fileInput.setInputFiles(tmpFile);
+    await page.waitForTimeout(4500);
+
+    const statusInfo = await page.evaluate(() => {
+      const tr = document.querySelector("table tbody tr");
+      const cells = tr ? Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim()) : [];
+      const msgEl = document.querySelector(".alert-success, .alert-info, .err, .alert-danger");
+      return {
+        alertText: msgEl ? msgEl.innerText.trim() : "",
+        latestRow: cells
+      };
+    });
+
+    res.json({
+      ok: true,
+      message: "GSTR-1 JSON portal par upload ho gaya! Ab portal par jaakar sirf Submit & File (EVC/DSC) karein.",
+      portalStatus: statusInfo
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  } finally {
+    s.busy = false;
+    try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch (_) {}
+  }
+});
+
+// 6. LOGOUT
+app.post("/api/gst/logout", async (req, res) => {
+  const { sessionId } = req.body || {};
+  await closeSession(sessionId);
+  res.json({ ok: true });
+});
+
+app.listen(PORT, () => {
+  console.log(`GST Cloud Bridge v1.4.0 running on port ${PORT}`);
+});
