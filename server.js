@@ -1,4 +1,4 @@
-/* GST Cloud Bridge — v1.9.4
+/* GST Cloud Bridge — v1.9.6
  * Fixes over v1.8.0:
  *  - E-Com TCS: columns ab table header se pehchane jate hain (pehle GSTIN ka "07" / serial no. gross ban jata tha)
  *  - Har section ka status (ok / empty / uncertain / failed) screen tak jata hai — fail hone par "Koi notice nahi" nahi dikhega
@@ -11,7 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "1.9.4"; } })();
+const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "1.9.6"; } })();
 
 /* ======================= PURE HELPERS (browser ke bina testable) ======================= */
 
@@ -583,20 +583,36 @@ function startServer() {
           if (!(await genJsonBtn.count())) {
             setStatus("gstr2b", "failed", "GSTR-2B GENERATE JSON button nahi mila.");
           } else {
-            const dlPromise = page.waitForEvent("download", { timeout: 15000 }).catch(() => null);
-            await genJsonBtn.click({ force: true });
-            let download = await dlPromise;
-            if (!download) {
-              await page.waitForTimeout(4500);
-              const fileLink = page.locator("a:has-text('Click here to download'), a:has-text('File 1')").first();
-              if (await fileLink.count()) {
-                const dlPromise2 = page.waitForEvent("download", { timeout: 20000 }).catch(() => null);
-                await fileLink.click({ force: true });
-                download = await dlPromise2;
+            // Portal JSON file async banata hai: click ke baad 90 second tak har 3 second par check karte hain
+            // (download event ya "Click here to download / File 1" link)
+            const downloads = [];
+            const onDl = d => downloads.push(d);
+            page.on("download", onDl);
+            let download = null, polls = 0, linkClicked = 0;
+            try {
+              await genJsonBtn.click({ force: true });
+              const started = Date.now();
+              while (Date.now() - started < 90000) {
+                await page.waitForTimeout(3000);
+                polls++;
+                if (downloads.length) { download = downloads[0]; break; }
+                await dismissModals(page);
+                if (!linkClicked) {
+                  const link = page.locator("a:has-text('Click here to download'), a:has-text('File 1')").first();
+                  if (await link.count()) { linkClicked++; await link.click({ force: true, timeout: 8000 }).catch(() => {}); }
+                }
               }
+            } finally {
+              page.off("download", onDl);
             }
+            const after = await snapshotPage(page);
+            const multiFile = (await page.locator("a:has-text('File 2')").count().catch(() => 0)) > 0;
+            dbg.steps.gstr2bAfterGenerate = { polls, linkClicked, gotDownload: !!download, multiFile, url: after.url, buttons: after.buttons, bodyExcerpt: after.bodyText.slice(0, 1500) };
+            const portalMsg = after.bodyText.split("\n").map(x => x.trim())
+              .filter(x => x.length > 8 && x.length < 260 && /generat|process|wait|not\s+(available|generated)|no\s+(data|record)|try again|download/i.test(x) && !/^GENERATE (JSON|EXCEL)/i.test(x))
+              .slice(0, 3).join(" | ");
             if (!download) {
-              setStatus("gstr2b", "failed", "GSTR-2B JSON download trigger nahi hua.");
+              setStatus("gstr2b", "failed", "GSTR-2B JSON 90 second me download nahi hui." + (portalMsg ? " Portal ka message: " + portalMsg : "") + " Portal par check karein ki is client ki 2B is month ke liye generate hui hai ya nahi.");
             } else {
               const rawJson = fs.readFileSync(await download.path(), "utf8");
               const parsed = JSON.parse(rawJson);
@@ -606,6 +622,7 @@ function startServer() {
               result.gstr2b.summary = sm;
               dbg.steps.gstr2bItcKeys = { avl: Object.keys(parsed?.data?.itcsumm?.itcavl || {}), unavl: Object.keys(parsed?.data?.itcsumm?.itcunavl || {}) };
               const problems = sm.warnings.slice();
+              if (multiFile) problems.push("2B ki ek se zyada file hain — sirf File 1 ka summary li gayi hai, totals adhoore ho sakte hain.");
               if (sm.rtnprd && sm.rtnprd !== result.period) problems.push(`Download hui 2B ka period ${sm.rtnprd} hai, jabki maanga gaya ${result.period}.`);
               if (problems.length) setStatus("gstr2b", "uncertain", problems.join(" "));
               else setStatus("gstr2b", "ok", "GSTR-2B mil gayi.");
@@ -652,8 +669,16 @@ function startServer() {
         await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
         await page.waitForTimeout(3500);
 
-        const prep = page.locator("button:has-text('PREPARE ONLINE'):visible, a:has-text('PREPARE ONLINE'):visible").first();
-        if (!(await prep.count())) throw new Error("'TDS and TCS credit received' page par PREPARE ONLINE button nahi mila.");
+        let prep = page.locator("button:has-text('PREPARE ONLINE'):visible, a:has-text('PREPARE ONLINE'):visible").first();
+        if (!(await prep.count())) {
+          const pg = await snapshotPage(page);
+          mark("noPrepareOnline", { buttons: pg.buttons });
+          dbg.steps.tcsPageExcerpt = pg.bodyText.slice(0, 1500);
+          // Form pehle se file ho chuka ho to PREPARE ONLINE ki jagah VIEW jaisa button aa sakta hai (PREVIEW nahi)
+          prep = page.locator("button:visible, a.btn:visible").filter({ hasText: /^\s*VIEW\b/i }).first();
+          if (!(await prep.count())) throw new Error("'TDS and TCS credit received' page par PREPARE ONLINE (ya VIEW) button nahi mila. Debug me tcsPageExcerpt dekhein.");
+          mark("usingViewButton");
+        }
         await prep.click({ timeout: 10000 });
         await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
         await page.waitForTimeout(4500);
@@ -747,6 +772,16 @@ function startServer() {
           result.notices = parseNoticeTables(snap.tables);
           if (result.notices.length) setStatus("notices", "ok", `${result.notices.length} notice/order row mili.`);
           else if (/no\s+(records?|notices?|orders?|data|additional)|not\s+found|there\s+(is|are)\s+no|no\s+.{0,30}\s+(available|found)/i.test(snap.bodyText)) setStatus("notices", "empty", "Portal par koi notice/order nahi hai.");
+          else if (/Notice\/Demand\s+Order\s+Id/i.test(snap.bodyText)) {
+            // Table ke headers dikhe par row nahi — lazy load ho sakta hai, isliye ek baar aur wait karke dekhte hain
+            await page.waitForTimeout(6000);
+            const snap2 = await snapshotPage(page);
+            result.notices = parseNoticeTables(snap2.tables);
+            dbg.steps.notices.retryRows = result.notices.length;
+            dbg.steps.notices.retryExcerpt = snap2.bodyText.slice(0, 1200);
+            if (result.notices.length) setStatus("notices", "ok", `${result.notices.length} notice/order row mili.`);
+            else setStatus("notices", "empty", "Notices page poori khuli (table headers dikhe), par koi notice/order row nahi — portal par koi notice nahi hai.");
+          }
           else setStatus("notices", "failed", "Notices ka table padh nahi paya.");
         }
       } catch (err) {
