@@ -1,4 +1,4 @@
-/* GST Cloud Bridge — v1.9.0
+/* GST Cloud Bridge — v1.9.1
  * Fixes over v1.8.0:
  *  - E-Com TCS: columns ab table header se pehchane jate hain (pehle GSTIN ka "07" / serial no. gross ban jata tha)
  *  - Har section ka status (ok / empty / uncertain / failed) screen tak jata hai — fail hone par "Koi notice nahi" nahi dikhega
@@ -11,7 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "1.9.0"; } })();
+const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "1.9.1"; } })();
 
 /* ======================= PURE HELPERS (browser ke bina testable) ======================= */
 
@@ -425,7 +425,30 @@ function startServer() {
           Array.from(tr.children).filter(c => /^(TH|TD)$/.test(c.tagName)).map(c => ({ t: clean(c.innerText), cs: c.colSpan || 1, rs: c.rowSpan || 1 }))),
         body: Array.from(tbl.querySelectorAll("tbody tr")).map(tr => Array.from(tr.querySelectorAll("td")).map(td => clean(td.innerText)))
       }));
-      return { tables, bodyText: String(document.body.innerText || "").slice(0, 20000), url: location.href };
+      const vis = el => el.offsetParent !== null;
+      const buttons = Array.from(document.querySelectorAll("button, a.btn, a[role='button'], input[type='button']")).filter(vis).map(b => clean(b.innerText || b.value)).filter(Boolean).slice(0, 40);
+      return { tables, buttons, bodyText: String(document.body.innerText || "").slice(0, 20000), url: location.href };
+    });
+  }
+
+  // Debug ke liye: page par har visible button/link aur uske card ka heading text
+  async function dumpTiles(page) {
+    return await page.evaluate(() => {
+      const clean = t => String(t || "").replace(/\s+/g, " ").trim();
+      const vis = el => el.offsetParent !== null;
+      const out = [];
+      document.querySelectorAll("button, a.btn, a[role='button']").forEach(b => {
+        if (!vis(b)) return;
+        const label = clean(b.innerText);
+        if (!label || label.length > 40) return;
+        let el = b.parentElement, card = "";
+        for (let i = 0; i < 7 && el; i++, el = el.parentElement) {
+          const t = clean(el.innerText);
+          if (t.length > label.length + 8 && t.length < 400) { card = t.slice(0, 140); break; }
+        }
+        out.push({ button: label, card });
+      });
+      return out.slice(0, 40);
     });
   }
 
@@ -502,23 +525,38 @@ function startServer() {
       // --- STEP 1: E-COMMERCE GROSS TAXABLE (TDS/TCS Credit Received) ---
       try {
         await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "tcs");
-        const tcsCard = page.locator("div").filter({ hasText: /TDS and TCS credit received/i }).filter({ has: page.locator("button:has-text('PREPARE ONLINE'), a:has-text('PREPARE ONLINE'), button:has-text('VIEW')") }).last();
-        const prepBtn = tcsCard.locator("button:has-text('PREPARE ONLINE'), a:has-text('PREPARE ONLINE'), button:has-text('VIEW')").first();
-        dbg.steps.tcsCardFound = await prepBtn.count();
+        dbg.steps.dashboardTiles = await dumpTiles(page);
 
-        if (!(await prepBtn.count())) {
-          setStatus("tcs", "failed", "TDS/TCS Credit Received tile nahi mila (portal ka layout badla ho sakta hai).");
+        const ACT = "button:has-text('PREPARE ONLINE'), a:has-text('PREPARE ONLINE'), button:has-text('VIEW'), a:has-text('VIEW')";
+        let tcsBtn = page.locator("div").filter({ hasText: /TDS\s*(and|&)\s*TCS|TCS\s*credit/i }).filter({ has: page.locator(ACT) }).last().locator(ACT).first();
+        let route = null;
+        if (await tcsBtn.count()) route = "tds_tcs_tile";
+        else {
+          // Fallback: GSTR-2A ke andar bhi "TCS Credit Received" hota hai
+          tcsBtn = page.locator("div").filter({ hasText: /GSTR-?2A/i }).filter({ has: page.locator(ACT) }).last().locator(ACT).first();
+          if (await tcsBtn.count()) route = "gstr2a_view";
+        }
+        dbg.steps.tcsRoute = route;
+
+        if (!route) {
+          setStatus("tcs", "failed", "Dashboard par TDS/TCS tile ya GSTR-2A ka View button nahi mila. (Debug me dashboardTiles dekhein.)");
         } else {
-          await prepBtn.click({ force: true });
+          await tcsBtn.click({ force: true });
           await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-          await page.waitForTimeout(3500);
-          const tcsTile = page.locator("div, a, button").filter({ hasText: /TCS Credit Received/i }).last();
+          await page.waitForTimeout(4000);
+          dbg.steps.afterOpenUrl = page.url();
+          let snap = await snapshotPage(page);
+          dbg.steps.afterOpenButtons = snap.buttons;
+
+          const tcsTile = page.locator("div, a, button").filter({ hasText: /TCS\s*credit\s*received|TDS\s*(and|&)\s*TCS/i }).last();
           if (await tcsTile.count()) {
-            await tcsTile.click({ force: true });
+            await tcsTile.click({ force: true }).catch(() => {});
+            await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
             await page.waitForTimeout(3500);
+            snap = await snapshotPage(page);
           }
-          const snap = await snapshotPage(page);
           dbg.steps.tcsPageUrl = snap.url;
+          dbg.steps.tcsBodyExcerpt = snap.bodyText.slice(0, 1200);
           const parsed = parseTcsTables(snap.tables);
           dbg.steps.tcsParseMode = parsed.mode;
           dbg.steps.tcsHeaders = parsed.headersSeen;
@@ -529,10 +567,10 @@ function startServer() {
           if (parsed.rows.length) {
             if (parsed.mode === "header") setStatus("tcs", "ok", `${parsed.rows.length} ECO row mili.`);
             else setStatus("tcs", "uncertain", "Column header pehchane nahi gaye — numbers portal se zaroor match karein.");
-          } else if (/no\s+(record|data|tcs)|not\s+found|no\s+details/i.test(snap.bodyText)) {
+          } else if (/no\s+(record|data|tcs)|not\s+found|no\s+details|there\s+(is|are)\s+no/i.test(snap.bodyText)) {
             setStatus("tcs", "empty", "Portal ne is month ke liye koi TCS record nahi dikhaya.");
           } else {
-            setStatus("tcs", "failed", "TCS table padh nahi payi (page par table nahi mili). /debug dekhein.");
+            setStatus("tcs", "failed", "TCS table padh nahi payi (page par table nahi mili). Debug me tcsBodyExcerpt dekhein.");
           }
         }
       } catch (err) {
@@ -603,17 +641,19 @@ function startServer() {
           if (target) { target.click(); return (target.textContent || "").trim(); }
           return null;
         });
-        await page.waitForTimeout(4500);
+        await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+        await page.waitForTimeout(5000);
+        await dismissModals(page);
         const snap = await snapshotPage(page);
-        dbg.steps.notices = { clickedNotice, url: snap.url, tableCount: snap.tables.length };
+        dbg.steps.notices = { clickedNotice, url: snap.url, tableCount: snap.tables.length, buttons: snap.buttons, bodyExcerpt: snap.bodyText.slice(0, 1800) };
 
         if (!clickedNotice) {
           setStatus("notices", "failed", "'View Notices and Orders' link menu me nahi mila.");
         } else {
           result.notices = parseNoticeTables(snap.tables);
           if (result.notices.length) setStatus("notices", "ok", `${result.notices.length} notice/order row mili.`);
-          else if (/no\s+(records?|notices?|orders?|data)|not\s+found/i.test(snap.bodyText)) setStatus("notices", "empty", "Portal par koi notice/order nahi hai.");
-          else setStatus("notices", "failed", "Notices ka table padh nahi paya — isse 'koi notice nahi' mat samjhein, portal par khud check karein.");
+          else if (/no\s+(records?|notices?|orders?|data|additional)|not\s+found|there\s+(is|are)\s+no|no\s+.{0,30}\s+(available|found)/i.test(snap.bodyText)) setStatus("notices", "empty", "Portal par koi notice/order nahi hai.");
+          else setStatus("notices", "failed", "Notices ka table padh nahi paya.");
         }
       } catch (err) {
         setStatus("notices", "failed", "Notices fetch issue: " + err.message);
