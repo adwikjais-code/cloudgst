@@ -113,17 +113,22 @@ app.post("/api/gst/init-login", async (req, res) => {
     page.setDefaultTimeout(35000);
 
     await page.goto("https://services.gst.gov.in/services/login", { waitUntil: "domcontentloaded" });
-    await page.waitForSelector("#username", { timeout: 25000 });
+    await page.waitForSelector("#username", { timeout: 30000 });
 
-    // Wait for captcha image to load (triggered on username focus or page load)
+    // GST Portal keeps #imgCaptcha hidden until user types into #username and triggers input/blur
     await page.click("#username");
-    await page.waitForSelector("#imgCaptcha", { timeout: 15000 });
-    await page.waitForFunction(() => {
-      const img = document.querySelector("#imgCaptcha");
-      return img && img.complete && img.naturalWidth > 0;
-    }, { timeout: 15000 }).catch(() => {});
+    await page.locator("#username").pressSequentially(String(req.body?.username || "gstuser"), { delay: 60 });
+    await page.click("#user_pass");
+    await page.waitForTimeout(800);
 
-    const captchaEl = await page.$("#imgCaptcha");
+    const captchaSelector = "#imgCaptcha, img[src*='captcha' i], img[id*='captcha' i]";
+    await page.waitForSelector(captchaSelector, { state: "visible", timeout: 25000 });
+    await page.waitForFunction((sel) => {
+      const img = document.querySelector(sel);
+      return img && img.complete && img.naturalWidth > 0;
+    }, captchaSelector, { timeout: 20000 }).catch(() => {});
+
+    const captchaEl = await page.$(captchaSelector);
     if (!captchaEl) {
       throw new Error("GST Portal CAPTCHA image load nahi ho payi.");
     }
