@@ -1,4 +1,4 @@
-/* GST Cloud Bridge — v1.9.2
+/* GST Cloud Bridge — v1.9.4
  * Fixes over v1.8.0:
  *  - E-Com TCS: columns ab table header se pehchane jate hain (pehle GSTIN ka "07" / serial no. gross ban jata tha)
  *  - Har section ka status (ok / empty / uncertain / failed) screen tak jata hai — fail hone par "Koi notice nahi" nahi dikhega
@@ -11,7 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "1.9.2"; } })();
+const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "1.9.4"; } })();
 
 /* ======================= PURE HELPERS (browser ke bina testable) ======================= */
 
@@ -76,7 +76,8 @@ function mapTcsColumns(labels) {
   const igst = find(/integrated|igst/);
   const cgst = find(/central|cgst/);
   const sgst = find(/state|sgst|utgst/);
-  return { gstin, name, gross, ret, net, igst, cgst, sgst };
+  const period = find(/period/, [gross, ret, net]);
+  return { gstin, name, gross, ret, net, igst, cgst, sgst, period };
 }
 
 function looksLikePeriod(v) {
@@ -110,6 +111,7 @@ function parseTcsTables(tables) {
         rows.push({
           ecoGstin: gstin.toUpperCase(),
           ecoName: (m.name >= 0 && String(r[m.name] || "").trim()) || "E-Commerce Operator",
+          taxPeriod: m.period >= 0 ? String(r[m.period] || "").trim() : "",
           grossTaxableAmount: gross, returnedValue: returned, netValueSupplies: net,
           tcsIgst: m.igst >= 0 ? amt0(r[m.igst]) : 0,
           tcsCgst: m.cgst >= 0 ? amt0(r[m.cgst]) : 0,
@@ -145,6 +147,13 @@ function parseTcsTables(tables) {
       totalTcs: sum(r => r.tcsIgst + r.tcsCgst + r.tcsSgst)
     }
   };
+}
+
+// "TDS and TCS credit received" cards page se: TCS Credit received ke "Total Number of Records : N"
+function parseTcsRecordCount(text) {
+  const t = String(text || "").replace(/\s+/g, " ");
+  const m = /TCS\s+Credit\s+received.{0,160}?Total\s+Number\s+of\s+Records\s*:?\s*(\d+)/i.exec(t);
+  return m ? parseInt(m[1], 10) : null;
 }
 
 function parseNoticeTables(tables) {
@@ -553,62 +562,7 @@ function startServer() {
     };
 
     try {
-      // --- STEP 1: E-COMMERCE GROSS TAXABLE (TDS/TCS Credit Received) ---
-      try {
-        await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "tcs");
-        dbg.steps.dashboardTiles = await dumpTiles(page);
-
-        let route = null;
-        let clicked = await clickCardButton(page, "TDS\\s*(and|&)\\s*TCS|TCS\\s*credit");
-        if (clicked) route = "tds_tcs_tile";
-        else {
-          // Fallback: GSTR-2A ke andar bhi "TCS Credit Received" hota hai
-          clicked = await clickCardButton(page, "GSTR-?\\s*2A");
-          if (clicked) route = "gstr2a_view";
-        }
-        dbg.steps.tcsRoute = route;
-        dbg.steps.tcsClicked = clicked;
-
-        if (!route) {
-          setStatus("tcs", "failed", "Dashboard par TDS/TCS tile ya GSTR-2A ka View button nahi mila. (Debug me dashboardTiles dekhein.)");
-        } else {
-          await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-          await page.waitForTimeout(4000);
-          dbg.steps.afterOpenUrl = page.url();
-          let snap = await snapshotPage(page);
-          dbg.steps.afterOpenButtons = snap.buttons;
-
-          const tcsTile = page.locator("div, a, button").filter({ hasText: /TCS\s*credit\s*received|TDS\s*(and|&)\s*TCS/i }).last();
-          if (await tcsTile.count()) {
-            await tcsTile.click({ force: true, timeout: 8000 }).catch(() => {});
-            await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-            await page.waitForTimeout(3500);
-            snap = await snapshotPage(page);
-          }
-          dbg.steps.tcsPageUrl = snap.url;
-          dbg.steps.tcsBodyExcerpt = snap.bodyText.slice(0, 1200);
-          const parsed = parseTcsTables(snap.tables);
-          dbg.steps.tcsParseMode = parsed.mode;
-          dbg.steps.tcsHeaders = parsed.headersSeen;
-          dbg.steps.tcsTableCount = snap.tables.length;
-          result.ecommerceTcs = Object.assign({ rows: parsed.rows, mode: parsed.mode }, parsed.totals);
-          parsed.warnings.forEach(w => result.warnings.push("[tcs] " + w));
-
-          if (parsed.rows.length) {
-            if (parsed.mode === "header") setStatus("tcs", "ok", `${parsed.rows.length} ECO row mili.`);
-            else setStatus("tcs", "uncertain", "Column header pehchane nahi gaye — numbers portal se zaroor match karein.");
-          } else if (/no\s+(record|data|tcs)|not\s+found|no\s+details|there\s+(is|are)\s+no/i.test(snap.bodyText)) {
-            setStatus("tcs", "empty", "Portal ne is month ke liye koi TCS record nahi dikhaya.");
-          } else {
-            setStatus("tcs", "failed", "TCS table padh nahi payi (page par table nahi mili). Debug me tcsBodyExcerpt dekhein.");
-          }
-        }
-      } catch (err) {
-        setStatus("tcs", "failed", "E-Commerce TCS fetch issue: " + shortErr(err));
-        dbg.steps.tcsError = err.message;
-      }
-
-      // --- STEP 2: GSTR-2B ---
+      // --- STEP 1: GSTR-2B ---
       try {
         await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "gstr2b");
         const gstr2bCard = page.locator("div").filter({ hasText: /GSTR-?2B/i }).filter({ has: page.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')") }).last();
@@ -661,6 +615,116 @@ function startServer() {
       } catch (err) {
         setStatus("gstr2b", "failed", "GSTR-2B fetch issue: " + shortErr(err));
         dbg.steps.gstr2bError = err.message;
+      }
+
+      // --- STEP 2: E-COMMERCE TCS  (Services > Returns > TDS and TCS credit received > PREPARE ONLINE > TCS Credit received) ---
+      // Sirf padhta hai — portal par ACCEPT / REJECT kabhi nahi dabata.
+      try {
+        const flow = dbg.steps.tcsFlow = [];
+        const mark = (name, extra) => flow.push(Object.assign({ step: name, url: page.url() }, extra || {}));
+        const clickTcsMenu = () => page.evaluate(() => {
+          const a = Array.from(document.querySelectorAll("a")).find(x => /^\s*TDS\s+and\s+TCS\s+credit\s+received\s*$/i.test(x.textContent || ""));
+          if (!a) return null;
+          const href = a.getAttribute("href") || "";
+          a.click();
+          return { href };
+        });
+        await dismissModals(page);
+        let menu = await clickTcsMenu();
+        if (!menu) {
+          await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" }).catch(() => {});
+          await page.waitForTimeout(3500);
+          await dismissModals(page);
+          menu = await clickTcsMenu();
+        }
+        mark("menuClick", { menu });
+        if (!menu) throw new Error("Menu me 'TDS and TCS credit received' link nahi mila.");
+        await page.waitForLoadState("domcontentloaded").catch(() => {});
+        await page.waitForSelector("select", { timeout: 20000 });
+        await page.waitForTimeout(1500);
+
+        const fyRes = await selectDropdownByText(page, result.fy);
+        await page.waitForTimeout(800);
+        const mRes = await selectDropdownByText(page, getMonthName(result.month));
+        mark("period", { fyRes, mRes });
+        if (!fyRes.matched || !mRes.matched) throw new Error(`TCS page par FY/Month select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}).`);
+        await page.locator("button:has-text('SEARCH'):visible").first().click({ timeout: 10000 });
+        await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+        await page.waitForTimeout(3500);
+
+        const prep = page.locator("button:has-text('PREPARE ONLINE'):visible, a:has-text('PREPARE ONLINE'):visible").first();
+        if (!(await prep.count())) throw new Error("'TDS and TCS credit received' page par PREPARE ONLINE button nahi mila.");
+        await prep.click({ timeout: 10000 });
+        await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+        await page.waitForTimeout(4500);
+
+        let snap = await snapshotPage(page);
+        mark("cardsPage", { buttons: snap.buttons });
+        dbg.steps.tcsCardsExcerpt = snap.bodyText.slice(0, 1500);
+        const cnt = parseTcsRecordCount(snap.bodyText);
+        dbg.steps.tcsRecordCount = cnt;
+
+        {
+          // NOTE: tile ka "Total Number of Records" bharosemand nahi (screenshot me tile par 0 tha, summary me 1 record) —
+          // isliye 0 dikhne par bhi summary kholkar table padhte hain; "empty" tabhi jab summary khuli aur khali mili.
+          // "TCS Credit received" card kholna (heading -> poora card -> record count, teen tarah se koshish)
+          const clickCard = (mode) => page.evaluate((mode) => {
+            const vis = el => el.offsetParent !== null;
+            const norm = t => String(t || "").replace(/\s+/g, " ").trim();
+            const cands = Array.from(document.querySelectorAll("div,span,p,h1,h2,h3,h4,h5,h6,a,button,li"))
+              .filter(e => vis(e) && /^TCS credit received$/i.test(norm(e.innerText)));
+            for (const c of cands) {
+              let el = c;
+              for (let i = 0; i < 5 && el; i++, el = el.parentElement) {
+                const t = norm(el.innerText);
+                if (t.length > 500) break;
+                if (/number of records/i.test(t) && !/amendments/i.test(t)) {
+                  let target = c;
+                  if (mode === "root") target = el;
+                  if (mode === "count") target = Array.from(el.querySelectorAll("*")).find(x => /total number of records/i.test(norm(x.innerText)) && x.children.length === 0) || el;
+                  target.click();
+                  return { mode, tag: target.tagName, text: norm(target.innerText).slice(0, 60) };
+                }
+              }
+            }
+            return null;
+          }, mode);
+          const isSummary = s2 => /TCS\s+Credit\s+Received\s*-\s*Summary/i.test(s2.bodyText) || s2.tables.some(t => (t.body || []).some(r => r.some(v => GSTIN_RE.test(String(v).trim()))));
+          const attempts = [];
+          for (const mode of ["heading", "root", "count"]) {
+            const c = await clickCard(mode);
+            attempts.push(c);
+            if (!c) continue;
+            await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+            await page.waitForTimeout(4000);
+            snap = await snapshotPage(page);
+            if (isSummary(snap)) break;
+          }
+          dbg.steps.tcsCardClickAttempts = attempts;
+          mark("summaryPage", { buttons: snap.buttons });
+          dbg.steps.tcsBodyExcerpt = snap.bodyText.slice(0, 1500);
+
+          const parsed = parseTcsTables(snap.tables);
+          dbg.steps.tcsParseMode = parsed.mode;
+          dbg.steps.tcsHeaders = parsed.headersSeen;
+          dbg.steps.tcsTableCount = snap.tables.length;
+          result.ecommerceTcs = Object.assign({ rows: parsed.rows, mode: parsed.mode }, parsed.totals);
+          parsed.warnings.forEach(w => result.warnings.push("[tcs] " + w));
+
+          if (parsed.rows.length) {
+            if (parsed.mode !== "header") setStatus("tcs", "uncertain", "Column header pehchane nahi gaye — numbers portal se zaroor match karein.");
+            else if (cnt === 0) setStatus("tcs", "ok", `${parsed.rows.length} ECO row mili (tile par count 0 dikh raha tha, par summary table me data hai).`);
+            else if (cnt !== null && cnt !== parsed.rows.length) setStatus("tcs", "uncertain", `Portal ne ${cnt} record bataye par ${parsed.rows.length} row padhi gayi (page 2 ho sakta hai) — portal se match karein.`);
+            else setStatus("tcs", "ok", `${parsed.rows.length} ECO row mili.`);
+          } else if (isSummary(snap)) {
+            setStatus("tcs", "empty", "TCS Credit Received summary khuli, par usme is month ka koi record nahi hai.");
+          } else {
+            setStatus("tcs", "failed", cnt ? `Portal ne ${cnt} TCS record bataye par table padh nahi payi. Debug dekhein.` : "TCS summary page khul nahi payi ya table nahi mili. Debug dekhein.");
+          }
+        }
+      } catch (err) {
+        setStatus("tcs", "failed", "E-Commerce TCS fetch issue: " + shortErr(err));
+        dbg.steps.tcsError = shortErr(err);
       }
 
       // --- STEP 3: NOTICES & ORDERS ---
@@ -764,6 +828,6 @@ function startServer() {
   app.listen(PORT, () => console.log(`GST Cloud Bridge v${VERSION} running on port ${PORT}`));
 }
 
-module.exports = { parseAmt, buildColumnLabels, mapTcsColumns, parseTcsTables, parseNoticeTables, summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE };
+module.exports = { parseTcsRecordCount, parseAmt, buildColumnLabels, mapTcsColumns, parseTcsTables, parseNoticeTables, summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE };
 
 if (require.main === module) startServer();
