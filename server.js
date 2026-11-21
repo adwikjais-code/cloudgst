@@ -1,4 +1,4 @@
-/* GST Cloud Bridge — v1.9.1
+/* GST Cloud Bridge — v1.9.2
  * Fixes over v1.8.0:
  *  - E-Com TCS: columns ab table header se pehchane jate hain (pehle GSTIN ka "07" / serial no. gross ban jata tha)
  *  - Har section ka status (ok / empty / uncertain / failed) screen tak jata hai — fail hone par "Koi notice nahi" nahi dikhega
@@ -11,7 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "1.9.1"; } })();
+const VERSION = (() => { try { return require("./package.json").version; } catch (_) { return "1.9.2"; } })();
 
 /* ======================= PURE HELPERS (browser ke bina testable) ======================= */
 
@@ -149,11 +149,18 @@ function parseTcsTables(tables) {
 
 function parseNoticeTables(tables) {
   const out = [];
+  const DATE_RE = /^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/;
   for (const tbl of tables || []) {
     const labels = buildColumnLabels(tbl.head);
     for (const tds of tbl.body || []) {
       if (tds.length >= 4 && !tds.join(" ").toLowerCase().includes("no records")) {
-        out.push({
+        // Portal ka dekha hua layout: Ref No | Type | Description | Date | Due/Response | View
+        const portalLayout = tds.length >= 5 && DATE_RE.test(String(tds[3]).trim());
+        out.push(portalLayout ? {
+          refNo: tds[0] || "", type: tds[1] || "", description: tds[2] || "", issuedBy: "",
+          issueDate: tds[3] || "", dueDate: /^view$/i.test(String(tds[4]).trim()) ? "" : (tds[4] || ""), amount: "",
+          rawCells: tds, headers: labels
+        } : {
           refNo: tds[0] || "", issuedBy: tds[1] || "", type: tds[2] || "", description: tds[3] || "",
           issueDate: tds[4] || "", dueDate: tds[5] || "", amount: tds[6] || "",
           rawCells: tds, headers: labels
@@ -452,6 +459,30 @@ function startServer() {
     });
   }
 
+  // Card (tile) dhundh kar uska visible button dabata hai; "View e-Filed Returns" jaise page-level links ko chhodta hai
+  async function clickCardButton(page, reSource) {
+    return await page.evaluate((src) => {
+      const re = new RegExp(src, "i");
+      const vis = el => el.offsetParent !== null;
+      const hits = Array.from(document.querySelectorAll("div,section,h1,h2,h3,h4,h5,span,p,li"))
+        .filter(e => vis(e) && re.test(e.innerText || "") && (e.innerText || "").length < 600)
+        .sort((a, b) => a.innerText.length - b.innerText.length);
+      for (const h of hits) {
+        let el = h;
+        for (let i = 0; i < 5 && el; i++, el = el.parentElement) {
+          const t = el.innerText || "";
+          if (t.length > 600) break;
+          const btn = Array.from(el.querySelectorAll("button, a")).find(b => vis(b)
+            && /prepare online|view|download|open/i.test(b.innerText || "")
+            && !/efiledReturns/i.test(b.getAttribute("href") || ""));
+          if (btn) { const label = (btn.innerText || "").trim(); btn.click(); return { label, card: t.replace(/\s+/g, " ").slice(0, 140) }; }
+        }
+      }
+      return null;
+    }, reSource);
+  }
+  const shortErr = e => String((e && e.message) || e).split("\n")[0].slice(0, 200);
+
   async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
     await dismissModals(page);
     if (!page.url().includes("/returns/auth/dashboard")) {
@@ -527,21 +558,20 @@ function startServer() {
         await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "tcs");
         dbg.steps.dashboardTiles = await dumpTiles(page);
 
-        const ACT = "button:has-text('PREPARE ONLINE'), a:has-text('PREPARE ONLINE'), button:has-text('VIEW'), a:has-text('VIEW')";
-        let tcsBtn = page.locator("div").filter({ hasText: /TDS\s*(and|&)\s*TCS|TCS\s*credit/i }).filter({ has: page.locator(ACT) }).last().locator(ACT).first();
         let route = null;
-        if (await tcsBtn.count()) route = "tds_tcs_tile";
+        let clicked = await clickCardButton(page, "TDS\\s*(and|&)\\s*TCS|TCS\\s*credit");
+        if (clicked) route = "tds_tcs_tile";
         else {
           // Fallback: GSTR-2A ke andar bhi "TCS Credit Received" hota hai
-          tcsBtn = page.locator("div").filter({ hasText: /GSTR-?2A/i }).filter({ has: page.locator(ACT) }).last().locator(ACT).first();
-          if (await tcsBtn.count()) route = "gstr2a_view";
+          clicked = await clickCardButton(page, "GSTR-?\\s*2A");
+          if (clicked) route = "gstr2a_view";
         }
         dbg.steps.tcsRoute = route;
+        dbg.steps.tcsClicked = clicked;
 
         if (!route) {
           setStatus("tcs", "failed", "Dashboard par TDS/TCS tile ya GSTR-2A ka View button nahi mila. (Debug me dashboardTiles dekhein.)");
         } else {
-          await tcsBtn.click({ force: true });
           await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
           await page.waitForTimeout(4000);
           dbg.steps.afterOpenUrl = page.url();
@@ -550,7 +580,7 @@ function startServer() {
 
           const tcsTile = page.locator("div, a, button").filter({ hasText: /TCS\s*credit\s*received|TDS\s*(and|&)\s*TCS/i }).last();
           if (await tcsTile.count()) {
-            await tcsTile.click({ force: true }).catch(() => {});
+            await tcsTile.click({ force: true, timeout: 8000 }).catch(() => {});
             await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
             await page.waitForTimeout(3500);
             snap = await snapshotPage(page);
@@ -574,7 +604,7 @@ function startServer() {
           }
         }
       } catch (err) {
-        setStatus("tcs", "failed", "E-Commerce TCS fetch issue: " + err.message);
+        setStatus("tcs", "failed", "E-Commerce TCS fetch issue: " + shortErr(err));
         dbg.steps.tcsError = err.message;
       }
 
@@ -629,7 +659,7 @@ function startServer() {
           }
         }
       } catch (err) {
-        setStatus("gstr2b", "failed", "GSTR-2B fetch issue: " + err.message);
+        setStatus("gstr2b", "failed", "GSTR-2B fetch issue: " + shortErr(err));
         dbg.steps.gstr2bError = err.message;
       }
 
@@ -656,7 +686,7 @@ function startServer() {
           else setStatus("notices", "failed", "Notices ka table padh nahi paya.");
         }
       } catch (err) {
-        setStatus("notices", "failed", "Notices fetch issue: " + err.message);
+        setStatus("notices", "failed", "Notices fetch issue: " + shortErr(err));
         dbg.steps.noticesError = err.message;
       }
 
