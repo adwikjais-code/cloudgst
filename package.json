@@ -1,6 +1,6 @@
 {
   "name": "gst-cloud-bridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Cloud Playwright bridge for GST Portal (Notices, GSTR-2B, E-Commerce TCS Gross Taxable, GSTR-1 JSON Upload)",
   "main": "server.js",
   "scripts": {
@@ -9,7 +9,7 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.1",
-    "playwright": "^1.48.0"
+    "playwright": "1.65.1"
   },
   "engines": {
     "node": ">=18.0.0"

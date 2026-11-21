@@ -88,9 +88,21 @@ app.get("/health", (req, res) => {
 app.post("/api/gst/init-login", async (req, res) => {
   let browser, context;
   try {
+    // Close any stale sessions to stay safely within 512MB RAM on Render Free tier
+    for (const oldId of Array.from(sessions.keys())) {
+      await closeSession(oldId);
+    }
     browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--no-zygote"
+      ]
     });
     context = await browser.newContext({
       viewport: { width: 1366, height: 860 },
