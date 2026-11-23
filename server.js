@@ -7,7 +7,7 @@ const os = require("os");
 const { chromium } = require("playwright");
 
 const app = express();
-const VERSION = "2.4.2";
+const VERSION = "2.4.3";
 const PORT = process.env.PORT || 3000;
 const API_SECRET = (process.env.API_SECRET || "").trim();
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
@@ -311,28 +311,30 @@ async function ensureWelcomePage(page) {
   await dismissPopups(page);
 }
 
-async function openReturnsDashboardAndSearch(page, fy, monthNum, forceFresh = false) {
-  if (forceFresh) {
-    await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" }).catch(() => {});
+// Returns Dashboard SIRF "RETURN DASHBOARD" button se kholo (direct URL par portal "accessdenied" deta hai)
+async function gotoReturnsDashboard(page, force = false) {
+  if (!force && page.url().includes("/returns/auth/dashboard")) return true;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.goto("https://services.gst.gov.in/services/auth/fowelcome", { waitUntil: "domcontentloaded" }).catch(() => {});
+    await page.waitForTimeout(2500);
+    await dismissPopups(page);
+    const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), a:has-text('Return Dashboard')").filter({ visible: true }).first();
+    try { await retBtn.waitFor({ state: "visible", timeout: 15000 }); } catch (_) { continue; }
+    await Promise.all([retBtn.click(), page.waitForLoadState("domcontentloaded").catch(() => {})]);
     await page.waitForTimeout(3500);
-  } else if (!page.url().includes("/returns/auth/dashboard")) {
-    await ensureWelcomePage(page);
-    const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD')").first();
-    if (await retBtn.isVisible().catch(() => false)) {
-      await Promise.all([retBtn.click(), page.waitForLoadState("domcontentloaded").catch(() => {})]);
-      await page.waitForTimeout(3000);
-    } else {
-      await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(3000);
-    }
+    if (page.url().includes("/returns/auth/dashboard")) return true;
   }
+  return false;
+}
+
+async function openReturnsDashboardAndSearch(page, fy, monthNum, forceFresh = false) {
+  await gotoReturnsDashboard(page, forceFresh);
   await dismissPopups(page);
   try {
     await page.waitForSelector("select[name='fin'], #fin", { state: "visible", timeout: 25000 });
   } catch (e1) {
-    // Ek baar fresh reload karke dobara try
-    await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" }).catch(() => {});
-    await page.waitForTimeout(4000);
+    // Ek baar phir button se fresh try
+    await gotoReturnsDashboard(page, true);
     await dismissPopups(page);
     try {
       await page.waitForSelector("select[name='fin'], #fin", { state: "visible", timeout: 25000 });
