@@ -7,7 +7,7 @@ const os = require("os");
 const { chromium } = require("playwright");
 
 const app = express();
-const VERSION = "2.3.2";
+const VERSION = "2.3.3";
 const PORT = process.env.PORT || 3000;
 const API_SECRET = (process.env.API_SECRET || "").trim();
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
@@ -49,7 +49,7 @@ async function ensureBrowser() {
       "--no-zygote", "--disable-blink-features=AutomationControlled"
     ]
   });
-  sharedBrowser.on("disconnected", () => { sharedBrowser = null; });
+  sharedBrowser.on("disconnected", () => { logDebug("browser-disconnected", "Chromium band/crash hua (aksar RAM kam padne se)"); sharedBrowser = null; });
   return sharedBrowser;
 }
 
@@ -151,6 +151,8 @@ app.post("/api/gst/init-login", async (req, res) => {
     });
 
     const page = await context.newPage();
+    page.on("crash", () => logDebug("page-crash", "Page crash hua (RAM/memory issue)"));
+    page.on("close", () => logDebug("page-closed", "Page band hua; sessions active: " + sessions.size));
     page.setDefaultTimeout(35000);
     await page.goto("https://services.gst.gov.in/services/login", { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#username", { timeout: 30000 });
@@ -559,6 +561,7 @@ async function clickProceedToFile(page, maxMs = 45000) {
   const started = Date.now();
   let lastTick = 0;
   while (Date.now() - started < maxMs) {
+    if (page.isClosed()) throw new Error("Portal page beech mein band ho gaya (server RAM/restart). Dobara Nil Captcha load karke try karein.");
     const btn = page.getByRole("button", { name: re }).filter({ visible: true }).first();
     const link = page.getByRole("link", { name: re }).filter({ visible: true }).first();
     const target = (await btn.count()) ? btn : ((await link.count()) ? link : null);
