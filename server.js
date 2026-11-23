@@ -7,7 +7,7 @@ const os = require("os");
 const { chromium } = require("playwright");
 
 const app = express();
-const VERSION = "2.4.0";
+const VERSION = "2.4.1";
 const PORT = process.env.PORT || 3000;
 const API_SECRET = (process.env.API_SECRET || "").trim();
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
@@ -423,9 +423,11 @@ app.post("/api/gst/fetch-all", async (req, res) => {
               out.ecommerceTcs.totalTcs = tcsRows.reduce((a, r) => a + (r.tcsIgst + r.tcsCgst + r.tcsSgst), 0);
               out.status.tcs = { ok: true, count: tcsRows.length };
             } else {
+              out.status.tcs = { ok: false, message: "TDS/TCS Credit Received tile nahi mila" };
               out.warnings.push("TDS/TCS Credit Received tile nahi mila.");
             }
           } catch (err) {
+            out.status.tcs = { ok: false, message: err.message };
             out.warnings.push("E-Commerce TCS fetch issue: " + err.message);
           }
         }
@@ -468,6 +470,15 @@ app.post("/api/gst/fetch-all", async (req, res) => {
         if (autoClose) await closeSession(sessionId);
       }
     });
+
+    // Agar GSTR-2B / E-Com maanga gaya tha par fetch nahi hua -> 0 save mat karo, saaf error dikhao
+    const failed = [];
+    if (opts.gstr2b && !(result.status?.gstr2b?.ok)) failed.push("GSTR-2B: " + (result.status?.gstr2b?.message || "fetch nahi hua"));
+    if (opts.tcs && !(result.status?.tcs?.ok)) failed.push("E-Com TCS: " + (result.status?.tcs?.message || "fetch nahi hua"));
+    if (failed.length) {
+      logDebug("fetch-all-partial", failed.join(" | "));
+      return res.json({ ...result, ok: false, error: "Data fetch nahi hua (Sheet me save nahi kiya) -> " + failed.join(" | ") });
+    }
 
     res.json(result);
   } catch (err) {
