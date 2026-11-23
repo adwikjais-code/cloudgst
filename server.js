@@ -7,7 +7,7 @@ const os = require("os");
 const { chromium } = require("playwright");
 
 const app = express();
-const VERSION = "2.3.0";
+const VERSION = "2.3.1";
 const PORT = process.env.PORT || 3000;
 const API_SECRET = (process.env.API_SECRET || "").trim();
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
@@ -477,48 +477,53 @@ app.post("/api/gst/fetch-all", async (req, res) => {
 // 4. NIL FILING INIT — GSTR-1 NIL & GSTR-3B NIL (TRIGGERS EVC OTP)
 // ---------------------------------------------------------------------------
 async function selectDeclarationAndTriggerEvc(page, returnType) {
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(2200);
   await dismissPopups(page);
 
-  // Tick verification / declaration checkbox
-  const decChk = page.locator("input[type='checkbox']").first();
+  // Tick visible verification / declaration checkbox (AngularJS safe)
+  const decChk = page.locator("input[type='checkbox']:visible").first();
   if (await decChk.count()) {
     const isChecked = await decChk.isChecked().catch(() => false);
-    if (!isChecked) await decChk.check({ force: true }).catch(() => decChk.click({ force: true }));
-    await page.waitForTimeout(500);
+    if (!isChecked) await decChk.click({ force: true }).catch(() => decChk.check({ force: true }));
+    await page.waitForTimeout(600);
+  } else {
+    const decLabel = page.locator("label:has-text('I hereby solemnly affirm'):visible, label:has-text('declare'):visible").first();
+    if (await decLabel.count()) {
+      await decLabel.click({ force: true }).catch(() => {});
+      await page.waitForTimeout(600);
+    }
   }
 
-  // Select Authorized Signatory (first valid non-placeholder option)
+  // Select Authorized Signatory (first visible select with valid non-placeholder option)
   let signatory = "";
-  const sigSelect = page.locator("select[name*='sign' i], select[id*='sign' i], select").first();
+  const sigSelect = page.locator("select[name*='sign' i]:visible, select[id*='sign' i]:visible, select:visible").first();
   if (await sigSelect.count()) {
     const picked = await sigSelect.evaluate((el) => {
       for (let i = 0; i < el.options.length; i++) {
         const opt = el.options[i];
-        const txt = (opt.text || "").trim();
-        const val = (opt.value || "").trim();
-        if (val && !/select/i.test(txt)) {
+        const t = (opt.text || "").trim();
+        const v = (opt.value || "").trim();
+        if (v && !/select/i.test(t)) {
           el.selectedIndex = i;
           el.dispatchEvent(new Event("change", { bubbles: true }));
-          return txt;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          return t;
         }
       }
       return "";
     });
     signatory = picked || "";
-    await page.waitForTimeout(700);
+    await page.waitForTimeout(900);
   }
 
-  // Click FILE WITH EVC (or FILE GSTR-3B WITH EVC / FILE GSTR-1 WITH EVC)
-  const evcBtn = page.locator("button:has-text('FILE WITH EVC'), button:has-text('WITH EVC'), a:has-text('WITH EVC')").first();
-  if (!(await evcBtn.count())) {
-    throw new Error(`${returnType} filing page par 'FILE WITH EVC' button nahi mila.`);
-  }
+  // Click visible FILE WITH EVC button
+  const evcBtn = page.locator("button:has-text('FILE WITH EVC'):visible, button:has-text('WITH EVC'):visible, a:has-text('WITH EVC'):visible").first();
+  await evcBtn.waitFor({ state: "visible", timeout: 15000 });
   await evcBtn.click();
   await page.waitForTimeout(2500);
 
   // Confirm EVC OTP input is visible
-  const otpSel = "input[placeholder*='OTP' i], input[name*='otp' i], #otp, input[maxlength='6']";
+  const otpSel = "input[placeholder*='OTP' i]:visible, input[name*='otp' i]:visible, #otp:visible, input[maxlength='6']:visible";
   await page.waitForSelector(otpSel, { state: "visible", timeout: 15000 });
   return signatory;
 }
@@ -550,26 +555,29 @@ app.post("/api/gst/nil-file-init", async (req, res) => {
       await page.waitForTimeout(3200);
       await dismissPopups(page);
 
-      // Find File Nil GSTR-1 checkbox
-      const nilChk = page.locator("input[type='checkbox'][id*='nil' i], input[type='checkbox'][name*='nil' i]").first();
-      let targetChk = (await nilChk.count()) ? nilChk : page.locator("label:has-text('File Nil GSTR-1') input[type='checkbox'], label:has-text('Nil GSTR-1') input[type='checkbox']").first();
-      if (!(await targetChk.count())) {
-        // Fallback: click label text directly
-        const nilLabel = page.locator("label:has-text('File Nil GSTR-1'), label:has-text('Nil GSTR-1')").first();
-        if (!(await nilLabel.count())) {
-          throw new Error("GSTR-1 Nil checkbox nahi mila — check karein ki is mahine koi saved invoice to nahi hai.");
-        }
-        await nilLabel.click();
-      } else {
-        if (await targetChk.isDisabled().catch(() => false)) {
+      // Find visible File Nil GSTR-1 checkbox / label (triggers AngularJS ng-change cleanly)
+      const nilLabel = page.locator("label:has-text('File Nil GSTR-1'):visible, label:has-text('Nil GSTR-1'):visible").first();
+      const nilChk = page.locator("input[type='checkbox'][id*='nil' i]:visible, input[type='checkbox'][name*='nil' i]:visible, label:has-text('Nil GSTR-1') input[type='checkbox']").first();
+
+      if (await nilChk.count()) {
+        if (await nilChk.isDisabled().catch(() => false)) {
           return res.status(400).json({ ok: false, blocked: true, error: "GSTR-1 Nil disabled hai — portal par is mahine saved invoices/data maujood hain." });
         }
-        await targetChk.check({ force: true }).catch(() => targetChk.click({ force: true }));
+        const already = await nilChk.isChecked().catch(() => false);
+        if (!already) {
+          if (await nilLabel.count()) await nilLabel.click({ force: true }).catch(() => nilChk.click({ force: true }));
+          else await nilChk.click({ force: true });
+        }
+      } else if (await nilLabel.count()) {
+        await nilLabel.click({ force: true });
+      } else {
+        throw new Error("GSTR-1 Nil checkbox nahi mila — check karein ki is mahine koi saved invoice to nahi hai.");
       }
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(1500);
 
-      const fileStmtBtn = page.locator("button:has-text('FILE STATEMENT'), button:has-text('PROCEED TO FILE')").first();
-      if (!(await fileStmtBtn.count())) throw new Error("'FILE STATEMENT' button nahi mila.");
+      // Click ONLY the visible FILE STATEMENT / PROCEED TO FILE button (ignore hidden ng-hide buttons!)
+      const fileStmtBtn = page.locator("button:has-text('FILE STATEMENT'):visible, button:has-text('PROCEED TO FILE'):visible").first();
+      await fileStmtBtn.waitFor({ state: "visible", timeout: 15000 });
       await fileStmtBtn.click();
       await page.waitForTimeout(2500);
 
@@ -603,7 +611,7 @@ app.post("/api/gst/nil-file-init", async (req, res) => {
         }
         await yesRadio.check({ force: true }).catch(() => yesRadio.click({ force: true }));
         await page.waitForTimeout(700);
-        const nextBtn = page.locator("button:has-text('NEXT')").first();
+        const nextBtn = page.locator("button:has-text('NEXT'):visible").first();
         if (await nextBtn.count()) {
           await nextBtn.click();
           await page.waitForTimeout(2500);
@@ -642,12 +650,12 @@ app.post("/api/gst/nil-file-verify", async (req, res) => {
   s.busy = true;
   const { page } = s;
   try {
-    const otpInp = page.locator("input[placeholder*='OTP' i], input[name*='otp' i], #otp, input[maxlength='6']").first();
+    const otpInp = page.locator("input[placeholder*='OTP' i]:visible, input[name*='otp' i]:visible, #otp:visible, input[maxlength='6']:visible").first();
     if (!(await otpInp.count())) throw new Error("EVC OTP input box screen par nahi mila.");
     await otpInp.fill(String(otp).trim());
     await page.waitForTimeout(400);
 
-    const verifyBtn = page.locator("button:has-text('VERIFY'), button:has-text('VALIDATE'), button:has-text('SUBMIT')").first();
+    const verifyBtn = page.locator("button:has-text('VERIFY'):visible, button:has-text('VALIDATE'):visible, button:has-text('SUBMIT'):visible").first();
     if (!(await verifyBtn.count())) throw new Error("OTP VERIFY button nahi mila.");
     await verifyBtn.click();
     await page.waitForTimeout(4500);
