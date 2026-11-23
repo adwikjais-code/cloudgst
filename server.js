@@ -7,7 +7,7 @@ const os = require("os");
 const { chromium } = require("playwright");
 
 const app = express();
-const VERSION = "2.4.1";
+const VERSION = "2.4.2";
 const PORT = process.env.PORT || 3000;
 const API_SECRET = (process.env.API_SECRET || "").trim();
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
@@ -255,6 +255,40 @@ app.post("/api/gst/submit-otp", async (req, res) => {
 // ---------------------------------------------------------------------------
 // SHARED PORTAL NAVIGATION HELPERS
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// GSTR-2B download kabhi plain JSON aur kabhi ZIP (PK...) aata hai -> dono handle
+// ---------------------------------------------------------------------------
+const zlib = require("zlib");
+function readJsonFilesFromBuffer(buf) {
+  const isZip = buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b;
+  if (!isZip) return { isZip: false, files: [{ name: "gstr2b.json", text: buf.toString("utf8").replace(/^\uFEFF/, "") }] };
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("ZIP file kharab hai (end record nahi mila)");
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const files = [];
+  for (let n = 0; n < count; n++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) break;
+    const method = buf.readUInt16LE(p + 10);
+    const compSize = buf.readUInt32LE(p + 20);
+    const nameLen = buf.readUInt16LE(p + 28), extraLen = buf.readUInt16LE(p + 30), commLen = buf.readUInt16LE(p + 32);
+    const localOff = buf.readUInt32LE(p + 42);
+    const name = buf.slice(p + 46, p + 46 + nameLen).toString("utf8");
+    p += 46 + nameLen + extraLen + commLen;
+    if (!/\.json$/i.test(name)) continue;
+    const lNameLen = buf.readUInt16LE(localOff + 26), lExtraLen = buf.readUInt16LE(localOff + 28);
+    const start = localOff + 30 + lNameLen + lExtraLen;
+    const raw = buf.slice(start, start + compSize);
+    const data = method === 0 ? raw : zlib.inflateRawSync(raw);
+    files.push({ name, text: data.toString("utf8").replace(/^\uFEFF/, "") });
+  }
+  if (!files.length) throw new Error("ZIP ke andar koi JSON file nahi mili");
+  return { isZip: true, files };
+}
+
 async function dismissPopups(page) {
   const sels = [
     "button:has-text('CLOSE')", "button:has-text('OK')", "button:has-text('Later')",
@@ -277,8 +311,11 @@ async function ensureWelcomePage(page) {
   await dismissPopups(page);
 }
 
-async function openReturnsDashboardAndSearch(page, fy, monthNum) {
-  if (!page.url().includes("/returns/auth/dashboard")) {
+async function openReturnsDashboardAndSearch(page, fy, monthNum, forceFresh = false) {
+  if (forceFresh) {
+    await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" }).catch(() => {});
+    await page.waitForTimeout(3500);
+  } else if (!page.url().includes("/returns/auth/dashboard")) {
     await ensureWelcomePage(page);
     const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD')").first();
     if (await retBtn.isVisible().catch(() => false)) {
@@ -290,7 +327,19 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum) {
     }
   }
   await dismissPopups(page);
-  await page.waitForSelector("select[name='fin'], #fin", { timeout: 25000 });
+  try {
+    await page.waitForSelector("select[name='fin'], #fin", { state: "visible", timeout: 25000 });
+  } catch (e1) {
+    // Ek baar fresh reload karke dobara try
+    await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" }).catch(() => {});
+    await page.waitForTimeout(4000);
+    await dismissPopups(page);
+    try {
+      await page.waitForSelector("select[name='fin'], #fin", { state: "visible", timeout: 25000 });
+    } catch (e2) {
+      throw new Error("Returns Dashboard load nahi hua (page: " + page.url() + "). Portal slow ya session logout ho gaya ho sakta hai.");
+    }
+  }
   await page.selectOption("select[name='fin'], #fin", { label: fy }).catch(() => page.selectOption("select[name='fin'], #fin", fy).catch(() => {}));
   await page.waitForTimeout(800);
   if (await page.$("select[name='quarter'], #quarter")) {
@@ -355,17 +404,27 @@ app.post("/api/gst/fetch-all", async (req, res) => {
                   }
                 }
                 if (download) {
-                  const rawJson = fs.readFileSync(await download.path(), "utf8");
-                  const parsed = JSON.parse(rawJson);
-                  out.gstr2b.fileName = download.suggestedFilename() || `GSTR2B_${out.month}${out.fy.slice(0, 4)}.json`;
-                  out.gstr2b.jsonBase64 = "data:application/json;base64," + Buffer.from(rawJson, "utf8").toString("base64");
+                  const rawBuf = fs.readFileSync(await download.path());
+                  const pack = readJsonFilesFromBuffer(rawBuf);
+                  const parsedList = pack.files.map((f) => JSON.parse(f.text));
+                  const parsed = parsedList.find((x) => x?.data?.itcsumm) || parsedList[0];
+                  const sugg = download.suggestedFilename() || `GSTR2B_${out.month}${out.fy.slice(0, 4)}`;
+                  if (pack.isZip && pack.files.length > 1) {
+                    // Bahut badi 2B: kai JSON parts -> Drive ke liye original ZIP rakho
+                    out.gstr2b.fileName = /\.zip$/i.test(sugg) ? sugg : sugg.replace(/\.json$/i, "") + ".zip";
+                    out.gstr2b.jsonBase64 = "data:application/zip;base64," + rawBuf.toString("base64");
+                  } else {
+                    out.gstr2b.fileName = /\.json$/i.test(sugg) ? sugg : (pack.isZip ? pack.files[0].name : sugg + ".json");
+                    out.gstr2b.jsonBase64 = "data:application/json;base64," + Buffer.from(pack.files[0].text, "utf8").toString("base64");
+                  }
                   const itcSum = parsed?.data?.itcsumm?.itcavl?.nonrevsup || {};
                   const ineligible = parsed?.data?.itcsumm?.itcunavl?.nonrevsup || {};
+                  const countOf = (key) => parsedList.reduce((a, x) => a + (Array.isArray(x?.data?.docdata?.[key]) ? x.data.docdata[key].length : 0), 0);
                   out.gstr2b.summary = {
                     igst: Number(itcSum.igst || 0), cgst: Number(itcSum.cgst || 0), sgst: Number(itcSum.sgst || 0), cess: Number(itcSum.cess || 0),
                     ineligibleTotal: Number(ineligible.igst || 0) + Number(ineligible.cgst || 0) + Number(ineligible.sgst || 0),
-                    b2bSuppliersCount: Array.isArray(parsed?.data?.docdata?.b2b) ? parsed.data.docdata.b2b.length : 0,
-                    cdnrCount: Array.isArray(parsed?.data?.docdata?.cdnr) ? parsed.data.docdata.cdnr.length : 0
+                    b2bSuppliersCount: countOf("b2b"),
+                    cdnrCount: countOf("cdnr")
                   };
                   out.status.gstr2b = { ok: true, message: "Downloaded" };
                 } else {
@@ -389,7 +448,7 @@ app.post("/api/gst/fetch-all", async (req, res) => {
         // 2) E-Commerce TCS Gross
         if (opts.tcs) {
           try {
-            await openReturnsDashboardAndSearch(page, out.fy, out.month);
+            await openReturnsDashboardAndSearch(page, out.fy, out.month, true);
             const tcsCard = page.locator("div.card, div.panel, div[class*='tile'], div[class*='box']").filter({ hasText: /TDS and TCS credit received/i }).first();
             const prepBtn = tcsCard.locator("button:has-text('PREPARE ONLINE'), a:has-text('PREPARE ONLINE'), button:has-text('VIEW')").first();
             if (await prepBtn.count()) {
