@@ -1,6 +1,6 @@
 {
   "name": "gst-cloud-bridge",
-  "version": "2.3.0",
+  "version": "2.3.2",
   "description": "GST Portal Playwright Bridge with Batch Fetch + Nil Filing (GSTR-1 & GSTR-3B EVC)",
   "main": "server.js",
   "scripts": {

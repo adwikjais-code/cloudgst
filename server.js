@@ -7,7 +7,7 @@ const os = require("os");
 const { chromium } = require("playwright");
 
 const app = express();
-const VERSION = "2.3.1";
+const VERSION = "2.3.2";
 const PORT = process.env.PORT || 3000;
 const API_SECRET = (process.env.API_SECRET || "").trim();
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
@@ -528,6 +528,74 @@ async function selectDeclarationAndTriggerEvc(page, returnType) {
   return signatory;
 }
 
+// Robustly tick the Nil checkbox and verify it really got checked (AngularJS needs a real click event)
+async function tickNilCheckbox(page) {
+  const nilLabel = page.locator("label:has-text('Nil GSTR-1'), label:has-text('Nil GSTR1'), label:has-text('Nil Return')").filter({ visible: true }).first();
+  const nilChk = page.locator("input[type='checkbox'][id*='nil' i], input[type='checkbox'][name*='nil' i], label:has-text('Nil') input[type='checkbox']").first();
+
+  if (!(await nilChk.count()) && !(await nilLabel.count())) return { found: false };
+  if (await nilChk.count()) {
+    if (await nilChk.isDisabled().catch(() => false)) return { found: true, disabled: true };
+    if (await nilChk.isChecked().catch(() => false)) return { found: true, checked: true };
+  }
+  // Try in order: label click -> real checkbox click -> JS click (fires ng-click/ng-change)
+  const attempts = [
+    async () => { if (await nilLabel.count()) await nilLabel.click({ timeout: 3000 }); else throw new Error("no label"); },
+    async () => nilChk.click({ force: true, timeout: 3000 }),
+    async () => nilChk.evaluate((el) => el.click())
+  ];
+  for (const attempt of attempts) {
+    await attempt().catch(() => {});
+    await page.waitForTimeout(1000);
+    if (!(await nilChk.count())) return { found: true, checked: true }; // custom widget, cannot verify
+    if (await nilChk.isChecked().catch(() => false)) return { found: true, checked: true };
+  }
+  return { found: true, checked: false };
+}
+
+// Wait for PROCEED TO FILE / FILE STATEMENT (button OR input OR link), handle confirm popups, retry nil tick
+async function clickProceedToFile(page, maxMs = 45000) {
+  const re = /file\s*statement|proceed\s*to\s*file|file\s*nil|proceed\s*to\s*(file|preview)/i;
+  const started = Date.now();
+  let lastTick = 0;
+  while (Date.now() - started < maxMs) {
+    const btn = page.getByRole("button", { name: re }).filter({ visible: true }).first();
+    const link = page.getByRole("link", { name: re }).filter({ visible: true }).first();
+    const target = (await btn.count()) ? btn : ((await link.count()) ? link : null);
+    if (target) {
+      const disabled = await target.isDisabled().catch(() => false);
+      if (!disabled) {
+        await target.scrollIntoViewIfNeeded().catch(() => {});
+        await target.click({ timeout: 5000 }).catch(async () => { await target.evaluate((el) => el.click()); });
+        return true;
+      }
+    }
+    // Confirmation modal like "Do you want to file Nil GSTR-1?" -> Yes / Proceed / OK
+    const confirmBtn = page.locator(".modal:visible button, .modal-dialog:visible button").filter({ hasText: /^\s*(yes|proceed|ok|confirm)\s*$/i }).first();
+    if (await confirmBtn.count()) {
+      await confirmBtn.click().catch(() => {});
+      await page.waitForTimeout(1500);
+      continue;
+    }
+    // Every ~12s, if the nil tick got lost, re-tick
+    if (Date.now() - lastTick > 12000) {
+      lastTick = Date.now();
+      const chk = page.locator("input[type='checkbox'][id*='nil' i], input[type='checkbox'][name*='nil' i]").first();
+      if ((await chk.count()) && !(await chk.isChecked().catch(() => true))) await tickNilCheckbox(page);
+    }
+    await page.waitForTimeout(1000);
+  }
+  // Diagnostics so the real cause is visible in the error message
+  const seen = await page.evaluate(() => {
+    const vis = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    return Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit'], a.btn"))
+      .filter(vis).map((el) => (el.innerText || el.value || "").trim()).filter(Boolean).slice(0, 15);
+  }).catch(() => []);
+  const bodyMsg = await page.locator(".alert:visible, .error:visible, .modal-body:visible").first().innerText().catch(() => "");
+  logDebug("nil-gstr1-proceed-missing", JSON.stringify({ url: page.url(), buttons: seen, msg: bodyMsg.slice(0, 200) }));
+  throw new Error("FILE STATEMENT / PROCEED TO FILE button nahi aaya. Page par visible buttons: [" + seen.join(" | ") + "]" + (bodyMsg ? " Portal msg: " + bodyMsg.slice(0, 200).replace(/\s+/g, " ") : ""));
+}
+
 app.post("/api/gst/nil-file-init", async (req, res) => {
   const { sessionId, fy, month, returnType } = req.body || {};
   const rType = String(returnType || "GSTR1").toUpperCase() === "GSTR3B" ? "GSTR3B" : "GSTR1";
@@ -555,30 +623,17 @@ app.post("/api/gst/nil-file-init", async (req, res) => {
       await page.waitForTimeout(3200);
       await dismissPopups(page);
 
-      // Find visible File Nil GSTR-1 checkbox / label (triggers AngularJS ng-change cleanly)
-      const nilLabel = page.locator("label:has-text('File Nil GSTR-1'):visible, label:has-text('Nil GSTR-1'):visible").first();
-      const nilChk = page.locator("input[type='checkbox'][id*='nil' i]:visible, input[type='checkbox'][name*='nil' i]:visible, label:has-text('Nil GSTR-1') input[type='checkbox']").first();
-
-      if (await nilChk.count()) {
-        if (await nilChk.isDisabled().catch(() => false)) {
-          return res.status(400).json({ ok: false, blocked: true, error: "GSTR-1 Nil disabled hai — portal par is mahine saved invoices/data maujood hain." });
-        }
-        const already = await nilChk.isChecked().catch(() => false);
-        if (!already) {
-          if (await nilLabel.count()) await nilLabel.click({ force: true }).catch(() => nilChk.click({ force: true }));
-          else await nilChk.click({ force: true });
-        }
-      } else if (await nilLabel.count()) {
-        await nilLabel.click({ force: true });
-      } else {
-        throw new Error("GSTR-1 Nil checkbox nahi mila — check karein ki is mahine koi saved invoice to nahi hai.");
-      }
+      // Tick "File Nil GSTR-1" and verify it is really checked
       await page.waitForTimeout(1500);
+      const tick = await tickNilCheckbox(page);
+      if (!tick.found) throw new Error("GSTR-1 Nil checkbox nahi mila — check karein ki is mahine koi saved invoice to nahi hai.");
+      if (tick.disabled) return res.status(400).json({ ok: false, blocked: true, error: "GSTR-1 Nil disabled hai — portal par is mahine saved invoices/data maujood hain." });
+      if (tick.checked === false) throw new Error("GSTR-1 Nil checkbox click ho nahi paaya (tick nahi laga). Portal page dobara load karke try karein.");
+      await page.waitForTimeout(1500);
+      await dismissPopups(page);
 
-      // Click ONLY the visible FILE STATEMENT / PROCEED TO FILE button (ignore hidden ng-hide buttons!)
-      const fileStmtBtn = page.locator("button:has-text('FILE STATEMENT'):visible, button:has-text('PROCEED TO FILE'):visible").first();
-      await fileStmtBtn.waitFor({ state: "visible", timeout: 15000 });
-      await fileStmtBtn.click();
+      // Click PROCEED TO FILE / FILE STATEMENT (waits up to 45s, handles confirm popup, retries tick)
+      await clickProceedToFile(page);
       await page.waitForTimeout(2500);
 
       const signatory = await selectDeclarationAndTriggerEvc(page, "GSTR-1");
