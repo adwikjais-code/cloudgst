@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- app build v5_8.1 (v5_8 behaviour + android portal) -->
+<!-- app build v5_8.2 (v5_8 + android portal + back gesture + fingerprint lock) -->
 <html lang="hi">
 <head>
   <meta charset="UTF-8" />
@@ -2409,6 +2409,9 @@
           <div class="md:col-span-2">
             <button id="gpSaveSettingsBtn" type="button" class="w-full px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold">Save &amp; Test</button>
           </div>
+        </div>
+        <div id="gpBioLockRow" class="hidden px-4 sm:px-5 pb-3.5">
+          <button id="gpBioLockBtn" type="button" class="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold border border-slate-300 transition">🔒 App lock (fingerprint): —</button>
         </div>
       </div>
     </div>
@@ -11774,8 +11777,45 @@ function buildEtsyPdfReport(opts) {
       c.activeM = prof.activeDueMon > 0 ? String(prof.activeDueMon) : "";
     }
 
+    // ===== Android back / swipe gesture: pehle modal band, phir pichhla page, phir app =====
+    window.cloudGstHandleBack = function () {
+      try {
+        const modalIds = ["syncSetupModalOverlay", "clientModalOverlay", "feePaymentModalOverlay",
+          "gpWaDocModalOverlay", "orderWiseModalOverlay", "pdfActionModalOverlay",
+          "quickPresetModalOverlay", "changePinModalOverlay"];
+        for (const id of modalIds) {
+          const el = document.getElementById(id);
+          if (el && !el.classList.contains("hidden") && el.style.display !== "none") {
+            el.classList.add("hidden");
+            return true;
+          }
+        }
+        if (window.__gpPageStack && window.__gpPageStack.length) {
+          const prev = window.__gpPageStack.pop();
+          window.__gpBackNav = true;
+          switchAppPage(prev);
+          return true;
+        }
+        if (currentAppPage !== "tracker") {
+          window.__gpBackNav = true;
+          switchAppPage("tracker");
+          return true;
+        }
+        return false;
+      } catch (e) {
+        return false;
+      }
+    };
+
     function switchAppPage(pageName) {
       if (!["tracker", "fees", "json", "master", "portal"].includes(pageName)) pageName = "tracker";
+      // Android back/swipe ke liye page history
+      if (!window.__gpBackNav && currentAppPage && currentAppPage !== pageName) {
+        window.__gpPageStack = window.__gpPageStack || [];
+        window.__gpPageStack.push(currentAppPage);
+        if (window.__gpPageStack.length > 20) window.__gpPageStack.shift();
+      }
+      window.__gpBackNav = false;
       currentAppPage = pageName;
       // URL me page yaad rakho -> refresh/share karne par wahi tab khule
       try { if (history.replaceState && location.hash !== "#" + pageName) history.replaceState(null, "", location.pathname + location.search + "#" + pageName); } catch (_) {}
@@ -20813,6 +20853,32 @@ function buildEtsyPdfReport(opts) {
         a.download = "GST_Portal_Fetched_Data.csv";
         a.click();
       });
+
+      // Fingerprint app-lock toggle (sirf Android APK me)
+      (function gpInitBioLock() {
+        const row = document.getElementById("gpBioLockRow");
+        const btn = document.getElementById("gpBioLockBtn");
+        if (!row || !btn || !window.CloudGSTNative) return;
+        let hasBio = false;
+        try { hasBio = !!window.CloudGSTNative.hasBiometric(); } catch (_) {}
+        if (!hasBio) return;
+        row.classList.remove("hidden");
+        const paint = () => {
+          let on = false;
+          try { on = !!window.CloudGSTNative.isBioLockEnabled(); } catch (_) {}
+          btn.textContent = `🔒 App lock (fingerprint): ${on ? "ON" : "OFF"}`;
+          btn.className = "px-3 py-2 rounded-xl text-xs font-semibold border transition " + (on
+            ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700"
+            : "bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300");
+        };
+        paint();
+        btn.addEventListener("click", () => {
+          let on = false;
+          try { on = !!window.CloudGSTNative.isBioLockEnabled(); } catch (_) {}
+          try { window.CloudGSTNative.setBioLock(!on); } catch (_) {}
+          setTimeout(paint, 400);
+        });
+      })();
 
       document.getElementById("gpSavedJsonSel")?.addEventListener("change", (e) => {
         const id = e.target.value;

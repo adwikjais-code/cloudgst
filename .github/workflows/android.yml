@@ -74,24 +74,29 @@ jobs:
             echo "dex CloudGSTNative: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac CloudGSTNative || true)"
             echo "dex appassets: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac appassets || true)"
             echo "dex user_pass: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac user_pass || true)"
+            echo "dex BiometricPrompt: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac BiometricPrompt || true)"
+            echo "dex setBioLock: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac setBioLock || true)"
+            echo "js back handler: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c cloudGstHandleBack || true)"
+            echo "js bio toggle: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpBioLockBtn || true)"
             echo '```'
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.8.1 — v5_8 behaviour)
+          ## CloudGST Android APK (v5.8.2 — back gesture + fingerprint lock)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
           2. Phone me kholein — "Unknown sources / Install anyway" allow karein.
           3. Icon **CloudGST** kholein; Settings me Apps Script URL ek baar daalein (baaki sab pehle jaisa).
 
-          UI **v5_8 jaisa hi** hai: JSON page par sirf **☁️ Drive me Save**, portal page par sirf **json folder dropdown**
-          (koi download button / file chooser nahi). Plus mobile-only **🌐 Portal Login** — app ke andar GST portal,
-          ID/password bhari hui, aapko sirf captcha dalna hai.
+          UI **v5_8 jaisa hi** hai (JSON: Drive me Save, portal: json folder dropdown).
+          Mobile extras: **🌐 Portal Login** (ID/password prefilled, sirf captcha), **swipe-back gesture**
+          (pehle modal band, phir pichhla tab, phir app) aur **fingerprint lock**
+          (Settings → 🔒 App lock ON/OFF; device PIN bhi chalta hai).
           EOF
           cat verify.md >> notes.md
-          gh release delete android-v5.8.1 --yes 2>/dev/null || true
-          git push origin :refs/tags/android-v5.8.1 2>/dev/null || true
-          gh release create android-v5.8.1 "CloudGST.apk" \
+          gh release delete android-v5.8.2 --yes 2>/dev/null || true
+          git push origin :refs/tags/android-v5.8.2 2>/dev/null || true
+          gh release create android-v5.8.2 "CloudGST.apk" \
             --title "CloudGST Android v5.8 (APK)" \
             --notes-file notes.md
