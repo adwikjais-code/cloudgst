@@ -8,7 +8,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
-  openReturnsDashboardAndSearch, selectDropdownByText, dismissModals, RETURNS_DASHBOARD_URL
+  openReturnsDashboardAndSearch, selectDropdownByText, dismissModals, classifyStuckPage,
+  RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL
 } = require("../server.js");
 
 /* ------------------------------- mock page ------------------------------- */
@@ -112,24 +113,75 @@ test("openReturnsDashboardAndSearch: popup tab khule to usi page par kaam karta 
   assert.equal(dbg.steps.gstr2b_adoptedPopup, RETURNS_DASHBOARD_URL);
 });
 
-test("openReturnsDashboardAndSearch: dono koshish fail -> asli page ka diagnostic error", async () => {
-  const page = makePage({ hasSelect: false, clickNavigates: false, gotoPlan: [{ hasSelect: false }], title: "Session Expired" });
-  page._state.text = "You are already logged in from another device";
+test("openReturnsDashboardAndSearch: samajh na aaye wala page -> asli page ka diagnostic error", async () => {
+  const page = makePage({ hasSelect: false, clickNavigates: false, gotoPlan: [{ hasSelect: false }], title: "Kuch Aur Page" });
+  page._state.text = "maintenance chal raha hai";
   page._state.buttons = ["PROCEED", "LOGIN"];
   const dbg = { steps: {} };
   await assert.rejects(
     () => openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b"),
     (err) => {
-      assert.match(err.message, /Returns Dashboard khul hi nahi paya/);
-      assert.match(err.message, /Session Expired/, "page title error me nahi aaya");
-      assert.match(err.message, /PROCEED/, "visible buttons error me nahi aaye");
+      assert.match(err.message, /Returns Dashboard access nahi mila/);
+      assert.match(err.message, /Kuch Aur Page/, "page title error me nahi aaya");
       assert.match(err.message, /gstr2b_stuck/, "debug key ka hint nahi aaya");
       return true;
     }
   );
-  assert.equal(dbg.steps.gstr2b_stuck.title, "Session Expired");
+  assert.equal(dbg.steps.gstr2b_stuck.title, "Kuch Aur Page");
   assert.equal(dbg.steps.gstr2b_stuck.visibleSelects, 0);
-  assert.match(dbg.steps.gstr2b_stuck.text, /already logged in/);
+  assert.match(dbg.steps.gstr2b_stuck.text, /maintenance/);
+});
+
+// ---- production wala asli case: portal ne /services/error/accessdenied diya ----
+test("openReturnsDashboardAndSearch: Access Denied par Auth Dashboard se retry karke nikal jata hai", async () => {
+  const page = makePage({
+    hasSelect: false, clickNavigates: false, title: "Goods & Services Tax (GST) | Access Denied",
+    gotoPlan: [{ hasSelect: false }, { hasSelect: true }] // pehla goto bhi denied, doosra (auth dash) theek
+  });
+  page._state.url = "https://services.gst.gov.in/services/error/accessdenied";
+  page._state.text = "Access Denied";
+  const dbg = { steps: {} };
+  const out = await openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b");
+  assert.equal(out, page);
+  assert.deepEqual(page._state.gotos, [RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL], "retry ka rasta galat");
+  assert.equal(dbg.steps.gstr2b_stuck.kind, "access_denied");
+  assert.ok(dbg.steps.gstr2b_dashboardAfterBlockRetry, "retry ke baad success debug me nahi hai");
+});
+
+test("openReturnsDashboardAndSearch: Access Denied bana rahe to saaf, actionable error", async () => {
+  const page = makePage({
+    hasSelect: false, clickNavigates: false, title: "Goods & Services Tax (GST) | Access Denied",
+    gotoPlan: [{ hasSelect: false }, { hasSelect: false }]
+  });
+  page._state.url = "https://services.gst.gov.in/services/error/accessdenied";
+  page._state.text = "Access Denied";
+  const dbg = { steps: {} };
+  await assert.rejects(
+    () => openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b"),
+    (err) => {
+      assert.match(err.message, /Access Denied/i);
+      assert.match(err.message, /Aakhri page: https:\/\//); // asli page ka URL error me hona chahiye
+      assert.match(err.message, /logout|logged\s*in|WAF/i, "user ke liye hint nahi aaya");
+      assert.match(err.message, /gstr2b_stuck/);
+      return true;
+    }
+  );
+  assert.equal(dbg.steps.gstr2b_stuck2.kind, "access_denied");
+});
+
+/* ---------------------------- classifyStuckPage ---------------------------- */
+test("classifyStuckPage: portal ke alag-alag block pages pehchanta hai", () => {
+  assert.equal(classifyStuckPage({ url: "https://services.gst.gov.in/services/error/accessdenied" }).kind, "access_denied");
+  assert.equal(classifyStuckPage({ title: "GST | Access Denied" }).kind, "access_denied");
+  assert.equal(classifyStuckPage({ text: "You are already logged in from another device" }).kind, "concurrent_session");
+  assert.equal(classifyStuckPage({ text: "Your GSTIN is suspended" }).kind, "gstin_inactive");
+  assert.equal(classifyStuckPage({ text: "Your session has expired, please login again" }).kind, "session_expired");
+  assert.equal(classifyStuckPage({ text: "kuch bhi" }).kind, "unknown");
+  assert.equal(classifyStuckPage(null).kind, "unknown");
+  // har kind ka user-facing hint hona chahiye
+  ["access_denied", "concurrent_session", "gstin_inactive", "session_expired", "unknown"].forEach(k => {
+    assert.ok(classifyStuckPage({ text: k === "access_denied" ? "Access Denied" : k === "gstin_inactive" ? "suspended" : k === "session_expired" ? "session expired" : k === "concurrent_session" ? "already logged in" : "x" }).hint.length > 10);
+  });
 });
 
 test("openReturnsDashboardAndSearch: period select na ho to wahi purana saaf error (galat period ka data na uthe)", async () => {
