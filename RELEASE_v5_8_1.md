@@ -5,8 +5,9 @@ Aapne kaha **"v5_8 hi theek tha"** — to v5_9 ke extra buttons (📥 Download, 
 ## APK (link kabhi nahi badlega)
 # 📱 https://github.com/adwikjais-code/cloudgst/releases/latest/download/CloudGST.apk
 
-`594 KB` · versionName **5.8.1** · sha256 `bf17738fcde4a3cce24b593b6b85706eaa2d0bf7e5806710eb9b97359975c3ec`
-Release: https://github.com/adwikjais-code/cloudgst/releases/tag/android-v5.8.1
+`597 KB` · versionName **5.8.2** (back gesture + fingerprint lock) · sha256 `5bec7b4608d6608867410e306a4539bfe8e96d34d38fbc8fe0c9f4cf4b3a0eee`
+Release: https://github.com/adwikjais-code/cloudgst/releases/tag/android-v5.8.2
+Details: `APK_v5_8_2_BACK_FINGERPRINT.md`
 
 ## Web bundle (PC/desktop)
 `GST_etsy_anyfile_fix_v5_8_1.zip` — Drive id `1KKeYNHJsJRRsSDa_-8gL_gsxD7LpKIbK` (240 KB, 6 files)
