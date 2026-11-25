@@ -58,6 +58,20 @@ jobs:
           set -e
           cp android/app/build/outputs/apk/debug/app-debug.apk "CloudGST-v5.8.apk"
           ls -l "CloudGST-v5.8.apk"
+          {
+            echo "### APK verify"
+            echo '```'
+            sha256sum "CloudGST-v5.8.apk"
+            unzip -l "CloudGST-v5.8.apk" | tail -25
+            echo "manifest ok: $(unzip -p "CloudGST-v5.8.apk" AndroidManifest.xml > /dev/null && echo yes)"
+            echo "index.html bytes: $(unzip -p "CloudGST-v5.8.apk" assets/app/index.html | wc -c)"
+            echo "native portal hook count: $(unzip -p "CloudGST-v5.8.apk" assets/app/index.html | grep -c gpNativePortalBtn || true)"
+            echo "json save/select count: $(unzip -p "CloudGST-v5.8.apk" assets/app/index.html | grep -c gpSavedJsonSel || true)"
+            echo "dex openPortal: $(unzip -p "CloudGST-v5.8.apk" classes.dex | grep -ac openPortal || true)"
+            echo "dex appassets: $(unzip -p "CloudGST-v5.8.apk" classes.dex | grep -ac appassets || true)"
+            echo '```'
+          } > verify.md
+          cat verify.md
           cat > notes.md <<'EOF'
           ## CloudGST Android APK (v5.8)
 
@@ -69,6 +83,7 @@ jobs:
           Naya: har ready client ke aage **🌐 Portal Login** button — app ke andar GST portal khulta hai,
           ID/password pehle se bhare hue, aapko **sirf captcha** dalna hai (login aap khud dabate hain).
           EOF
+          cat verify.md >> notes.md
           gh release delete android-v5.8 --yes 2>/dev/null || true
           git push origin :refs/tags/android-v5.8 2>/dev/null || true
           gh release create android-v5.8 "CloudGST-v5.8.apk" \
