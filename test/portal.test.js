@@ -9,34 +9,47 @@ const assert = require("node:assert/strict");
 
 const {
   openReturnsDashboardAndSearch, selectDropdownByText, dismissModals, classifyStuckPage,
+  guessSelectIndex, quarterAliases, monthAliases,
   RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL
 } = require("../server.js");
 
 /* ------------------------------- mock page ------------------------------- */
+// Asli portal jaisa: FY / Quarter / Month ke <select>, options jo der se bharte hain,
+// aur select karne par "change" event.
+const DEFAULT_SELECTS = () => ([
+  { i: 0, name: "fy", options: ["2024-25", "2025-26", "2026-27"] },
+  { i: 1, name: "quarter", options: ["Quarter 1", "Quarter 2", "Quarter 3", "Quarter 4"] },
+  { i: 2, name: "mon", options: ["April", "May", "June", "July", "August", "September", "October", "November", "December", "January", "February", "March"] }
+]);
+
 function makePage(opts = {}) {
   const state = {
     url: opts.url || "https://services.gst.gov.in/services/auth/dashboard",
-    hasSelect: !!opts.hasSelect,
+    hasSelect: opts.hasSelect !== false,
     title: opts.title || "GST Portal",
+    text: opts.text || "",
+    buttons: opts.buttons || [],
     gotos: [],
     clicked: [],
-    gotoPlan: opts.gotoPlan || [], // [{hasSelect:true}, ...] — goto ke baad kya milega
+    picked: [],
+    evaluates: 0,
+    selects: opts.selects || DEFAULT_SELECTS(),
+    selectsAfter: opts.selectsAfter || null,
+    fillAfter: opts.fillAfter || 0, // itne evaluate ke baad options bhar jate hain (AJAX)
+    gotoPlan: opts.gotoPlan || [],
     popupOnClick: !!opts.popupOnClick,
     pages: []
   };
 
-  const newPage = (hasSelect) => ({
+  const newPage = () => ({
     url: () => RETURNS_DASHBOARD_URL,
     waitForLoadState: async () => {},
     waitForTimeout: async () => {},
-    waitForSelector: async () => { if (!hasSelect) throw new Error("timeout"); return {}; },
-    evaluate: async (fn, arg) => (fn.toString().includes("dispatchEvent")
-      ? { matched: true, name: "select", option: String(arg) }
+    waitForSelector: async () => ({}),
+    evaluate: async (fn) => (fn.toString().includes("dispatchEvent")
+      ? { matched: true, name: "fy", option: "2026-27" }
       : { url: RETURNS_DASHBOARD_URL, title: "Returns Dashboard", selects: 3, visibleSelects: 3, text: "", buttons: [] }),
-    locator: () => ({
-      first: () => ({ isVisible: async () => false, count: async () => 1, click: async () => {} }),
-      count: async () => 1
-    })
+    locator: () => ({ first: () => ({ count: async () => 1, isVisible: async () => false, click: async () => {} }), count: async () => 1 })
   });
 
   const page = {
@@ -58,20 +71,42 @@ function makePage(opts = {}) {
     },
     evaluate: async (fn, arg) => {
       const src = fn.toString();
-      if (src.includes("dispatchEvent")) return { matched: true, name: "select", option: String(arg) };
+      state.evaluates++;
       if (src.includes("document.title")) {
-        return { url: state.url, title: state.title, selects: state.hasSelect ? 3 : 0, visibleSelects: state.hasSelect ? 3 : 0, text: state.text || "", buttons: state.buttons || [] };
+        return { url: state.url, title: state.title, selects: state.hasSelect ? 3 : 0, visibleSelects: state.hasSelect ? 3 : 0, text: state.text, buttons: state.buttons };
+      }
+      if (src.includes("options: Array.from(s.options)")) {
+        return state.selects.map(x => ({ i: x.i, name: x.name, options: (x.options || []).slice(0, 15) }));
+      }
+      if (src.includes("dispatchEvent")) {
+        // AJAX: kuch evaluate ke baad options bhar jate hain
+        if (state.selectsAfter && !state.filled && state.evaluates > state.fillAfter) {
+          state.selects = state.selectsAfter;
+          state.filled = true;
+        }
+        const pool = arg.index >= 0 ? [state.selects[arg.index]].filter(Boolean) : state.selects;
+        for (const sel of pool) {
+          for (const want of arg.texts) {
+            const hit = (sel.options || []).find(o => o.toLowerCase().includes(want));
+            if (hit) {
+              sel.value = hit;
+              state.picked.push({ name: sel.name, option: hit });
+              return { matched: true, name: sel.name, option: hit, tryNo: arg.tryNo };
+            }
+          }
+        }
+        return { matched: false, tryNo: arg.tryNo, seen: pool.map(x => (x.options || []).slice(0, 6)) };
       }
       return undefined;
     },
     locator: (sel) => ({
       first: () => ({
         count: async () => 1,
-        isVisible: async () => /RETURN DASHBOARD/i.test(sel) ? (opts.retBtn !== false) : false,
+        isVisible: async () => (/RETURN DASHBOARD/i.test(sel) ? opts.retBtn !== false : false),
         click: async () => {
           state.clicked.push(sel);
           if (/RETURN DASHBOARD/i.test(sel)) {
-            if (state.popupOnClick && !state.pages.length) state.pages.push(newPage(true)); // naya tab
+            if (state.popupOnClick && !state.pages.length) state.pages.push(newPage());
             else if (opts.clickNavigates) { state.url = RETURNS_DASHBOARD_URL; state.hasSelect = true; }
           }
         }
@@ -89,7 +124,8 @@ test("openReturnsDashboardAndSearch: happy path — dropdowns mile, period selec
   const dbg = { steps: {} };
   const out = await openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b");
   assert.equal(out, page);
-  assert.deepEqual(dbg.steps.gstr2b_dashboard.fyRes, { matched: true, name: "select", option: "2026-27" });
+  assert.equal(dbg.steps.gstr2b_dashboard.fyRes.matched, true);
+  assert.equal(dbg.steps.gstr2b_dashboard.fyRes.option, "2026-27");
   assert.deepEqual(dbg.steps.gstr2b_dashboard.mRes.option, "October"); // app ko month name se select hota hai
   assert.ok(page._state.clicked.some(s => /SEARCH/.test(s)), "SEARCH button nahi dabaya");
 });
@@ -203,4 +239,105 @@ test("selectDropdownByText: khaali text par kuch bhi select nahi karta", async (
 test("dismissModals: page par close/OK buttons na ho to bhi crash nahi", async () => {
   const page = makePage({});
   await assert.doesNotReject(() => dismissModals(page));
+});
+
+/* ------------------- dropdown label/polling wale real cases ------------------- */
+test("period select: quarter ka label 'Q3' aur month 'Oct-2026' ho to bhi chal jata hai", async () => {
+  const page = makePage({
+    url: RETURNS_DASHBOARD_URL,
+    selects: [
+      { i: 0, name: "fy", options: ["2025-26", "2026-27"] },
+      { i: 1, name: "quarter", options: ["Q1", "Q2", "Q3", "Q4"] },
+      { i: 2, name: "mon", options: ["Apr-2026", "May-2026", "Jun-2026", "Jul-2026", "Aug-2026", "Sep-2026", "Oct-2026", "Nov-2026", "Dec-2026"] }
+    ]
+  });
+  const dbg = { steps: {} };
+  await openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b");
+  assert.deepEqual(dbg.steps.gstr2b_dashboard.qRes.option, "Q3");
+  assert.deepEqual(dbg.steps.gstr2b_dashboard.mRes.option, "Oct-2026");
+});
+
+test("period select: quarter dropdown hi na ho to month se kaam chal jata hai", async () => {
+  const page = makePage({
+    url: RETURNS_DASHBOARD_URL,
+    selects: [
+      { i: 0, name: "fy", options: ["2025-26", "2026-27"] },
+      { i: 1, name: "mon", options: ["April", "May", "June", "July", "August", "September", "October", "November", "December"] }
+    ]
+  });
+  const dbg = { steps: {} };
+  await openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b");
+  assert.equal(dbg.steps.gstr2b_dashboard.fyRes.matched, true);
+  assert.equal(dbg.steps.gstr2b_dashboard.mRes.option, "October");
+  assert.equal(dbg.steps.gstr2b_quarterSkipped.reason, "no-quarter-select");
+});
+
+test("period select: options der se aate hain (password change ke baad wala case) -> polling/retry se ban jata hai", async () => {
+  const page = makePage({
+    url: RETURNS_DASHBOARD_URL,
+    selects: [{ i: 0, name: "fy", options: [] }, { i: 1, name: "quarter", options: [] }, { i: 2, name: "mon", options: [] }],
+    selectsAfter: DEFAULT_SELECTS(),
+    fillAfter: 3 // pehle 3 evaluate tak kuch nahi, uske baad options aa jate hain
+  });
+  const dbg = { steps: {} };
+  await openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b");
+  assert.equal(dbg.steps.gstr2b_dashboard.mRes.option, "October");
+  assert.ok(page._state.picked.some(p => p.name === "mon" && p.option === "October"));
+});
+
+test("period select: month hi na mile to error me dropdown ke asli options aate hain", async () => {
+  const page = makePage({
+    url: RETURNS_DASHBOARD_URL,
+    selects: [
+      { i: 0, name: "fy", options: ["2025-26", "2026-27"] },
+      { i: 1, name: "quarter", options: ["Quarter 1", "Quarter 2", "Quarter 3"] },
+      { i: 2, name: "mon", options: ["April", "May", "June", "July", "August", "September"] }
+    ]
+  });
+  const dbg = { steps: {} };
+  await assert.rejects(() => openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b"),
+    (err) => {
+      assert.match(err.message, /period select nahi ho paya/);
+      assert.match(err.message, /MONTH:false/i);
+      assert.match(err.message, /mon:/);
+      assert.match(err.message, /April/);
+      return true;
+    });
+  assert.ok(dbg.steps.gstr2b_periodSelectFail.selects.length >= 2);
+});
+
+/* ------------------------------ aliases/guessers ---------------------------- */
+test("guessSelectIndex: naam se, ya naam na ho to options dekh kar pehchanta hai", () => {
+  const named = [
+    { i: 0, name: "fy", options: ["2026-27"] },
+    { i: 1, name: "quarter", options: ["Q3"] },
+    { i: 2, name: "mon", options: ["October"] }
+  ];
+  assert.equal(guessSelectIndex(named, "fy"), 0);
+  assert.equal(guessSelectIndex(named, "quarter"), 1);
+  assert.equal(guessSelectIndex(named, "month"), 2);
+
+  const unnamed = [
+    { i: 0, name: "", options: ["2024-25", "2025-26"] },
+    { i: 1, name: "", options: ["Quarter 1", "Quarter 2"] },
+    { i: 2, name: "", options: ["April", "May", "June", "July"] }
+  ];
+  assert.equal(guessSelectIndex(unnamed, "fy"), 0);
+  assert.equal(guessSelectIndex(unnamed, "quarter"), 1);
+  assert.equal(guessSelectIndex(unnamed, "month"), 2);
+  assert.equal(guessSelectIndex([], "month"), -1);
+});
+
+test("quarterAliases / monthAliases: portal ke label variants cover hote hain (aur 'Oct' galti se quarter na bane)", () => {
+  assert.ok(quarterAliases("10").includes("Quarter 3"));
+  assert.ok(quarterAliases("10").includes("Q3"));
+  assert.ok(quarterAliases("10").some(a => /oct\s*-\s*dec/i.test(a)));
+  assert.ok(quarterAliases("02").includes("Q4"));
+
+  const mA = monthAliases("10", "2026-27");
+  assert.ok(mA.includes("October"));
+  assert.ok(mA.includes("Oct-2026"));
+  assert.ok(!mA.includes("Oct"), "bare 'Oct' quarter ke 'Oct - Dec' se match ho jata — nahi hona chahiye");
+  assert.ok(monthAliases("02", "2026-27").includes("Feb-2027")); // Jan-Mar next year
+  assert.deepEqual(monthAliases("13", "2026-27"), []);
 });
