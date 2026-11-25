@@ -67,8 +67,11 @@ jobs:
             echo "index.html bytes: $(unzip -p "CloudGST-v5.8.apk" assets/app/index.html | wc -c)"
             echo "native portal hook count: $(unzip -p "CloudGST-v5.8.apk" assets/app/index.html | grep -c gpNativePortalBtn || true)"
             echo "json save/select count: $(unzip -p "CloudGST-v5.8.apk" assets/app/index.html | grep -c gpSavedJsonSel || true)"
-            echo "dex openPortal: $(unzip -p "CloudGST-v5.8.apk" classes.dex | grep -ac openPortal || true)"
-            echo "dex appassets: $(unzip -p "CloudGST-v5.8.apk" classes.dex | grep -ac appassets || true)"
+            echo "dex files: $(unzip -Z1 "CloudGST-v5.8.apk" | grep -c '^classes.*[.]dex$' || true)"
+            echo "dex openPortal: $(unzip -p "CloudGST-v5.8.apk" 'classes*.dex' | grep -ac openPortal || true)"
+            echo "dex CloudGSTNative: $(unzip -p "CloudGST-v5.8.apk" 'classes*.dex' | grep -ac CloudGSTNative || true)"
+            echo "dex appassets: $(unzip -p "CloudGST-v5.8.apk" 'classes*.dex' | grep -ac appassets || true)"
+            echo "dex user_pass: $(unzip -p "CloudGST-v5.8.apk" 'classes*.dex' | grep -ac user_pass || true)"
             echo '```'
           } > verify.md
           cat verify.md
