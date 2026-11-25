@@ -12,6 +12,7 @@ const {
   guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
   firstVisibleSelector, waitForLoginForm, classifyLoginPage, LOGIN_USER_SELECTORS, LOGIN_PASS_SELECTORS,
+  LOGIN_RETRY_KINDS,
   RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL
 } = require("../server.js");
 
@@ -541,4 +542,8 @@ test("classifyLoginPage: login page ki jagah kaun sa page aaya — wajah + hint 
   // pehle se maujood classifiers hi lagte hain
   assert.equal(classifyLoginPage({ url: "https://services.gst.gov.in/services/error/accessdenied" }).kind, "access_denied");
   assert.equal(classifyLoginPage({ text: "You are already logged in from another device" }).kind, "concurrent_session");
+  // Downtime/blank par login khud retry hota hai; baaki wajahon par turant error
+  assert.deepEqual(LOGIN_RETRY_KINDS, ["portal_down", "blank_page"]);
+  assert.equal(LOGIN_RETRY_KINDS.includes(classifyLoginPage({ text: "Site under maintenance" }).kind), true);
+  assert.equal(LOGIN_RETRY_KINDS.includes(classifyLoginPage({ url: "https://services.gst.gov.in/services/error/accessdenied" }).kind), false);
 });

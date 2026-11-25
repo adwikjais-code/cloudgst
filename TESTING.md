@@ -243,4 +243,7 @@ v1.18.0 se bridge:
 | `portal_down` | Portal maintenance/overload | 10-15 min baad |
 | `blank_page` | Khaali page (network/WAF) | Internet check karke 2-3 min baad |
 
+Agar wajah `portal_down` ya `blank_page` ho to bridge **45 second ruk kar teesri koshish** khud karta hai
+(portal downtime/WAF aksar 1-2 min me theek ho jata hai). Baaki wajahon par turant saaf error aata hai.
+
 Bridge `/debug` me: `init-login_stuck` (us waqt ka page ka URL/title/text/buttons).

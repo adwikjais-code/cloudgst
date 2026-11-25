@@ -1,5 +1,8 @@
-/* GST Cloud Bridge — v1.18.0 (login page robust) / v1.17.0 (period dropdown wait/iframe fix) / v1.16.0 (period select fix) / v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
+/* GST Cloud Bridge — v1.19.0 (login: portal downtime par khud retry) / v1.18.0 (login page robust) / v1.17.0 (period dropdown wait/iframe fix) / v1.16.0 (period select fix) / v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
  * Base: v1.9.6
+ * v1.19.0 fixes (portal downtime / WAF ke baad login page khulta hi nahi tha):
+ *  - Login page na khule aur wajah "portal_down"/"blank_page" ho to 45s ruk kar ek teesri koshish (auto-heal).
+ *  - Baaki wajahon (access denied, already logged in, password change) par turant saaf error — bewajah lamba wait nahi.
  * v1.18.0 fixes ("page.waitForSelector: Timeout 30000ms exceeded ... locator('#username') to be visible"):
  *  - Login page kholne ke 2 koshish (pehle 30s, phir cache-buster ke saath 20s) + har field ke alternate
  *    selectors (id badal jaye to bhi chale) — pehle sirf #username ka 30s wait tha.
@@ -685,6 +688,9 @@ async function waitForLoginForm(page, timeoutMs) {
   return { ok: false };
 }
 
+// In wajahon par login page khud theek ho sakta hai (portal downtime/WAF) -> thoda ruk kar ek aur koshish
+const LOGIN_RETRY_KINDS = ["portal_down", "blank_page"];
+
 // Login page ki jagah portal ne kya dikhaya — user ko exact wajah batane ke liye
 function classifyLoginPage(snap) {
   const base = classifyStuckPage(snap);
@@ -1048,14 +1054,19 @@ function startServer() {
       const loginUrl = "https://services.gst.gov.in/services/login";
       let loginInfo = { ok: false };
       let loginSnap = null;
-      for (let attempt = 1; attempt <= 2 && !loginInfo.ok; attempt++) {
+      for (let attempt = 1; attempt <= 3 && !loginInfo.ok; attempt++) {
+        // Portal downtime/WAF aksar 1-2 min me khud theek ho jata hai -> teesri koshish se pehle 45s rukte hain
+        if (attempt === 3) {
+          if (!LOGIN_RETRY_KINDS.includes(classifyLoginPage(loginSnap).kind)) break;
+          await page.waitForTimeout(45000);
+        }
         const url = attempt === 1 ? loginUrl : loginUrl + "?_=" + Date.now();
         await page.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});
         await dismissModals(page).catch(() => {});
         loginInfo = await waitForLoginForm(page, attempt === 1 ? 30000 : 20000);
         if (!loginInfo.ok) {
           loginSnap = await pageSnapshotBrief(page);
-          if (attempt === 1) await page.waitForTimeout(2500);
+          if (attempt < 3) await page.waitForTimeout(2500);
         }
       }
       if (!loginInfo.ok) {
@@ -1644,6 +1655,7 @@ module.exports = {
   classifyStuckPage, readSelectOptions, guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
   firstVisibleSelector, waitForLoginForm, classifyLoginPage, LOGIN_USER_SELECTORS, LOGIN_PASS_SELECTORS,
+  LOGIN_RETRY_KINDS,
   RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL, startServer
 };
 
