@@ -72,3 +72,15 @@ function readGstr1Json(data) { /* DriveApp.getFileById(data.id).getBlob().getDat
 ## Flow ab aisa hai
 1. **GSTR-1 JSON tab** → client chunein → JSON banayein → **☁️ Drive me Save**.
 2. **GST Portal tab** → dropdown se wahi file chunein (ya **Load All**) → row par **📤 Upload** → captcha → GSTR-1 portal par chadh jayegi.
+
+---
+
+## 4. Android APK (naya)
+`ANDROID_APK_v5_8.md` dekhein — APK: https://github.com/adwikjais-code/cloudgst/releases/latest/download/CloudGST-v5.8.apk
+
+- Native WebView wrapper (koi Capacitor/npm nahi): `android/app/src/main/assets/app/` me wahi v5_8 app,
+  `https://appassets.androidplatform.net` origin se serve hota hai (localStorage/clipboard/fetch sab browser jaisa).
+- Har ready client ke aage naya **🌐 Portal Login** button: app ke andar GST portal, ID/password prefilled,
+  sirf captcha dalna hai (auto-submit nahi — account lock risk zero).
+- File picker (`onShowFileChooser`), back button, external links → system browser, download listener sab handle.
+- CI: `.github/workflows/android.yml` → har push par APK build + Release + verify report.
