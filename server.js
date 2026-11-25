@@ -1,5 +1,16 @@
-/* GST Cloud Bridge — v1.16.0 (period select fix) / v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
+/* GST Cloud Bridge — v1.17.0 (period dropdown wait/iframe fix) / v1.16.0 (period select fix) / v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
  * Base: v1.9.6
+ * v1.17.0 fixes ("FY:true, Month:false — Dropdowns mile -> select0: 2019-20/2020-21/..."):
+ *  - FY set hone ke baad Month/Quarter dropdown ka 12-15s tak intezaar (waitForPeriodSelect) — pehle
+ *    sirf 1.2s dekha jata tha, isliye der se render hone wale dashboard par month "gayab" milta tha.
+ *  - Period dropdown na dikhe to page reload ka intezaar + aage badhne wale buttons (GET DETAILS / PROCEED /
+ *    CONTINUE / SUBMIT / SEARCH) try karke dobara dekhte hain (revealPeriodDropdown).
+ *  - Naye portal par Returns Dashboard andar ke iframe me ho sakta hai -> findPeriodFrame se wahan ke
+ *    selects bhi padhte/select karte hain (main page par sirf FY milta tha).
+ *  - Month options ab numeric bhi pehchane jate hain ("10", "10/2026"); matching pehle exact phir substring
+ *    (warna "10" "2010-11" me match ho jata).
+ *  - Fail par error me page title/URL + har dropdown ke POORE options (+ frames) aate hain, aur QRMP
+ *    (sirf Quarter) case ki alag wajah likhi jati hai.
  * v1.16.0 fixes ("Portal par period select nahi ho paya (FY:true, Quarter:false, Month:false)"):
  *  - Portal ke FY/Quarter/Month <select> ab naam/options se PEHCHANE jate hain (readSelectOptions +
  *    guessSelectIndex) — pehle sirf text se dhundha jata tha, isliye galti se doosra dropdown select ho jata tha.
@@ -460,14 +471,18 @@ async function selectDropdownByText(page, targetText, opts) {
     last = await page.evaluate((args) => {
       const selects = Array.from(document.querySelectorAll("select"));
       const pool = args.index >= 0 ? selects.filter((_, idx) => idx === args.index) : selects;
-      for (const sel of pool) {
-        const list = Array.from(sel.options);
-        for (const want of args.texts) {
-          const opt = list.find(x => (x.text || "").toLowerCase().includes(want));
-          if (opt) {
-            sel.value = opt.value;
-            sel.dispatchEvent(new Event("change", { bubbles: true }));
-            return { matched: true, name: sel.name || sel.id || "", option: (opt.text || "").trim(), tryNo: args.tryNo };
+      const norm = t => String(t == null ? "" : t).trim().toLowerCase();
+      // Pehle poora match (warna "10" jaise numeric month "2010-11" me bhi match ho jata), phir substring
+      for (const exact of [true, false]) {
+        for (const sel of pool) {
+          const list = Array.from(sel.options);
+          for (const want of args.texts) {
+            const opt = list.find(x => (exact ? norm(x.text) === want : norm(x.text).includes(want)));
+            if (opt) {
+              sel.value = opt.value;
+              sel.dispatchEvent(new Event("change", { bubbles: true }));
+              return { matched: true, name: sel.name || sel.id || "", option: (opt.text || "").trim(), tryNo: args.tryNo };
+            }
           }
         }
       }
@@ -477,6 +492,79 @@ async function selectDropdownByText(page, targetText, opts) {
     if (i < maxTries) await page.waitForTimeout(600);
   }
   return last;
+}
+
+// Kisi option ka label month lagta hai? ("October", "Oct-2026", "10", "10/2026")
+function isMonthOption(o) {
+  const s = String(o == null ? "" : o).trim();
+  if (!s) return false;
+  if (/^\d{1,2}$/.test(s)) return Number(s) >= 1 && Number(s) <= 12;
+  const dmy = s.match(/^(\d{1,2})\s*[-\/.]\s*(\d{4})$/);
+  if (dmy) return Number(dmy[1]) >= 1 && Number(dmy[1]) <= 12;
+  const low = s.toLowerCase();
+  return MONTH_NAMES.some(n => low.startsWith(n.slice(0, 3).toLowerCase()));
+}
+
+// Quarter ka label? ("Quarter 3", "Q3", "Oct - Dec", "OctDec")
+function isQuarterOption(o) {
+  return /quart|\bqtr\b|\bq[1-4]\b|apr\s*-\s*jun|jul\s*-\s*sep|oct\s*-\s*dec|jan\s*-\s*mar|aprjun|julsep|octdec|janmar/i
+    .test(String(o == null ? "" : o));
+}
+
+// Page par period chunne wala dropdown (Month ya Quarter) aa gaya?
+function hasPeriodSelect(dump) {
+  const rows = Array.isArray(dump) ? dump : [];
+  return rows.some(r => (r.options || []).filter(isMonthOption).length >= 3)
+    || rows.some(r => (r.options || []).filter(isQuarterOption).length >= 2);
+}
+
+// FY badalne ke baad portal Month/Quarter dropdown AJAX se der se render karta hai (kabhi page reload
+// ke baad) — production me 1.2s wait me sirf FY wala select mila tha, month gayab tha.
+async function waitForPeriodSelect(page, timeoutMs) {
+  const limit = Number(timeoutMs) || 0;
+  const started = Date.now();
+  let dump = [];
+  let tries = 0;
+  while (tries++ < 200) {
+    dump = await readSelectOptions(page);
+    if (hasPeriodSelect(dump)) return { ok: true, dump, tries };
+    if (Date.now() - started >= limit) break;
+    await page.waitForTimeout(700);
+  }
+  return { ok: false, dump, tries };
+}
+
+// Period dropdown na dikhe to portal ke "aage badhne" wale buttons (PROCEED/GET DETAILS/SEARCH...) try
+// karte hain — kai layouts par month list inhi ke click se load hoti hai.
+async function revealPeriodDropdown(page) {
+  const names = ["GET DETAILS", "PROCEED", "CONTINUE", "SUBMIT", "SEARCH"];
+  const clicked = [];
+  for (const name of names) {
+    const btn = page.locator(`button:has-text('${name}'), a:has-text('${name}'), input[value='${name}']`).first();
+    if (!(await btn.count().catch(() => 0))) continue;
+    if (!(await btn.isVisible().catch(() => false))) continue;
+    await btn.click({ force: true, timeout: 8000 }).catch(() => {});
+    clicked.push(name);
+    await page.waitForTimeout(2500);
+    if (clicked.length >= 2) break;
+  }
+  return { clicked };
+}
+
+// Naye portal par kabhi Returns Dashboard andar ke iframe me hota hai — wahan ke selects alag hote hain.
+// Main page par period dropdown na mile to child frames me dhundhte hain (wo frame hi select karne ke kaam aata hai).
+async function findPeriodFrame(page) {
+  let frames = [];
+  try { frames = typeof page.frames === "function" ? (page.frames() || []) : []; } catch (_) { return null; }
+  const main = page.mainFrame && typeof page.mainFrame === "function" ? page.mainFrame() : null;
+  for (let i = 0; i < frames.length && i < 8; i++) {
+    const f = frames[i];
+    if (!f || (main && f === main)) continue;
+    if (typeof f.evaluate !== "function") continue;
+    const dump = await readSelectOptions(f).catch(() => []);
+    if (hasPeriodSelect(dump)) return { frame: f, index: i, url: (typeof f.url === "function" ? f.url() : "") || "", dump };
+  }
+  return null;
 }
 
 // Page ke saare select + unke options (kaun sa FY/Quarter/Month hai, ye pata karne ke liye)
@@ -495,9 +583,8 @@ function guessSelectIndex(dump, kind) {
   const byName = rows.findIndex(r => nameRe.test(String((r && r.name) || "")));
   if (byName >= 0) return byName;
   if (kind === "fy") return rows.findIndex(r => (r.options || []).some(o => /^\d{4}-\d{2,4}$/.test(String(o))));
-  if (kind === "quarter") return rows.findIndex(r => (r.options || []).filter(o => /quart|\bq[1-4]\b/i.test(String(o))).length >= 2);
-  const isMonth = o => MONTH_NAMES.some(n => String(o).toLowerCase().startsWith(n.slice(0, 3).toLowerCase()));
-  return rows.findIndex(r => (r.options || []).filter(isMonth).length >= 3);
+  if (kind === "quarter") return rows.findIndex(r => (r.options || []).filter(isQuarterOption).length >= 2);
+  return rows.findIndex(r => (r.options || []).filter(isMonthOption).length >= 3);
 }
 
 // Portal par quarter ke label jagah-jagah alag hote hain: "Quarter 3", "Q3", "Oct - Dec"
@@ -516,8 +603,11 @@ function monthAliases(mm, fy) {
   const year = start ? (m >= 4 ? start : start + 1) : 0;
   const name = MONTH_NAMES[m - 1];
   const short = name.slice(0, 3);
+  const pad = String(m).padStart(2, "0");
   const out = [name];
-  if (year) out.push(`${short}-${year}`, `${short} ${year}`, `${short}/${year}`, `${String(m).padStart(2, "0")}-${year}`);
+  if (year) out.push(`${short}-${year}`, `${short} ${year}`, `${short}/${year}`, `${pad}-${year}`, `${pad}/${year}`);
+  // Sirf-numeric month list ("01".."12") — exact match wali pass me hi lagta hai
+  out.push(String(m), pad);
   return out;
 }
 
@@ -662,24 +752,59 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
   }
 
   // Har dropdown ko pehchan kar select karna (options der se aate hain, isliye polling) + ek retry
+  let periodHost = null; // period selection kahan hui (main page ya andar ka iframe)
   const periodAttempt = async (attempt) => {
     let dump = await readSelectOptions(page);
     if (attempt === 1) step("selects", dump);
-    const fyRes = await selectDropdownByText(page, fy, { selectIndex: guessSelectIndex(dump, "fy"), timeoutMs: 9000 });
+    let fyRes = await selectDropdownByText(page, fy, { selectIndex: guessSelectIndex(dump, "fy"), timeoutMs: 9000 });
     await page.waitForTimeout(1200);
 
-    dump = await readSelectOptions(page);
+    // FY set hone ke baad Month/Quarter dropdown der se aata hai (AJAX, ya poore page reload ke baad).
+    // Production me yahan sirf FY wala select mila tha (select0: 2019-20/2020-21/...) -> month gayab.
+    let wait = await waitForPeriodSelect(page, attempt === 1 ? 12000 : 15000);
+    if (!wait.ok) {
+      const snap = await pageSnapshotBrief(page);
+      step("periodWait" + attempt, { ok: false, dump: wait.dump, url: snap.url || page.url(), title: snap.title, buttons: (snap.buttons || []).slice(0, 12) });
+      // Page reload ho gaya ho (selects gayab) to dashboard dobara wait, phir aage badhne wale button try
+      if (!(await waitForDashboardSelects(page, 20000))) { /* phir bhi try karte hain */ }
+      const revealed = await revealPeriodDropdown(page);
+      step("periodReveal" + attempt, revealed);
+      if (revealed.clicked.length) wait = await waitForPeriodSelect(page, 8000);
+    }
+    dump = (wait.dump && wait.dump.length) ? wait.dump : await readSelectOptions(page);
+
+    // Portal ne period dropdown andar ke iframe me rakha ho to wahi frame use karte hain
+    let host = page;
+    if (!hasPeriodSelect(dump)) {
+      const inFrame = await findPeriodFrame(page);
+      if (inFrame) {
+        step("periodFrame" + attempt, { index: inFrame.index, url: inFrame.url, dump: inFrame.dump });
+        host = inFrame.frame;
+        dump = inFrame.dump;
+        periodHost = host;
+        // Poore dropdowns frame me ho sakte hain -> FY wahan dobara set karte hain
+        if (guessSelectIndex(dump, "fy") >= 0) {
+          const fyInFrame = await selectDropdownByText(host, fy, { selectIndex: guessSelectIndex(dump, "fy"), timeoutMs: 6000 });
+          if (fyInFrame.matched) fyRes = fyInFrame;
+          await page.waitForTimeout(1000);
+          dump = await readSelectOptions(host);
+        }
+      }
+    }
+    step("periodSelects" + attempt, dump);
+
     const qIdx = guessSelectIndex(dump, "quarter");
     // Quarter optional: kuch dashboard par hota hi nahi, kuch par label "Q3"/"Oct - Dec" hota hai
     const qRes = qIdx >= 0
-      ? await selectDropdownByText(page, getQuarterForMonth(monthNum), { also: quarterAliases(monthNum), selectIndex: qIdx, timeoutMs: 6000 })
+      ? await selectDropdownByText(host, getQuarterForMonth(monthNum), { also: quarterAliases(monthNum), selectIndex: qIdx, timeoutMs: 6000 })
       : { matched: false, reason: "no-quarter-select" };
     await page.waitForTimeout(1200);
 
-    dump = await readSelectOptions(page);
-    const mRes = await selectDropdownByText(page, getMonthName(monthNum), {
-      also: monthAliases(monthNum, fy), selectIndex: guessSelectIndex(dump, "month"), timeoutMs: 9000
-    });
+    dump = await readSelectOptions(host);
+    const mIdx = guessSelectIndex(dump, "month");
+    const mRes = mIdx >= 0
+      ? await selectDropdownByText(host, getMonthName(monthNum), { also: monthAliases(monthNum, fy), selectIndex: mIdx, timeoutMs: 9000 })
+      : { matched: false, reason: "no-month-select" };
     await page.waitForTimeout(800);
     return { fyRes, qRes, mRes, dump };
   };
@@ -688,6 +813,7 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
   if (!per.fyRes.matched || !per.mRes.matched) {
     // Doosri koshish — password change/redirect ke baad portal ka dashboard der se bharta hai
     await page.waitForTimeout(2500);
+    await dismissModals(page).catch(() => {});
     per = await periodAttempt(2);
   }
   const { fyRes, qRes, mRes } = per;
@@ -696,16 +822,37 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
   // wo na mile to bhi chalta hai (month list se period pakka ho jata hai).
   if (!fyRes.matched || !mRes.matched) {
     const dump = per.dump || [];
-    step("periodSelectFail", { fyRes, qRes, mRes, url: page.url(), selects: dump });
-    const summary = dump.slice(0, 4).map(d => `${d.name || "select" + d.i}: ${(d.options || []).slice(0, 4).join("/")}`).join(" | ").slice(0, 240);
-    throw new Error(`Portal par period select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}). Dropdowns mile -> ${summary || "koi select nahi mila"}`);
+    const snap = await pageSnapshotBrief(page);
+    let framesDebug = [];
+    try {
+      const frames = typeof page.frames === "function" ? (page.frames() || []) : [];
+      framesDebug = frames.slice(0, 6).map((f, i) => ({ i, url: (typeof f.url === "function" ? f.url() : "") }));
+    } catch (_) {}
+    step("periodSelectFail", { fyRes, qRes, mRes, url: snap.url || page.url(), title: snap.title, buttons: (snap.buttons || []).slice(0, 12), selects: dump, frames: framesDebug });
+    const summary = dump.slice(0, 4).map(d => `${d.name || "select" + d.i}: ${(d.options || []).join("/")}`).join(" | ").slice(0, 400);
+    const where = (snap.title ? snap.title + " — " : "") + (snap.url || page.url() || "?");
+    const quarterOnly = mRes.reason === "no-month-select" && qRes.matched;
+    const hint = quarterOnly
+      ? "Is client ka dashboard month ki jagah sirf Quarter dikha raha hai (QRMP/quarterly account) — " +
+        "2B month-wise chahiye, isliye galat data se bachne ke liye fetch roka gaya."
+      : "Returns Dashboard par \"Financial Year\" ke saath \"Return Filing Period\" (Month) bhi dikhna chahiye — " +
+        "portal par is client ka dashboard manually kholein.";
+    throw new Error(`Portal par period select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}). ` +
+      `Page: ${where}. Dropdowns mile -> ${summary || "koi select nahi mila"}. ${hint} [${t}_selects / ${t}_periodSelectFail dekhein]`);
   }
   if (!qRes.matched) step("quarterSkipped", qRes);
 
-  const searchBtn = page.locator("button:has-text('SEARCH'), button[type='submit']").first();
-  if (await searchBtn.count()) {
-    await searchBtn.click({ force: true });
+  const searchHost = periodHost || page;
+  const searchBtn = searchHost.locator("button:has-text('SEARCH'), button[type='submit']").first();
+  if (await searchBtn.count().catch(() => 0)) {
+    await searchBtn.click({ force: true }).catch(() => {});
     await page.waitForTimeout(4000);
+  } else if (searchHost !== page) {
+    const mainSearch = page.locator("button:has-text('SEARCH'), button[type='submit']").first();
+    if (await mainSearch.count().catch(() => 0)) {
+      await mainSearch.click({ force: true }).catch(() => {});
+      await page.waitForTimeout(4000);
+    }
   }
   step("dashboard", { url: page.url(), fyRes, qRes, mRes });
 
@@ -1385,6 +1532,7 @@ module.exports = {
   readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod,
   openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
   classifyStuckPage, readSelectOptions, guessSelectIndex, quarterAliases, monthAliases,
+  isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
   RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL, startServer
 };
 
