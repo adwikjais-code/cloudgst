@@ -175,14 +175,15 @@ public class MainActivity extends Activity {
     // ================= fingerprint lock =================
 
     private boolean biometricSupported() {
-        if (Build.VERSION.SDK_INT < 28) return false;
+        // BiometricManager (framework) API 30+ me hai; purane phones par fingerprint lock skip
+        if (Build.VERSION.SDK_INT < 30) return false;
         try {
             BiometricManager bm = getSystemService(BiometricManager.class);
             if (bm == null) return false;
             int can = bm.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK
                     | BiometricManager.Authenticators.DEVICE_CREDENTIAL);
             return can == BiometricManager.BIOMETRIC_SUCCESS;
-        } catch (Exception e) {
+        } catch (Throwable t) {
             return false;
         }
     }
@@ -273,7 +274,7 @@ public class MainActivity extends Activity {
                             }
                         }
                     });
-        } catch (Exception e) {
+        } catch (Throwable t) {
             unlockApp();
         }
     }
