@@ -1,0 +1,48 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.cloudgst.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.cloudgst.app'
+        minSdk 26
+        targetSdk 34
+        versionCode 58
+        versionName '5.8'
+    }
+
+    signingConfigs {
+        // repo me hai taaki har build SAME key se sign ho -> naya APK purane ke upar seedha install ho jaye
+        release {
+            storeFile file('../keystore.p12')
+            storePassword 'cloudgst2026'
+            keyAlias 'cloudgst'
+            keyPassword 'cloudgst2026'
+            storeType 'PKCS12'
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix ''
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        resources.excludes += ['META-INF/*.kotlin_module']
+    }
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.11.0'
+}
