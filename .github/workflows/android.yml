@@ -30,7 +30,7 @@ jobs:
       - name: Build debug APK
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
-          gradle -p android assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+          gradle -p android assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
           exit ${PIPESTATUS[0]}
 
       - name: Upload build log on failure
@@ -48,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cloudgst-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
 
       - name: Publish APK to Release
         if: success()
@@ -56,7 +56,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          cp android/app/build/outputs/apk/debug/app-debug.apk "CloudGST-v5.8.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "CloudGST-v5.8.apk"
           ls -l "CloudGST-v5.8.apk"
           {
             echo "### APK verify"

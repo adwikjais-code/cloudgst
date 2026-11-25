@@ -12,13 +12,24 @@ android {
         versionName '5.8'
     }
 
+    signingConfigs {
+        // repo me hai taaki har build SAME key se sign ho -> naya APK purane ke upar seedha install ho jaye
+        release {
+            storeFile file('../keystore.p12')
+            storePassword 'cloudgst2026'
+            keyAlias 'cloudgst'
+            keyPassword 'cloudgst2026'
+            storeType 'PKCS12'
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix ''
         }
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
         }
     }
 
