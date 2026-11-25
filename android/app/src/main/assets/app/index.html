@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- app build v5_9 (web + android: drive save/select + fallback download/picker) -->
+<!-- app build v5_8.1 (v5_8 behaviour + android portal) -->
 <html lang="hi">
 <head>
   <meta charset="UTF-8" />
@@ -1987,11 +1987,8 @@
           <button id="copyGstJsonCodeBtn" type="button" class="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white border border-slate-600 transition">
             📋 Copy JSON
           </button>
-          <button id="saveGstr1JsonBtn" type="button" title="GSTR-1 JSON seedha Google Drive ke 'json' folder me save hota hai" class="px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-md transition flex items-center gap-2">
+          <button id="saveGstr1JsonBtn" type="button" title="GSTR-1 JSON seedha Google Drive ke 'json' folder me save hota hai (koi download nahi)" class="px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-md transition flex items-center gap-2">
             <span>☁️ Drive me Save (json folder)</span>
-          </button>
-          <button id="downloadGstPortalJsonBtn" type="button" title="Purana tareeka: JSON browser me download karein (web)" class="px-3.5 py-2 rounded-xl text-xs font-bold bg-white/10 hover:bg-white/20 text-white border border-white/25 transition">
-            📥 Download
           </button>
         </div>
       </div>
@@ -2389,10 +2386,6 @@
           </select>
           <button id="gpRefreshSavedJsonBtn" type="button" title="Drive ke 'json' folder ki list refresh karein" class="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200 transition">🔄</button>
           <button id="gpLoadAllSavedJsonBtn" type="button" title="json folder ki SAARI JSON ek saath load + match karein" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-purple-600 hover:bg-purple-700 text-white transition shadow-xs">☁️ Load All</button>
-          <label class="cursor-pointer px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 transition inline-flex items-center gap-1" title="Purana tareeka (web/PC): JSON files disk se chunein — Drive list na dikhe tab bhi kaam karega">
-            <span>📄 Files</span>
-            <input id="gpGstr1FilesInp" type="file" multiple accept=".json" class="hidden" />
-          </label>
           <button id="gpToggleCredsModeBtn" type="button" title="Sirf Client ID &amp; Password line me dekhein" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-xs">🔑 ID / Password</button>
           <button id="gpPushAllPwBtn" type="button" title="App ke sabhi plain client passwords GST Details Sheet me sync karein" class="px-3 py-1.5 rounded-xl text-xs font-semibold border bg-indigo-50 border-indigo-200 text-indigo-800 hover:bg-indigo-100 transition">🔐 Sync Passwords</button>
           <button id="gpQuickPcBtn" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold border bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100 transition">💻 PC (Fast)</button>
@@ -17255,25 +17248,6 @@ function buildEtsyPdfReport(opts) {
       showToast(ok ? "📋 GSTR-1 JSON clipboard me copy ho gaya!" : "❌ Copy fail hua");
     });
 
-    // Purana tareeka (web fallback): browser download — bilkul pehle jaisa
-    document.getElementById("downloadGstPortalJsonBtn")?.addEventListener("click", () => {
-      if (!confirmJsonExportDespiteErrors("download karein")) return;
-      const jsonObj = buildGstPortalJsonObject();
-      const gstin = (jsonObj.gstin || "GSTIN").replace(/[^A-Z0-9]/gi, "");
-      const fp = jsonObj.fp || "102026";
-      const fileName = `GSTR1_${gstin}_${fp}.json`;
-      const blob = new Blob([JSON.stringify(jsonObj, null, 2)], { type: "application/json;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      showToast(`📥 ${fileName} download ho gayi! Ab GST Portal > Offline Upload me lagayein.`);
-    });
-
     // Naya tareeka: seedha Google Drive ke "json" folder me save
     document.getElementById("saveGstr1JsonBtn").addEventListener("click", async () => {
       if (!confirmJsonExportDespiteErrors("save karein")) return;
@@ -20498,7 +20472,6 @@ function buildEtsyPdfReport(opts) {
 
       // ===== Drive "json" folder: list + select (file chooser bilkul nahi) =====
       let gpSavedJsonLoading = false;
-      let gpJsonListWarned = false;
       function gpApplyGstr1JsonObject(name, obj, silent) {
         const byGstin = new Map();
         gpGetAppClients().forEach(c => { if (c.gstin) byGstin.set(c.gstin, c); });
@@ -20528,11 +20501,8 @@ function buildEtsyPdfReport(opts) {
         try {
           const res = await postVerifiedToAppsScript({ action: "listGstr1Json" });
           if (!res.ok) {
-            sel.innerHTML = `<option value="">⚠️ Drive list fail — 📄 Files se chunein</option>`;
-            if (!gpJsonListWarned) {
-              gpJsonListWarned = true;
-              gpToast("⚠️ Drive 'json' folder list nahi mili (" + (res.message || "") + ") — 📄 Files se JSON chun sakte hain, ya Settings → 📋 Copy Code se naya Apps Script paste karein.");
-            }
+            sel.innerHTML = `<option value="">⚠️ ${gpEsc(res.message || "Drive list fail")}</option>`;
+            gpToast("❌ Drive 'json' folder list fail: " + (res.message || "") + " — Settings → 📋 Copy Code se naya Apps Script paste karein.");
             return;
           }
           const files = (res.data && Array.isArray(res.data.files)) ? res.data.files : [];
@@ -20849,7 +20819,6 @@ function buildEtsyPdfReport(opts) {
         if (id) gpLoadSavedJsonById(id);
       });
       document.getElementById("gpRefreshSavedJsonBtn")?.addEventListener("click", () => gpRefreshSavedJsonList(false));
-      document.getElementById("gpGstr1FilesInp")?.addEventListener("change", (e) => { gpHandleGstr1Files(e.target.files); e.target.value = ""; });
       document.getElementById("gpLoadAllSavedJsonBtn")?.addEventListener("click", () => gpLoadAllSavedJson());
       document.getElementById("gpClearFolderBtn")?.addEventListener("click", () => { gpMatchedJsons.clear(); gpUpdateFolderBanner(); gpRenderSerialList(); });
       document.getElementById("gpToggleCredsModeBtn")?.addEventListener("click", () => { gpCredsMode = !gpCredsMode; gpRenderSerialList(); });
