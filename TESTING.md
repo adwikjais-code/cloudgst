@@ -220,3 +220,27 @@ Agar phir bhi ye error aaye to is client ka dashboard **manually** kholein (same
 
 Bridge `/debug` me: `<step>_periodWait1/2` (intezaar ka result), `<step>_periodReveal1/2` (kaun sa button dabaya),
 `<step>_periodFrame1/2` (iframe mila to uski URL + selects), `<step>_periodSelectFail` (poora dump).
+
+---
+
+## `page.waitForSelector: Timeout 30000ms exceeded. Call log: - waiting for locator('#username') to be visible`
+
+Matlab: bridge login page kholne gaya, par **username box hi nahi mila** — matlab portal ne login page ki jagah kuch
+aur dikhaya (ya page load hi nahi hua). Pehle isme sirf raw 30s timeout aata tha, wajah pata nahi chalti thi.
+
+v1.18.0 se bridge:
+1. Login page **do baar** kholta hai — pehle 30s normal, phir cache-buster (`?_=timestamp`) ke saath 20s.
+2. Har field ke **alternate selectors** try karta hai (`#username`, `input[name='username']`, placeholder wale...) —
+   portal id badal de to bhi login chalta hai.
+3. Na khule to portal ne jo page dikhaya usko classify karta hai aur error me wajah likhta hai:
+
+| Error me likha hoga | Matlab | Kya karein |
+|---|---|---|
+| `already_logged_in` | Portal is browser ko logged in maan raha hai (login ki jagah dashboard) | Us GSTIN ka purana session logout karein / 10 min rukein |
+| `concurrent_session` | Wahi GSTIN doosre device par login hai | Purana session band karayein |
+| `access_denied` | Portal ne block kiya (WAF/rate-limit) | 5-10 min baad, ek hi baar Fetch |
+| `password_change` | Portal password change/expiry page dikha raha hai | Portal par manually login karke password set karein |
+| `portal_down` | Portal maintenance/overload | 10-15 min baad |
+| `blank_page` | Khaali page (network/WAF) | Internet check karke 2-3 min baad |
+
+Bridge `/debug` me: `init-login_stuck` (us waqt ka page ka URL/title/text/buttons).

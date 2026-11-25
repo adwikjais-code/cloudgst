@@ -1,5 +1,11 @@
-/* GST Cloud Bridge — v1.17.0 (period dropdown wait/iframe fix) / v1.16.0 (period select fix) / v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
+/* GST Cloud Bridge — v1.18.0 (login page robust) / v1.17.0 (period dropdown wait/iframe fix) / v1.16.0 (period select fix) / v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
  * Base: v1.9.6
+ * v1.18.0 fixes ("page.waitForSelector: Timeout 30000ms exceeded ... locator('#username') to be visible"):
+ *  - Login page kholne ke 2 koshish (pehle 30s, phir cache-buster ke saath 20s) + har field ke alternate
+ *    selectors (id badal jaye to bhi chale) — pehle sirf #username ka 30s wait tha.
+ *  - Login page na khule to portal ne kya dikhaya wo classify hota hai (already_logged_in / password_change /
+ *    portal_down / blank_page / access_denied) aur error me saaf wajah + kya karein aata hai.
+ *  - submit-login bhi wahi selectors use karta hai (session me yaad rehte hain).
  * v1.17.0 fixes ("FY:true, Month:false — Dropdowns mile -> select0: 2019-20/2020-21/..."):
  *  - FY set hone ke baad Month/Quarter dropdown ka 12-15s tak intezaar (waitForPeriodSelect) — pehle
  *    sirf 1.2s dekha jata tha, isliye der se render hone wale dashboard par month "gayab" milta tha.
@@ -641,6 +647,70 @@ function classifyStuckPage(snap) {
   return { kind: "unknown", hint: "Portal ne apni normal Returns Dashboard nahi dikhai. /debug ke stuck snapshot (page text) se wajah pata chalegi." };
 }
 
+// Portal ke login page ke fields — id kabhi badal jate hain, isliye har field ke kai selector.
+// (Production: "waiting for locator('#username') to be visible" timeout — page hi login page nahi tha.)
+const LOGIN_USER_SELECTORS = ["#username", "input[name='username']", "input[id*='user' i][type='text']", "input[placeholder*='username' i]"];
+const LOGIN_PASS_SELECTORS = ["#user_pass", "input[type='password']", "input[name='password']"];
+const LOGIN_CAPTCHA_SELECTORS = ["#captcha", "input[name='captcha']", "input[id*='captcha' i]"];
+const LOGIN_SUBMIT_SELECTORS = ["button[type='submit']", "button:has-text('LOGIN')", "#loginBtn", "input[type='submit']"];
+
+// Pehla selector jo page par dikh raha hai (na mile to null)
+async function firstVisibleSelector(page, selectors) {
+  for (const sel of Array.isArray(selectors) ? selectors : []) {
+    try {
+      const loc = page.locator(sel);
+      const first = loc && typeof loc.first === "function" ? loc.first() : null;
+      if (!first) continue;
+      if (((await first.count().catch(() => 0)) || 0) === 0) continue;
+      if (await first.isVisible().catch(() => false)) return sel;
+    } catch (_) {}
+  }
+  return null;
+}
+
+// Login form ka intezaar — username/password dono dhundhta hai (polling, kyunki portal slow ho sakta hai)
+async function waitForLoginForm(page, timeoutMs) {
+  const limit = Number(timeoutMs) || 0;
+  const started = Date.now();
+  let tries = 0;
+  while (tries++ < 200) {
+    const userSel = await firstVisibleSelector(page, LOGIN_USER_SELECTORS);
+    if (userSel) {
+      const passSel = await firstVisibleSelector(page, LOGIN_PASS_SELECTORS);
+      return { ok: true, userSel, passSel };
+    }
+    if (Date.now() - started >= limit) break;
+    await page.waitForTimeout(800);
+  }
+  return { ok: false };
+}
+
+// Login page ki jagah portal ne kya dikhaya — user ko exact wajah batane ke liye
+function classifyLoginPage(snap) {
+  const base = classifyStuckPage(snap);
+  if (base.kind !== "unknown") return base;
+  const url = String((snap && snap.url) || "");
+  const title = String((snap && snap.title) || "");
+  const text = String((snap && snap.text) || "");
+  const all = url + " " + title + " " + text;
+  if (/\/auth\/dashboard|\/returns\/auth\//i.test(url) || /returns\s+dashboard/i.test(all)) {
+    return {
+      kind: "already_logged_in",
+      hint: "Portal is browser ko pehle se logged in maan raha hai (login page ki jagah dashboard dikha) — us client ka purana session logout karein ya 10 min ruk kar dobara Fetch karein."
+    };
+  }
+  if (/change\s+password|password\s+(expired|expiry)|reset\s+password/i.test(all)) {
+    return { kind: "password_change", hint: "Portal password change/expiry ka page dikha raha hai — portal par manually login karke password set karein, phir Fetch karein." };
+  }
+  if (/maintenance|under\s+maintenance|service\s+unavailable|try\s+again\s+later|502|503/i.test(all)) {
+    return { kind: "portal_down", hint: "Portal maintenance/overload par lagta hai — 10-15 min baad dobara Fetch karein." };
+  }
+  if (!text.trim()) {
+    return { kind: "blank_page", hint: "Portal ne khaali page diya (network/WAF block) — internet check karke 2-3 min baad dobara Fetch karein." };
+  }
+  return base;
+}
+
 async function waitForDashboardSelects(page, timeoutMs) {
   try { await page.waitForSelector("select", { timeout: timeoutMs }); return true; } catch (_) { return false; }
 }
@@ -973,11 +1043,34 @@ function startServer() {
       const page = await context.newPage();
       page.setDefaultTimeout(35000);
 
-      await page.goto("https://services.gst.gov.in/services/login", { waitUntil: "domcontentloaded" });
-      await page.waitForSelector("#username", { timeout: 30000 });
-      await page.click("#username");
-      await page.locator("#username").pressSequentially(String(req.body?.username || "gstuser"), { delay: 60 });
-      await page.click("#user_pass");
+      // Login page kholna: portal kabhi dashboard/access-denied/blank page de deta hai (purana session, WAF,
+      // slow load). Pehle 30s, phir cache-buster ke saath dobara 20s — phir bhi na khule to saaf wajah.
+      const loginUrl = "https://services.gst.gov.in/services/login";
+      let loginInfo = { ok: false };
+      let loginSnap = null;
+      for (let attempt = 1; attempt <= 2 && !loginInfo.ok; attempt++) {
+        const url = attempt === 1 ? loginUrl : loginUrl + "?_=" + Date.now();
+        await page.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});
+        await dismissModals(page).catch(() => {});
+        loginInfo = await waitForLoginForm(page, attempt === 1 ? 30000 : 20000);
+        if (!loginInfo.ok) {
+          loginSnap = await pageSnapshotBrief(page);
+          if (attempt === 1) await page.waitForTimeout(2500);
+        }
+      }
+      if (!loginInfo.ok) {
+        const cls = classifyLoginPage(loginSnap);
+        lastDebug = {
+          step: "init-login", timestamp: new Date().toISOString(), version: VERSION, kind: cls.kind, snapshot: loginSnap
+        };
+        const where = ((loginSnap && loginSnap.title) ? loginSnap.title + " — " : "") + ((loginSnap && loginSnap.url) || "?");
+        throw new Error(`GST Portal ka login page nahi khula (username field nahi mila). Aakhri page: ${where}. ${cls.hint} [init-login_stuck dekhein]`);
+      }
+      const userSel = loginInfo.userSel;
+      const passSel = loginInfo.passSel || LOGIN_PASS_SELECTORS[0];
+      await page.click(userSel).catch(() => {});
+      await page.locator(userSel).pressSequentially(String(req.body?.username || "gstuser"), { delay: 60 });
+      await page.click(passSel).catch(() => {});
       await page.waitForTimeout(800);
 
       const captchaSelector = "#imgCaptcha, img[src*='captcha' i], img[id*='captcha' i]";
@@ -991,7 +1084,13 @@ function startServer() {
       if (!captchaEl) throw new Error("GST Portal CAPTCHA image load nahi ho payi.");
       const captchaBuffer = await captchaEl.screenshot({ type: "png" });
       const sessionId = crypto.randomUUID();
-      sessions.set(sessionId, { browser, context, page, loggedIn: false, busy: false, lastActive: Date.now() });
+      const loginSelectors = {
+        user: userSel,
+        pass: passSel,
+        captcha: await firstVisibleSelector(page, LOGIN_CAPTCHA_SELECTORS),
+        submit: await firstVisibleSelector(page, LOGIN_SUBMIT_SELECTORS)
+      };
+      sessions.set(sessionId, { browser, context, page, loggedIn: false, busy: false, lastActive: Date.now(), loginSelectors });
       res.json({ ok: true, sessionId, captchaBase64: "data:image/png;base64," + captchaBuffer.toString("base64") });
     } catch (err) {
       try { if (context) await context.close(); } catch (_) {}
@@ -1009,11 +1108,22 @@ function startServer() {
     s.busy = true;
     const { page } = s;
     try {
-      await page.fill("#username", String(username || "").trim());
-      await page.fill("#user_pass", String(password || ""));
-      await page.fill("#captcha", String(captcha || "").trim());
+      // Field ids badal jayein to bhi kaam chale (init-login me jo selector mile the wahi pehle)
+      const stored = s.loginSelectors || {};
+      const userSel = (stored.user && (await firstVisibleSelector(page, [stored.user]))) || await firstVisibleSelector(page, LOGIN_USER_SELECTORS);
+      const passSel = (stored.pass && (await firstVisibleSelector(page, [stored.pass]))) || await firstVisibleSelector(page, LOGIN_PASS_SELECTORS);
+      const capSel = stored.captcha || await firstVisibleSelector(page, LOGIN_CAPTCHA_SELECTORS);
+      const submitSel = stored.submit || await firstVisibleSelector(page, LOGIN_SUBMIT_SELECTORS);
+      if (!userSel || !passSel) {
+        const snap2 = await pageSnapshotBrief(page);
+        const cls2 = classifyLoginPage(snap2);
+        throw new Error(`Login form ke fields nahi mile (page badal gaya). Aakhri page: ${snap2.url || "?"}. ${cls2.hint}`);
+      }
+      await page.fill(userSel, String(username || "").trim());
+      await page.fill(passSel, String(password || ""));
+      if (capSel) await page.fill(capSel, String(captcha || "").trim());
       await Promise.all([
-        page.click("button[type='submit'], button:has-text('LOGIN')"),
+        page.click(submitSel || LOGIN_SUBMIT_SELECTORS[0]),
         page.waitForTimeout(5000)
       ]);
 
@@ -1533,6 +1643,7 @@ module.exports = {
   openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
   classifyStuckPage, readSelectOptions, guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
+  firstVisibleSelector, waitForLoginForm, classifyLoginPage, LOGIN_USER_SELECTORS, LOGIN_PASS_SELECTORS,
   RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL, startServer
 };
 
