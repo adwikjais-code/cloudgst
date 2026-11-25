@@ -1,5 +1,21 @@
-/* GST Cloud Bridge — v1.11.0 (new app v4: b2bSellers) / v1.10.0 (v1.9.6 + ZIP 2B, options/autoClose, keepOthers, shared Chromium, fail-par-error)
+/* GST Cloud Bridge — v1.13.0 (app-contract fixes) / v1.12.0 (test suite + parsing fixes) / v1.11.0 (b2bSellers) / v1.10.0 (ZIP 2B, autoClose)
  * Base: v1.9.6
+ * v1.13.0 fixes (Drive ke app v5.4 — gst_client_tracker.html — ke contract ke hisaab se):
+ *  - b2bSellers me ab har seller ke saath `invoices[]` bhi jata hai (num/dt/val/txval/igst/cgst/sgst/cess/
+ *    rate/itcavl/rev) + `supfildt` + `cess`. App ka B2B modal isi shape par chalta hai; `invoices` na hone se
+ *    wo apna fallback parser chalata tha jo 2B ki iamt/camt/samt keys nahi padhta (modal + sheet me tax 0).
+ *    ZIP 2B par bhi ab invoice-level detail milti hai.
+ *  - `partial` contract: kuch section fail + kuch ok -> ok:true + partial{gstr2b,tcs,notices,text}, taaki app
+ *    jo mila wo save kare aur fail section ka purana data rakhe. Sab maange gaye section fail -> ok:false.
+ * v1.12.0 fixes (npm test se pakde gaye):
+ *  - GSTR-2B B2B sellers: 2B JSON me items `itms[].itm_det{txval,iamt,camt,samt}` me hote hain — pehle
+ *    `items[].igst/cgst/sgst` padha ja raha tha, isliye har supplier ka taxable/tax 0 aata tha
+ *  - Galat month (0/13/abc) par pehle chupchaap "October"/"Quarter 4" select hota tha (galat period ka data) —
+ *    ab 400 error, aur dropdown khaali text par match nahi karta
+ *  - Notices: 4-cell wali koi bhi table (late fee/footer) notice ban jati thi — ab date/reference wali row hi notice hai;
+ *    "31-Oct-2026" jaisi date par bhi layout sahi padhta hai
+ *  - Unknown route / bad JSON body par JSON error (express ka HTML nahi); submit-otp par busy-guard
+ *  - Test: `npm test` (pure helpers + HTTP endpoints, browser ke bina)
  * Fixes over v1.8.0:
  *  - E-Com TCS: columns ab table header se pehchane jate hain (pehle GSTIN ka "07" / serial no. gross ban jata tha)
  *  - Har section ka status (ok / empty / uncertain / failed) screen tak jata hai — fail hone par "Koi notice nahi" nahi dikhega
@@ -19,20 +35,39 @@ const VERSION = (() => { try { return require("./package.json").version; } catch
 const GSTIN_RE = /^[0-9]{2}[A-Z0-9]{13}$/i;
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
-function getMonthName(mm) { return MONTH_NAMES[parseInt(mm, 10) - 1] || "October"; }
+// Galat month (0, 13...) par khaali string — pehle chupchaap "October"/"Quarter 4" ban jata tha
+// (us se client ka data galat period ka fetch ho jata tha).
+function getMonthName(mm) {
+  const m = parseInt(mm, 10);
+  return m >= 1 && m <= 12 ? MONTH_NAMES[m - 1] : "";
+}
 function getQuarterForMonth(mm) {
   const m = parseInt(mm, 10);
   if (m >= 4 && m <= 6) return "Quarter 1";
   if (m >= 7 && m <= 9) return "Quarter 2";
   if (m >= 10 && m <= 12) return "Quarter 3";
-  return "Quarter 4";
+  if (m >= 1 && m <= 3) return "Quarter 4";
+  return "";
 }
 // fy "2026-27", mm "10" -> "102026" ; mm "02" -> "022027"
 function periodFor(fy, mm) {
   const start = parseInt(String(fy).slice(0, 4), 10);
   const m = parseInt(mm, 10);
-  if (!start || !m) return "";
+  if (!start || !(m >= 1 && m <= 12)) return "";
   return String(m).padStart(2, "0") + (m >= 4 ? start : start + 1);
+}
+
+// Request se aane wala fy/month ek jagah validate hota hai (fetch-all + upload-gstr1 dono ke liye)
+function normalizePeriod(fy, month) {
+  const fyIn = fy == null || String(fy).trim() === "" ? "2026-27" : String(fy).trim();
+  const mRaw = month == null || String(month).trim() === "" ? "10" : String(month).trim();
+  if (!/^\d{4}-\d{2,4}$/.test(fyIn)) return { ok: false, error: `FY "${fyIn}" galat format me hai (sahi example: 2026-27).` };
+  const m = parseInt(mRaw, 10);
+  if (!(m >= 1 && m <= 12) || String(m) !== mRaw.replace(/^0+(?=\d)/, "")) {
+    return { ok: false, error: `Month "${mRaw}" galat hai — 1 se 12 ke beech ka number dein (jaise 10).` };
+  }
+  const mm = String(m).padStart(2, "0");
+  return { ok: true, fy: fyIn, month: mm, period: periodFor(fyIn, mm) };
 }
 
 // Strict amount: "1,25,000.00", "₹ 500", "(250.50)", "-10" -> number ; baaki sab NaN (GSTIN "07AAAC.." ab 7 nahi banega)
@@ -157,25 +192,36 @@ function parseTcsRecordCount(text) {
   return m ? parseInt(m[1], 10) : null;
 }
 
+const NOTICE_DATE_RE = /^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/;
+const NOTICE_DATE2_RE = /^\d{1,2}[-\s,]+[A-Za-z]{3,9}[-\s,]+\d{2,4}$/; // "31-Oct-2026", "31 Oct, 2026"
+const isNoticeDate = v => { const s = String(v || "").trim(); return NOTICE_DATE_RE.test(s) || NOTICE_DATE2_RE.test(s); };
+// Reference No / ARN jaisa kuch (kam se kam 8 char, usme digit bhi ho, sirf amount nahi)
+const isNoticeRef = v => {
+  const s = String(v || "").trim();
+  return s.length >= 8 && /\d/.test(s) && /[A-Za-z]/.test(s) && !/^[\d,.\s()-]+$/.test(s);
+};
+
 function parseNoticeTables(tables) {
   const out = [];
-  const DATE_RE = /^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/;
   for (const tbl of tables || []) {
     const labels = buildColumnLabels(tbl.head);
     for (const tds of tbl.body || []) {
-      if (tds.length >= 4 && !tds.join(" ").toLowerCase().includes("no records")) {
-        // Portal ka dekha hua layout: Ref No | Type | Description | Date | Due/Response | View
-        const portalLayout = tds.length >= 5 && DATE_RE.test(String(tds[3]).trim());
-        out.push(portalLayout ? {
-          refNo: tds[0] || "", type: tds[1] || "", description: tds[2] || "", issuedBy: "",
-          issueDate: tds[3] || "", dueDate: /^view$/i.test(String(tds[4]).trim()) ? "" : (tds[4] || ""), amount: "",
-          rawCells: tds, headers: labels
-        } : {
-          refNo: tds[0] || "", issuedBy: tds[1] || "", type: tds[2] || "", description: tds[3] || "",
-          issueDate: tds[4] || "", dueDate: tds[5] || "", amount: tds[6] || "",
-          rawCells: tds, headers: labels
-        });
-      }
+      // Notices page ki table hi nahi hoti — 4-cell wali koi bhi doosri table (late fee, footer,
+      // totals) notice ban jati thi. Isliye row me date ya reference-jaisa kuch hona zaroori hai.
+      if (tds.length < 4 || tds.join(" ").toLowerCase().includes("no records")) continue;
+      if (!tds.some(isNoticeDate) && !tds.some(isNoticeRef)) continue;
+      // Portal ka dekha hua layout: Ref No | Type | Description | Date | Due/Response | View
+      // (date "31/10/2026" ya "31-Oct-2026" — dono format par layout yahi rehta hai)
+      const portalLayout = tds.length >= 5 && isNoticeDate(tds[3]);
+      out.push(portalLayout ? {
+        refNo: tds[0] || "", type: tds[1] || "", description: tds[2] || "", issuedBy: "",
+        issueDate: tds[3] || "", dueDate: /^view$/i.test(String(tds[4]).trim()) ? "" : (tds[4] || ""), amount: "",
+        rawCells: tds, headers: labels
+      } : {
+        refNo: tds[0] || "", issuedBy: tds[1] || "", type: tds[2] || "", description: tds[3] || "",
+        issueDate: tds[4] || "", dueDate: tds[5] || "", amount: tds[6] || "",
+        rawCells: tds, headers: labels
+      });
     }
   }
   return out;
@@ -263,35 +309,100 @@ function readJsonFilesFromBuffer(buf) {
   return { isZip: true, files };
 }
 
-/* ---- GSTR-2B B2B sellers list (naya app ka "B2B Sellers" modal isi se banta hai) ---- */
+/* ---- GSTR-2B B2B sellers list (app ka "B2B Sellers / Invoices" modal isi se banta hai) ----
+ * 2B JSON me invoice items `inv.itms[].itm_det{txval,iamt,camt,samt,csamt}` me hote hain —
+ * `items[].igst/cgst/sgst` (GSTR-1 style) 2B me nahi hota.
+ * App har seller ke saath `invoices[]` expect karta hai (warna wo apna fallback parser chalata hai);
+ * isliye yahan invoice-level detail bhi bhejte hain, app ke field names ke saath:
+ *   num, dt, val, txval, igst, cgst, sgst, cess, rate, itcavl, rev
+ */
 function buildB2bSellers(parsedList) {
   const map = new Map();
-  for (const parsed of parsedList) {
+  const num = v => { const n = Number(v); return isFinite(n) ? n : 0; };
+  const r2 = n => Math.round(Number(n || 0) * 100) / 100;
+  // 2B keys (iamt/camt/samt/csamt) pehle, phir GSTR-1 style keys (igst/cgst/sgst/cess)
+  const pick = (o, a, b) => (o && o[a] !== undefined && o[a] !== null && o[a] !== "" ? o[a] : (o ? o[b] : undefined));
+  for (const parsed of parsedList || []) {
     const b2b = Array.isArray(parsed?.data?.docdata?.b2b) ? parsed.data.docdata.b2b : [];
     for (const sup of b2b) {
       const invs = Array.isArray(sup.inv) ? sup.inv : [];
-      let taxable = 0, igst = 0, cgst = 0, sgst = 0;
-      for (const inv of invs) {
-        const items = Array.isArray(inv.items) ? inv.items : [];
-        if (items.length) {
-          for (const it of items) {
-            taxable += Number(it.txval || 0); igst += Number(it.igst || 0); cgst += Number(it.cgst || 0); sgst += Number(it.sgst || 0);
-          }
-        } else {
-          taxable += Number(inv.txval || 0); igst += Number(inv.igst || 0); cgst += Number(inv.cgst || 0); sgst += Number(inv.sgst || 0);
-        }
-      }
       const gstin = String(sup.ctin || "").trim().toUpperCase();
       const key = gstin || String(sup.trdnm || "Supplier");
-      const cur = map.get(key) || { name: String(sup.trdnm || sup.ctin || "Supplier").trim(), gstin, invCount: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0 };
-      cur.invCount += invs.length; cur.taxable += taxable; cur.igst += igst; cur.cgst += cgst; cur.sgst += sgst;
+      const cur = map.get(key) || {
+        name: String(sup.trdnm || sup.ctin || "Supplier").trim(), gstin, supfildt: "",
+        invCount: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0, cess: 0, invoices: []
+      };
+      if (!cur.supfildt && sup.supfildt) cur.supfildt = String(sup.supfildt).trim();
+      for (const inv of invs) {
+        const items = Array.isArray(inv.itms) ? inv.itms : (Array.isArray(inv.items) ? inv.items : []);
+        let tx = 0, ig = 0, cg = 0, sg = 0, cs = 0;
+        const rates = new Set();
+        if (items.length) {
+          for (const it of items) {
+            const d = it.itm_det || it.itm || it || {};
+            tx += num(d.txval);
+            ig += num(pick(d, "iamt", "igst"));
+            cg += num(pick(d, "camt", "cgst"));
+            sg += num(pick(d, "samt", "sgst"));
+            cs += num(pick(d, "csamt", "cess"));
+            if (d.rt !== undefined && d.rt !== null && d.rt !== "") rates.add(String(d.rt) + "%");
+          }
+        } else {
+          // Items hi nahi hain (kabhi 2B me sirf invoice level values hoti hain).
+          // txval na ho to invoice value (val) — wo tax ke saath hota hai, isliye sirf last resort.
+          tx = num(pick(inv, "txval", "val"));
+          ig = num(pick(inv, "iamt", "igst"));
+          cg = num(pick(inv, "camt", "cgst"));
+          sg = num(pick(inv, "samt", "sgst"));
+          cs = num(pick(inv, "csamt", "cess"));
+          if (inv.rt !== undefined && inv.rt !== null && inv.rt !== "") rates.add(String(inv.rt) + "%");
+        }
+        cur.invoices.push({
+          num: String(inv.inum || inv.invnum || "").trim(),
+          dt: String(pick(inv, "idt", "dt") || inv.inv_dt || "").trim(),
+          val: r2(inv.val !== undefined && inv.val !== null && inv.val !== "" ? inv.val : (tx + ig + cg + sg + cs)),
+          txval: r2(tx), igst: r2(ig), cgst: r2(cg), sgst: r2(sg), cess: r2(cs),
+          rate: Array.from(rates).join("/"),
+          itcavl: String(inv.itcavl || "Y").trim().toUpperCase(),
+          rev: String(pick(inv, "rev", "rchrg") || "N").trim().toUpperCase()
+        });
+        cur.invCount += 1;
+        cur.taxable += tx; cur.igst += ig; cur.cgst += cg; cur.sgst += sg; cur.cess += cs;
+      }
       map.set(key, cur);
     }
   }
   return Array.from(map.values()).map(x => ({
-    name: x.name, gstin: x.gstin, invCount: x.invCount,
-    taxable: Math.round(x.taxable), igst: Math.round(x.igst), cgst: Math.round(x.cgst), sgst: Math.round(x.sgst)
+    name: x.name, gstin: x.gstin, supfildt: x.supfildt, invCount: x.invCount,
+    taxable: r2(x.taxable), igst: r2(x.igst), cgst: r2(x.cgst), sgst: r2(x.sgst), cess: r2(x.cess),
+    invoices: x.invoices
   }));
+}
+
+/* ---- Section outcome (app ke `partial` contract ke liye) ----
+ * App ek hi request me 2B + TCS maangta hai. Pehle bridge kisi ek section ke fail hone par
+ * poora response ok:false kar deta tha -> app kuch bhi save nahi karta tha (jo mila wo bhi loss).
+ * Ab: sab maange gaye section fail -> ok:false (kuch save na ho);
+ *     kuch fail + kuch ok    -> ok:true + partial{...}, app sirf fail section ka purana data rakhta hai.
+ */
+function partialOutcome(status, opts) {
+  const asked = [], failed = [];
+  const check = (key, label) => {
+    asked.push(label);
+    const st = status && status[key];
+    if (st && st.state === "failed") failed.push(label + ": " + (st.message || "fetch nahi hua"));
+  };
+  if (opts && opts.gstr2b) check("gstr2b", "GSTR-2B");
+  if (opts && opts.tcs) check("tcs", "E-Com TCS");
+  if (opts && opts.notices) check("notices", "Notices");
+  const allFailed = failed.length > 0 && failed.length >= asked.length;
+  const partial = failed.length && !allFailed ? {
+    gstr2b: !!(opts && opts.gstr2b) && status?.gstr2b?.state === "failed",
+    tcs: !!(opts && opts.tcs) && status?.tcs?.state === "failed",
+    notices: !!(opts && opts.notices) && status?.notices?.state === "failed",
+    text: "Adhoora fetch — " + failed.join(" | ")
+  } : null;
+  return { asked, failed, allFailed, partial };
 }
 
 /* ======================= SERVER ======================= */
@@ -480,6 +591,8 @@ function startServer() {
     const { sessionId, otp } = req.body || {};
     const s = getSession(sessionId);
     if (!s) return res.status(404).json({ ok: false, error: "Session expired." });
+    if (s.busy) return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
+    s.busy = true;
     const { page } = s;
     try {
       const otpInput = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]");
@@ -495,6 +608,8 @@ function startServer() {
       return res.status(400).json({ ok: false, error: "OTP invalid ya verify nahi ho paya." });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
+    } finally {
+      s.busy = false;
     }
   });
 
@@ -509,6 +624,9 @@ function startServer() {
   }
 
   async function selectDropdownByText(page, targetText) {
+    // Khaali text par har option match ho jata tha ("" sab me includes hai) -> galat period select
+    const want = String(targetText == null ? "" : targetText).trim();
+    if (!want) return { matched: false, reason: "empty" };
     return await page.evaluate((txt) => {
       const lower = txt.toLowerCase();
       const selects = Array.from(document.querySelectorAll("select"));
@@ -521,7 +639,7 @@ function startServer() {
         }
       }
       return { matched: false };
-    }, targetText);
+    }, want);
   }
 
   // Page ki visible tables + visible text (plain data) — parsing Node me hoti hai
@@ -630,15 +748,18 @@ function startServer() {
   app.post("/api/gst/fetch-all", async (req, res) => {
     const { sessionId, fy, month, autoClose, options } = req.body || {};
     const opts = { gstr2b: options?.gstr2b !== false, tcs: options?.tcs !== false, notices: !!options?.notices };
+    // Galat FY/month par portal se kuch bhi fetch na ho (chupchaap October ka data na aa jaye)
+    const per = normalizePeriod(fy, month);
+    if (!per.ok) return res.status(400).json({ ok: false, error: per.error });
     const s = getSession(sessionId);
     if (!s || !s.loggedIn) return res.status(401).json({ ok: false, error: "Portal se connected nahi hai. Pehle login karein." });
     if (s.busy) return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
 
     s.busy = true;
     const { page } = s;
-    const dbg = { timestamp: new Date().toISOString(), version: VERSION, fy: fy || "2026-27", month: String(month || "10").padStart(2, "0"), steps: {} };
+    const dbg = { timestamp: new Date().toISOString(), version: VERSION, fy: per.fy, month: per.month, steps: {} };
     const result = {
-      ok: true, fy: dbg.fy, month: dbg.month, period: periodFor(dbg.fy, dbg.month),
+      ok: true, fy: dbg.fy, month: dbg.month, period: per.period,
       notices: [], gstr2b: { summary: null, jsonBase64: null, fileName: null },
       ecommerceTcs: { rows: [], totalGrossTaxable: 0, totalReturned: 0, totalNetValue: 0, totalTcs: 0, mode: "none" },
       // har section ka sach: ok | empty | uncertain | failed  (screen is par chalti hai)
@@ -901,14 +1022,22 @@ function startServer() {
         dbg.steps.noticesError = err.message;
       }
 
+      // Maanga gaya har section fail -> ok:false (sheet me kuch save na ho).
+      // Kuch section ok, kuch fail -> ok:true + partial (app fail section ka purana data rakhta hai,
+      // aur jo mila use save kar deta hai — pehle yahan sab kuch chhoot jata tha).
+      const outcome = partialOutcome(result.status, opts);
+      if (outcome.allFailed) {
+        dbg.status = result.status; dbg.warnings = result.warnings; lastDebug = dbg;
+        return res.json(Object.assign({}, result, { ok: false, error: "Data fetch nahi hua (Sheet me save nahi kiya) -> " + outcome.failed.join(" | ") }));
+      }
+      if (outcome.partial) {
+        result.partial = outcome.partial;
+        result.warnings.push("[partial] " + outcome.partial.text);
+      }
       dbg.status = result.status;
       dbg.warnings = result.warnings;
+      if (result.partial) dbg.partial = result.partial;
       lastDebug = dbg;
-      // GSTR-2B / E-Com maanga gaya tha par fail hua -> app ko error do (0 save na ho)
-      const failed = [];
-      if (opts.gstr2b && result.status.gstr2b?.state === "failed") failed.push("GSTR-2B: " + result.status.gstr2b.message);
-      if (opts.tcs && result.status.tcs?.state === "failed") failed.push("E-Com TCS: " + result.status.tcs.message);
-      if (failed.length) return res.json(Object.assign({}, result, { ok: false, error: "Data fetch nahi hua (Sheet me save nahi kiya) -> " + failed.join(" | ") }));
       res.json(result);
     } finally {
       s.busy = false;
@@ -919,6 +1048,8 @@ function startServer() {
 
   app.post("/api/gst/upload-gstr1", async (req, res) => {
     const { sessionId, fy, month, jsonContent, fileName } = req.body || {};
+    const per = normalizePeriod(fy, month);
+    if (!per.ok) return res.status(400).json({ ok: false, error: per.error });
     const s = getSession(sessionId);
     if (!s || !s.loggedIn) return res.status(401).json({ ok: false, error: "Portal se connected nahi hai. Pehle login karein." });
     if (!jsonContent) return res.status(400).json({ ok: false, error: "GSTR-1 JSON content missing hai." });
@@ -929,7 +1060,7 @@ function startServer() {
     try { obj = typeof jsonContent === "string" ? JSON.parse(jsonContent) : jsonContent; } catch (_) {
       return res.status(400).json({ ok: false, error: "GSTR-1 JSON valid nahi hai (parse nahi hui)." });
     }
-    const wantFp = periodFor(fy || "2026-27", String(month || "10").padStart(2, "0"));
+    const wantFp = per.period;
     if (obj && obj.fp && String(obj.fp) !== wantFp) {
       return res.status(400).json({ ok: false, error: `JSON ka period (fp) ${obj.fp} hai, par aapne ${wantFp} select kiya hai. Upload roka gaya.` });
     }
@@ -939,7 +1070,7 @@ function startServer() {
     const tmpFile = path.join(os.tmpdir(), `${crypto.randomUUID()}_${safeFileName(fileName, "GSTR1.json")}`);
     try {
       fs.writeFileSync(tmpFile, JSON.stringify(obj, null, 2), "utf8");
-      await openReturnsDashboardAndSearch(page, fy || "2026-27", String(month || "10").padStart(2, "0"), null, "gstr1");
+      await openReturnsDashboardAndSearch(page, per.fy, per.month, null, "gstr1");
       const gstr1Card = page.locator("div").filter({ hasText: /GSTR-?1/i }).filter({ has: page.locator("button:has-text('PREPARE OFFLINE'), a:has-text('PREPARE OFFLINE')") }).last();
       const offlineBtn = gstr1Card.locator("button:has-text('PREPARE OFFLINE'), a:has-text('PREPARE OFFLINE')").first();
       if (!(await offlineBtn.count())) throw new Error("GSTR-1 PREPARE OFFLINE button nahi mila.");
@@ -979,9 +1110,27 @@ function startServer() {
     res.json({ ok: true });
   });
 
+  // Client har response JSON expect karta hai — Express ka default HTML error na jaye
+  app.use((req, res) => {
+    res.status(404).json({ ok: false, error: `Endpoint nahi mila: ${req.method} ${req.path}` });
+  });
+  app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    const status = err && err.status >= 400 && err.status < 500 ? err.status : 500;
+    const msg = err && err.type === "entity.too.large"
+      ? "Request body 25MB limit se bada hai."
+      : (err && err.type === "entity.parse.failed" ? "Request body valid JSON nahi hai." : (err && err.message) || "Server error");
+    res.status(status).json({ ok: false, error: msg });
+  });
+
   app.listen(PORT, () => console.log(`GST Cloud Bridge v${VERSION} running on port ${PORT}`));
 }
 
-module.exports = { parseTcsRecordCount, parseAmt, buildColumnLabels, mapTcsColumns, parseTcsTables, parseNoticeTables, summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE };
+module.exports = {
+  parseTcsRecordCount, parseAmt, buildColumnLabels, mapTcsColumns, parseTcsTables, parseNoticeTables,
+  summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE,
+  // naye helpers bhi test ke liye bahar (browser ke bina testable)
+  readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod, startServer
+};
 
 if (require.main === module) startServer();
