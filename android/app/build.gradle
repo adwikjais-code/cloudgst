@@ -6,10 +6,10 @@ android {
 
     defaultConfig {
         applicationId 'com.cloudgst.app'
-        minSdk 26
+        minSdk 24
         targetSdk 34
-        versionCode 61
-        versionName '5.8.2'
+        versionCode 62
+        versionName '5.8.3'
     }
 
     signingConfigs {
@@ -20,6 +20,10 @@ android {
             keyAlias 'cloudgst'
             keyPassword 'cloudgst2026'
             storeType 'PKCS12'
+            enableV1Signing true
+            enableV2Signing true
+            enableV3Signing true
+            enableV4Signing false
         }
     }
 
