@@ -1,5 +1,14 @@
-/* GST Cloud Bridge — v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
+/* GST Cloud Bridge — v1.16.0 (period select fix) / v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
  * Base: v1.9.6
+ * v1.16.0 fixes ("Portal par period select nahi ho paya (FY:true, Quarter:false, Month:false)"):
+ *  - Portal ke FY/Quarter/Month <select> ab naam/options se PEHCHANE jate hain (readSelectOptions +
+ *    guessSelectIndex) — pehle sirf text se dhundha jata tha, isliye galti se doosra dropdown select ho jata tha.
+ *  - Quarter ke label variants ("Quarter 3" / "Q3" / "Oct - Dec") aur month ke year-wale labels
+ *    ("Oct-2026") bhi match hote hain; bare "Oct" nahi (warna quarter ke "Oct - Dec" se match ho jata tha).
+ *  - Options AJAX se der se aate hain -> 600ms polling (FY 9s, quarter 6s, month 9s) + poora period 2 baar.
+ *  - Quarter optional: dropdown hi na ho to bhi month se period pakka hota hai (pehle quarter na milne par
+ *    fetch rok diya jata tha). FY + Month match hona ab zaroori shart hai.
+ *  - Fail par error me asli dropdown options aate hain ("Dropdowns mile -> fy: ... | mon: ...").
  * v1.15.0 fixes (production me mila: /services/error/accessdenied):
  *  - Fail page ko classify karta hai: access_denied / concurrent_session / gstin_inactive / session_expired / unknown
  *  - Access Denied (ya "already logged in") par cooldown + Auth Dashboard se fresh click wala retry,
@@ -435,23 +444,81 @@ async function dismissModals(page) {
   try { if (page.keyboard) await page.keyboard.press("Escape"); } catch (_) {}
 }
 
-async function selectDropdownByText(page, targetText) {
+// Dropdown ke options page par der se aate hain (Angular/AJAX) — isliye polling wala select.
+// `also` = alternative labels (Quarter "Q3"/"Oct - Dec", month "Oct-2026"), `selectIndex` = sirf usi select me.
+async function selectDropdownByText(page, targetText, opts) {
+  const o = opts || {};
+  const texts = [targetText, ...(Array.isArray(o.also) ? o.also : [])]
+    .map(t => String(t == null ? "" : t).trim().toLowerCase()).filter(Boolean);
   // Khaali text par har option match ho jata tha ("" sab me includes hai) -> galat period select
-  const want = String(targetText == null ? "" : targetText).trim();
-  if (!want) return { matched: false, reason: "empty" };
-  return await page.evaluate((txt) => {
-    const lower = txt.toLowerCase();
-    const selects = Array.from(document.querySelectorAll("select"));
-    for (const sel of selects) {
-      const opt = Array.from(sel.options).find(o => (o.text || "").toLowerCase().includes(lower));
-      if (opt) {
-        sel.value = opt.value;
-        sel.dispatchEvent(new Event("change", { bubbles: true }));
-        return { matched: true, name: sel.name || sel.id || "", option: opt.text.trim() };
+  if (!texts.length) return { matched: false, reason: "empty" };
+  const index = Number.isInteger(o.selectIndex) ? o.selectIndex : -1;
+  const timeoutMs = Number(o.timeoutMs) || 0;
+  const maxTries = timeoutMs ? Math.max(1, Math.ceil(timeoutMs / 600)) : 1;
+  let last = { matched: false };
+  for (let i = 1; i <= maxTries; i++) {
+    last = await page.evaluate((args) => {
+      const selects = Array.from(document.querySelectorAll("select"));
+      const pool = args.index >= 0 ? selects.filter((_, idx) => idx === args.index) : selects;
+      for (const sel of pool) {
+        const list = Array.from(sel.options);
+        for (const want of args.texts) {
+          const opt = list.find(x => (x.text || "").toLowerCase().includes(want));
+          if (opt) {
+            sel.value = opt.value;
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+            return { matched: true, name: sel.name || sel.id || "", option: (opt.text || "").trim(), tryNo: args.tryNo };
+          }
+        }
       }
-    }
-    return { matched: false };
-  }, want);
+      return { matched: false, tryNo: args.tryNo, seen: pool.map(x => Array.from(x.options).map(y => (y.text || "").trim()).slice(0, 6)) };
+    }, { texts, index, tryNo: i });
+    if (last.matched) return last;
+    if (i < maxTries) await page.waitForTimeout(600);
+  }
+  return last;
+}
+
+// Page ke saare select + unke options (kaun sa FY/Quarter/Month hai, ye pata karne ke liye)
+async function readSelectOptions(page) {
+  const dump = await page.evaluate(() => Array.from(document.querySelectorAll("select")).map((s, i) => ({
+    i, name: String(s.name || s.id || "").slice(0, 40),
+    options: Array.from(s.options).map(o => String(o.text || "").trim()).filter(Boolean).slice(0, 15)
+  }))).catch(() => []);
+  return Array.isArray(dump) ? dump : [];
+}
+
+// Kaun sa <select> FY / Quarter / Month hai — naam se, aur naam na ho to options dekh kar
+function guessSelectIndex(dump, kind) {
+  const rows = Array.isArray(dump) ? dump : [];
+  const nameRe = kind === "fy" ? /fy|financ|year/i : kind === "quarter" ? /quart|qtr/i : /mon|period|month/i;
+  const byName = rows.findIndex(r => nameRe.test(String((r && r.name) || "")));
+  if (byName >= 0) return byName;
+  if (kind === "fy") return rows.findIndex(r => (r.options || []).some(o => /^\d{4}-\d{2,4}$/.test(String(o))));
+  if (kind === "quarter") return rows.findIndex(r => (r.options || []).filter(o => /quart|\bq[1-4]\b/i.test(String(o))).length >= 2);
+  const isMonth = o => MONTH_NAMES.some(n => String(o).toLowerCase().startsWith(n.slice(0, 3).toLowerCase()));
+  return rows.findIndex(r => (r.options || []).filter(isMonth).length >= 3);
+}
+
+// Portal par quarter ke label jagah-jagah alag hote hain: "Quarter 3", "Q3", "Oct - Dec"
+function quarterAliases(mm) {
+  const m = parseInt(mm, 10);
+  const q = m >= 4 && m <= 6 ? 1 : m >= 7 && m <= 9 ? 2 : (m >= 10 && m <= 12 ? 3 : 4);
+  const span = { 1: "Apr - Jun", 2: "Jul - Sep", 3: "Oct - Dec", 4: "Jan - Mar" }[q];
+  return ["Quarter " + q, "Quarter-" + q, "Qtr " + q, "Q" + q, span, span.replace(/ /g, "")];
+}
+
+// Month ke alternatives — sirf year wale (bare "Oct" quarter ke "Oct - Dec" se match ho jata hai)
+function monthAliases(mm, fy) {
+  const m = parseInt(mm, 10);
+  if (!(m >= 1 && m <= 12)) return [];
+  const start = parseInt(String(fy || "").slice(0, 4), 10) || 0;
+  const year = start ? (m >= 4 ? start : start + 1) : 0;
+  const name = MONTH_NAMES[m - 1];
+  const short = name.slice(0, 3);
+  const out = [name];
+  if (year) out.push(`${short}-${year}`, `${short} ${year}`, `${short}/${year}`, `${String(m).padStart(2, "0")}-${year}`);
+  return out;
 }
 
 /* Portal ne kaun sa "block" page dikhaya — ye pata hona zaroori hai, warna retry andha hota hai.
@@ -594,24 +661,54 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
     }
   }
 
-  const fyRes = await selectDropdownByText(page, fy);
-  await page.waitForTimeout(1000);
-  const qRes = await selectDropdownByText(page, getQuarterForMonth(monthNum));
-  await page.waitForTimeout(1000);
-  const mRes = await selectDropdownByText(page, getMonthName(monthNum));
-  await page.waitForTimeout(800);
+  // Har dropdown ko pehchan kar select karna (options der se aate hain, isliye polling) + ek retry
+  const periodAttempt = async (attempt) => {
+    let dump = await readSelectOptions(page);
+    if (attempt === 1) step("selects", dump);
+    const fyRes = await selectDropdownByText(page, fy, { selectIndex: guessSelectIndex(dump, "fy"), timeoutMs: 9000 });
+    await page.waitForTimeout(1200);
 
-  // Agar FY / Quarter / Month me se koi dropdown match nahi hua to galat period ka data na uthe
-  if (!fyRes.matched || !qRes.matched || !mRes.matched) {
-    step("periodSelectFail", { fyRes, qRes, mRes, url: page.url() });
-    throw new Error(`Portal par period select nahi ho paya (FY:${fyRes.matched}, Quarter:${qRes.matched}, Month:${mRes.matched}).`);
+    dump = await readSelectOptions(page);
+    const qIdx = guessSelectIndex(dump, "quarter");
+    // Quarter optional: kuch dashboard par hota hi nahi, kuch par label "Q3"/"Oct - Dec" hota hai
+    const qRes = qIdx >= 0
+      ? await selectDropdownByText(page, getQuarterForMonth(monthNum), { also: quarterAliases(monthNum), selectIndex: qIdx, timeoutMs: 6000 })
+      : { matched: false, reason: "no-quarter-select" };
+    await page.waitForTimeout(1200);
+
+    dump = await readSelectOptions(page);
+    const mRes = await selectDropdownByText(page, getMonthName(monthNum), {
+      also: monthAliases(monthNum, fy), selectIndex: guessSelectIndex(dump, "month"), timeoutMs: 9000
+    });
+    await page.waitForTimeout(800);
+    return { fyRes, qRes, mRes, dump };
+  };
+
+  let per = await periodAttempt(1);
+  if (!per.fyRes.matched || !per.mRes.matched) {
+    // Doosri koshish — password change/redirect ke baad portal ka dashboard der se bharta hai
+    await page.waitForTimeout(2500);
+    per = await periodAttempt(2);
   }
+  const { fyRes, qRes, mRes } = per;
+
+  // Month hi asli period hai — FY + Month match hona zaroori. Quarter ka label fix nahi hota, isliye
+  // wo na mile to bhi chalta hai (month list se period pakka ho jata hai).
+  if (!fyRes.matched || !mRes.matched) {
+    const dump = per.dump || [];
+    step("periodSelectFail", { fyRes, qRes, mRes, url: page.url(), selects: dump });
+    const summary = dump.slice(0, 4).map(d => `${d.name || "select" + d.i}: ${(d.options || []).slice(0, 4).join("/")}`).join(" | ").slice(0, 240);
+    throw new Error(`Portal par period select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}). Dropdowns mile -> ${summary || "koi select nahi mila"}`);
+  }
+  if (!qRes.matched) step("quarterSkipped", qRes);
+
   const searchBtn = page.locator("button:has-text('SEARCH'), button[type='submit']").first();
   if (await searchBtn.count()) {
     await searchBtn.click({ force: true });
     await page.waitForTimeout(4000);
   }
   step("dashboard", { url: page.url(), fyRes, qRes, mRes });
+
   return page;
 }
 
@@ -1043,10 +1140,14 @@ function startServer() {
         await page.waitForSelector("select", { timeout: 20000 });
         await page.waitForTimeout(1500);
 
-        const fyRes = await selectDropdownByText(page, result.fy);
+        const dumpTcs = await readSelectOptions(page);
+        const fyRes = await selectDropdownByText(page, result.fy, { selectIndex: guessSelectIndex(dumpTcs, "fy"), timeoutMs: 9000 });
         await page.waitForTimeout(800);
-        const mRes = await selectDropdownByText(page, getMonthName(result.month));
-        mark("period", { fyRes, mRes });
+        const dumpTcs2 = await readSelectOptions(page);
+        const mRes = await selectDropdownByText(page, getMonthName(result.month), {
+          also: monthAliases(result.month, result.fy), selectIndex: guessSelectIndex(dumpTcs2, "month"), timeoutMs: 9000
+        });
+        mark("period", { fyRes, mRes, selects: dumpTcs2 });
         if (!fyRes.matched || !mRes.matched) throw new Error(`TCS page par FY/Month select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}).`);
         await page.locator("button:has-text('SEARCH'):visible").first().click({ timeout: 10000 });
         await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
@@ -1283,7 +1384,8 @@ module.exports = {
   // naye helpers bhi test ke liye bahar (browser ke bina testable)
   readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod,
   openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
-  classifyStuckPage, RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL, startServer
+  classifyStuckPage, readSelectOptions, guessSelectIndex, quarterAliases, monthAliases,
+  RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL, startServer
 };
 
 if (require.main === module) startServer();

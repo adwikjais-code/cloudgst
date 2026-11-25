@@ -168,3 +168,30 @@ Sabse aam wajah (order me):
 
 Bridge `/debug` me is case me: `<step>_stuck.kind = "access_denied"`, us page ka URL/text/buttons, aur
 `<step>_stuck2` (retry ke baad ka page). TCS ka error usi wajah ka doosra lakshan hota hai.
+
+---
+
+## `Portal par period select nahi ho paya (FY:true, Month:false)`
+
+Matlab: Returns Dashboard khul gaya, par bridge FY/Quarter/Month dropdown theek se set nahi kar paya —
+aur bina period set kiye jo data aata hai wo **galat month ka** hota hai (isliye bridge aage badhne se rok deta hai;
+pehle aisa hone par GSTR-2B ₹0 save ho jata tha aur app us row ko "Synced" dikha deta tha).
+
+v1.16.0 me bridge:
+1. Page ke saare `<select>` padhta hai aur naam/options dekh kar pehchanta hai kaun sa FY, kaun sa Quarter, kaun sa Month hai
+   (portal ke labels badal jate hain — kabhi `fy`, kabhi kuch aur; quarter kabhi "Quarter 3", kabhi "Q3", kabhi "Oct - Dec").
+2. Har dropdown me 600ms ke gap par polling karta hai (options AJAX se der se aate hain) — FY 9s, month 9s, quarter 6s.
+3. Poora period ek baar na ho to 2.5s ruk kar **dobara** karta hai (password change/redirect ke baad dashboard der se bharta hai).
+4. Quarter dropdown na ho to bhi chalta hai (month hi period ka authority hai); FY + Month match hona zaroori hai.
+
+Aam wajah:
+1. **Password change ke turant baad** portal dashboard aadha bhara deta hai → ab bridge khud retry karta hai, phir bhi
+   2 min ruk kar ek hi baar Fetch karein.
+2. Client ka GSTIN portal par **kisi doosre device par login** hai → purana session logout karayein.
+3. Portal bahut slow / WAF rate-limit (ek hi IP se 80+ clients) → 10 min baad.
+
+Bridge `/debug` me is case me: `<step>_selects` (kaun se dropdown, kya options), `<step>_periodSelectFail`
+(FY/quarter/month ka result + poora dropdown dump), aur fail hone par `<step>_dashboard` nahi milega.
+
+**Zaroori:** v1.16.0 deploy ke pehle jo client fail hua tha, uska purana ₹0 data app me "Synced" dikh sakta hai —
+us client ko **Re-Fetch** karein, tab hi naye number par bharosa karein.
