@@ -1,5 +1,9 @@
-/* GST Cloud Bridge — v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes) / v1.11.0 (b2bSellers)
+/* GST Cloud Bridge — v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
  * Base: v1.9.6
+ * v1.15.0 fixes (production me mila: /services/error/accessdenied):
+ *  - Fail page ko classify karta hai: access_denied / concurrent_session / gstin_inactive / session_expired / unknown
+ *  - Access Denied (ya "already logged in") par cooldown + Auth Dashboard se fresh click wala retry,
+ *    phir bhi na chale to user ke liye saaf wajah + kya karein (logout / 5-10 min baad / GSTIN status check)
  * v1.14.0 fixes ("page.waitForSelector: Timeout 25000ms" / "'TDS and TCS credit received' link nahi mila" wala case):
  *  - Returns Dashboard na khule to ek retry: seedha return.gst.gov.in/returns/auth/dashboard kholta hai
  *  - Click se naya tab (popup) khule to us page ko adopt karta hai (pehle purane tab par atka reh jata tha)
@@ -413,6 +417,7 @@ function partialOutcome(status, opts) {
 
 /* ======================= PORTAL (Playwright) HELPERS — browser ke bina testable ======================= */
 const RETURNS_DASHBOARD_URL = "https://return.gst.gov.in/returns/auth/dashboard";
+const GST_AUTH_DASHBOARD_URL = "https://services.gst.gov.in/services/auth/dashboard";
 
 async function dismissModals(page) {
   const selectors = [
@@ -447,6 +452,36 @@ async function selectDropdownByText(page, targetText) {
     }
     return { matched: false };
   }, want);
+}
+
+/* Portal ne kaun sa "block" page dikhaya — ye pata hona zaroori hai, warna retry andha hota hai.
+ * (Production me dekha: https://services.gst.gov.in/services/error/accessdenied) */
+function classifyStuckPage(snap) {
+  const url = String((snap && snap.url) || "");
+  const title = String((snap && snap.title) || "");
+  const text = String((snap && snap.text) || "");
+  const all = url + " " + title + " " + text;
+  if (/access\s*denied|accessdenied/i.test(all)) {
+    return {
+      kind: "access_denied",
+      hint: "Portal ne Access Denied diya. Aksar wajah: (1) yahi GSTIN kisi doosre device/browser par pehle se login hai, " +
+        "(2) bahut jaldi-jaldi logins (portal ka WAF/rate limit), (3) GSTIN cancelled/suspended hai, ya (4) multi-GSTIN login me GSTIN select nahi hua. " +
+        "Portal par purana session logout karke (ya 5-10 min baad) dobara Fetch karein."
+    };
+  }
+  if (/already\s*logged\s*in|logged\s*in\s*from|another\s+(device|session|browser|system)/i.test(all)) {
+    return {
+      kind: "concurrent_session",
+      hint: "Is GSTIN ka session portal par pehle se khula hai (doosra device/browser). Portal par 'Logout' karke ya 10 min baad dobara Fetch karein."
+    };
+  }
+  if (/\bcancel+ed\b|suspended|inactive\s+gstin|not\s+active/i.test(all)) {
+    return { kind: "gstin_inactive", hint: "Client ka GSTIN portal par cancelled/suspended lagta hai — portal par status check karein." };
+  }
+  if (/session\s*(is\s*)?(expired|timed?\s*out)|please\s+login|login\s+again|invalid\s+session/i.test(all)) {
+    return { kind: "session_expired", hint: "Portal session expire ho gaya — dobara Fetch (naya captcha+OTP) karein." };
+  }
+  return { kind: "unknown", hint: "Portal ne apni normal Returns Dashboard nahi dikhai. /debug ke stuck snapshot (page text) se wajah pata chalegi." };
 }
 
 async function waitForDashboardSelects(page, timeoutMs) {
@@ -515,22 +550,48 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
   step("urlBeforeSelect", page.url());
 
   let ok = await waitForDashboardSelects(page, 40000);
+  let stuck = null;
   if (!ok) {
-    // Retry: kabhi menu click navigate nahi karta, aur WAF/portal slow hone par 25-40s kam pad jate hain
-    step("selectTimeoutAt", { url: page.url(), snapshot: await pageSnapshotBrief(page) });
+    // Retry 1: kabhi menu click navigate nahi karta; WAF/portal slow hone par 40s bhi kam pad jate hain
+    const snap1 = await pageSnapshotBrief(page);
+    step("selectTimeoutAt", Object.assign({ url: page.url(), kind: classifyStuckPage(snap1).kind }, snap1));
     await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
     await page.waitForTimeout(3000);
     await dismissModals(page);
     page = await adoptNewPopupPage(context, page, pagesBefore);
     ok = await waitForDashboardSelects(page, 25000);
+    if (!ok) stuck = await pageSnapshotBrief(page);
   }
   if (!ok) {
-    const snap = await pageSnapshotBrief(page);
-    step("stuck", snap);
-    const where = snap.url || page.url() || "?";
-    const hint = snap.title ? " (" + snap.title + ")" : "";
-    const btnHint = Array.isArray(snap.buttons) && snap.buttons.length ? " Visible: " + snap.buttons.slice(0, 4).join(" / ") : "";
-    throw new Error(`Returns Dashboard khul hi nahi paya — dropdowns nahi mile. Aakhri page: ${where}${hint}.${btnHint} Debug me ${t}_stuck dekhein.`);
+    const cls = classifyStuckPage(stuck);
+    step("stuck", Object.assign({ kind: cls.kind }, stuck));
+
+    // Retry 2 (sirf Access Denied / concurrent session par): portal ko thoda "cool down" do, phir
+    // Auth Dashboard se fresh click — direct URL goto se portal ka WAF aksar naraz hota hai.
+    if (cls.kind === "access_denied" || cls.kind === "concurrent_session") {
+      await page.waitForTimeout(cls.kind === "concurrent_session" ? 4000 : 8000);
+      await page.goto(GST_AUTH_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
+      await page.waitForTimeout(3000);
+      await dismissModals(page);
+      page = await adoptNewPopupPage(context, page, pagesBefore);
+      const retryBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
+      if (await retryBtn.isVisible().catch(() => false)) {
+        await retryBtn.click({ force: true }).catch(() => {});
+        await page.waitForTimeout(5000);
+        page = await adoptNewPopupPage(context, page, pagesBefore);
+      }
+      ok = await waitForDashboardSelects(page, 30000);
+      if (ok) step("dashboardAfterBlockRetry", page.url());
+      else stuck = await pageSnapshotBrief(page);
+    }
+    if (!ok) {
+      const cls2 = classifyStuckPage(stuck);
+      step("stuck2", Object.assign({ kind: cls2.kind }, stuck));
+      const where = (stuck && stuck.url) || page.url() || "?";
+      const hint2 = (stuck && stuck.title) ? " (" + stuck.title + ")" : "";
+      const finalHint = cls2.hint || cls.hint;
+      throw new Error(`Returns Dashboard access nahi mila${hint2}. Aakhri page: ${where}. ${finalHint} [${t}_stuck dekhein]`);
+    }
   }
 
   const fyRes = await selectDropdownByText(page, fy);
@@ -1222,7 +1283,7 @@ module.exports = {
   // naye helpers bhi test ke liye bahar (browser ke bina testable)
   readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod,
   openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
-  RETURNS_DASHBOARD_URL, startServer
+  classifyStuckPage, RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL, startServer
 };
 
 if (require.main === module) startServer();

@@ -146,3 +146,25 @@ us ek login ka page tha. Sabse aam wajah:
    - `services.gst.gov.in/...` hi rahe (dashboard par jata hi nahi) → WAF/slow; thodi der baad dobara.
    - "cancelled/suspended" jaisa message → client ka GSTIN status portal par check karein.
 3. `tcsLinks` me agar link ka naam alag hai (jaise "TDS/TCS credit received") to us naam ka regex `clickTcsMenu()` me add karna hai.
+
+---
+
+## `Returns Dashboard access nahi mila ... https://services.gst.gov.in/services/error/accessdenied`
+
+Portal ne us login ko **Access Denied** page de diya — matlab login hua, par returns section kholne par portal ne mana kar diya.
+Ye bridge ka bug nahi hota; portal (ya us GSTIN ke session) ka state hota hai. v1.15.0 se bridge ye page pehchanta hai
+(`access_denied`) aur:
+
+1. 8 second "cool down" deta hai,
+2. **Auth Dashboard** (`services.gst.gov.in/services/auth/dashboard`) se dobara RETURN DASHBOARD click karta hai
+   (direct URL goto se portal ka WAF naraz hota hai, isliye click wala rasta use hota hai),
+3. phir bhi na chale to error me wajah + kya karein likhta hai.
+
+Sabse aam wajah (order me):
+1. **Wahi GSTIN kisi doosre device/browser par pehle se login hai** → portal par purana session logout karein, ya 10 min ruk jayein.
+2. **Bahut jaldi-jaldi logins** (ek hi IP se 80+ clients) → portal ka WAF rate-limit; 5-10 min baad dobara.
+3. **GSTIN cancelled/suspended** → portal par status check karein.
+4. **Multi-GSTIN login me GSTIN select nahi hua** → portal par login karke GSTIN select karna padega.
+
+Bridge `/debug` me is case me: `<step>_stuck.kind = "access_denied"`, us page ka URL/text/buttons, aur
+`<step>_stuck2` (retry ke baad ka page). TCS ka error usi wajah ka doosra lakshan hota hai.
