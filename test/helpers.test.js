@@ -9,7 +9,7 @@ const {
   periodFor, getMonthName, getQuarterForMonth, parseAmt, buildColumnLabels,
   mapTcsColumns, parseTcsTables, parseTcsRecordCount, parseNoticeTables,
   summarizeGstr2B, safeFileName, readJsonFilesFromBuffer, buildB2bSellers,
-  normalizePeriod, ERR_TEXT_RE, OK_TEXT_RE
+  normalizePeriod, partialOutcome, ERR_TEXT_RE, OK_TEXT_RE
 } = require("../server.js");
 
 const cell = (t, cs = 1, rs = 1) => ({ t, cs, rs });
@@ -513,4 +513,115 @@ test("ERR_TEXT_RE / OK_TEXT_RE: portal ke real messages", () => {
     .forEach(t => assert.ok(ERR_TEXT_RE.test(t), t));
   ["Uploaded successfully", "File processed", "JSON generated", "Completed"].forEach(t => assert.ok(OK_TEXT_RE.test(t), t));
   assert.equal(ERR_TEXT_RE.test("Details saved successfully"), false);
+});
+
+/* ------------- app v5.4 (gst_client_tracker.html) ka B2B contract --------- */
+// App ka modal: s.name/gstin/s.upfildt/invCount/taxable/igst/cgst/sgst aur s.invoices[] padhta hai,
+// invoice: num/dt/val/txval/igst/cgst/sgst/rate/itcavl. In tests se wahi shape lock hoti hai.
+test("buildB2bSellers: app ke B2B modal ka poora shape (invoices ke saath)", () => {
+  const parsed = {
+    data: {
+      docdata: {
+        b2b: [{
+          ctin: "29AABCU9603R1ZM", trdnm: "SUPPLIER ONE", supfildt: "12/11/2026",
+          inv: [{
+            inum: "INV/001", idt: "01-10-2026", val: 1180, itcavl: "Y", rchrg: "N",
+            itms: [{ num: 1, itm_det: { rt: 18, txval: 1000, iamt: 0, camt: 90, samt: 90, csamt: 0 } }]
+          }]
+        }]
+      }
+    }
+  };
+  const [seller] = buildB2bSellers([parsed]);
+  assert.equal(seller.name, "SUPPLIER ONE");
+  assert.equal(seller.gstin, "29AABCU9603R1ZM");
+  assert.equal(seller.supfildt, "12/11/2026");
+  assert.equal(seller.invCount, 1);
+  assert.equal(seller.taxable, 1000);
+  assert.equal(seller.igst, 0);
+  assert.equal(seller.cgst, 90);
+  assert.equal(seller.sgst, 90);
+  assert.equal(seller.cess, 0);
+  assert.equal(seller.invoices.length, 1);
+  assert.deepEqual(seller.invoices[0], {
+    num: "INV/001", dt: "01-10-2026", val: 1180, txval: 1000,
+    igst: 0, cgst: 90, sgst: 90, cess: 0, rate: "18%", itcavl: "Y", rev: "N"
+  });
+});
+
+test("buildB2bSellers: multi-rate invoice -> rate '12%/18%', cess aur paise (2 dp) bache", () => {
+  const parsed = { data: { docdata: { b2b: [{ ctin: "07AAACD1234A1Z5", trdnm: "X", inv: [{
+    inum: "B/9", idt: "05-10-2026", val: 2500.5,
+    itms: [
+      { itm_det: { rt: 12, txval: 1000.25, iamt: 120.03, camt: 0, samt: 0, csamt: 10 } },
+      { itm_det: { rt: 18, txval: 500.5, iamt: 0, camt: 45.045, samt: 45.045 } }
+    ]
+  }] }] } } };
+  const [seller] = buildB2bSellers([parsed]);
+  assert.equal(seller.invoices[0].rate, "12%/18%");
+  assert.equal(seller.invoices[0].txval, 1500.75);
+  assert.equal(seller.invoices[0].igst, 120.03);
+  assert.equal(seller.invoices[0].cess, 10);
+  assert.equal(seller.cgst, 45.05); // 45.045 -> 2 dp
+  assert.equal(seller.igst, 120.03);
+});
+
+test("buildB2bSellers: multi-file 2B me ek hi supplier ki invoices jodti hain (ZIP case)", () => {
+  const f1 = { data: { docdata: { b2b: [{ ctin: "29AABCU9603R1ZM", trdnm: "S1", supfildt: "01-10-2026",
+    inv: [{ inum: "A", itms: [{ itm_det: { txval: 100, camt: 9, samt: 9 } }] }] }] } } };
+  const f2 = { data: { docdata: { b2b: [{ ctin: "29AABCU9603R1ZM", trdnm: "S1",
+    inv: [{ inum: "B", itms: [{ itm_det: { txval: 200, camt: 18, samt: 18 } }] }] }] } } };
+  const out = buildB2bSellers([f1, f2]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].invCount, 2);
+  assert.deepEqual(out[0].invoices.map(i => i.num), ["A", "B"]);
+  assert.equal(out[0].taxable, 300);
+  assert.equal(out[0].supfildt, "01-10-2026");
+});
+
+test("buildB2bSellers: items na hone par invoice-level fallback + val jab txval na ho", () => {
+  const a = { data: { docdata: { b2b: [{ ctin: "29AABCU9603R1ZM", trdnm: "S", inv: [
+    { inum: "X1", val: 1180, txval: 1000 },
+    { inum: "X2", val: 590 }
+  ] }] } } };
+  const [s] = buildB2bSellers([a]);
+  assert.equal(s.taxable, 1590); // 1000 + 590 (val last resort)
+  assert.equal(s.invoices.length, 2);
+  assert.equal(s.invoices[0].val, 1180);
+});
+
+/* ------------------- app ke `partial` contract (fetch-all) ---------------- */
+test("partialOutcome: sab ok -> partial null, allFailed false", () => {
+  const o = partialOutcome({ gstr2b: { state: "ok" }, tcs: { state: "ok" }, notices: { state: "skipped" } }, { gstr2b: true, tcs: true, notices: false });
+  assert.equal(o.allFailed, false);
+  assert.equal(o.partial, null);
+  assert.deepEqual(o.asked, ["GSTR-2B", "E-Com TCS"]);
+});
+
+test("partialOutcome: ek section fail -> ok response + partial flag", () => {
+  const o = partialOutcome({ gstr2b: { state: "ok" }, tcs: { state: "failed", message: "table nahi mili" } }, { gstr2b: true, tcs: true });
+  assert.equal(o.allFailed, false);
+  assert.equal(o.partial.tcs, true);
+  assert.equal(o.partial.gstr2b, false);
+  assert.match(o.partial.text, /E-Com TCS: table nahi mili/);
+});
+
+test("partialOutcome: saare maange gaye section fail -> ok:false (kuch save na ho)", () => {
+  const o = partialOutcome({ gstr2b: { state: "failed", message: "download nahi hui" }, tcs: { state: "failed", message: "x" } }, { gstr2b: true, tcs: true });
+  assert.equal(o.allFailed, true);
+  assert.equal(o.partial, null);
+});
+
+test("partialOutcome: 'empty' (koi record nahi) failure nahi hai, aur 'uncertain' bhi nahi", () => {
+  const o = partialOutcome({ gstr2b: { state: "uncertain" }, tcs: { state: "empty" } }, { gstr2b: true, tcs: true });
+  assert.equal(o.allFailed, false);
+  assert.equal(o.partial, null);
+});
+
+test("partialOutcome: option off ho to us section ko count hi nahi karte", () => {
+  const o = partialOutcome({ gstr2b: { state: "ok" }, tcs: { state: "skipped" } }, { gstr2b: true, tcs: false });
+  assert.equal(o.allFailed, false);
+  assert.deepEqual(o.asked, ["GSTR-2B"]);
+  const o2 = partialOutcome({ gstr2b: { state: "failed", message: "x" } }, { gstr2b: true, tcs: false });
+  assert.equal(o2.allFailed, true);
 });

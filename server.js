@@ -1,5 +1,12 @@
-/* GST Cloud Bridge — v1.12.0 (test suite + parsing fixes) / v1.11.0 (new app v4: b2bSellers) / v1.10.0 (ZIP 2B, options/autoClose, keepOthers)
+/* GST Cloud Bridge — v1.13.0 (app-contract fixes) / v1.12.0 (test suite + parsing fixes) / v1.11.0 (b2bSellers) / v1.10.0 (ZIP 2B, autoClose)
  * Base: v1.9.6
+ * v1.13.0 fixes (Drive ke app v5.4 — gst_client_tracker.html — ke contract ke hisaab se):
+ *  - b2bSellers me ab har seller ke saath `invoices[]` bhi jata hai (num/dt/val/txval/igst/cgst/sgst/cess/
+ *    rate/itcavl/rev) + `supfildt` + `cess`. App ka B2B modal isi shape par chalta hai; `invoices` na hone se
+ *    wo apna fallback parser chalata tha jo 2B ki iamt/camt/samt keys nahi padhta (modal + sheet me tax 0).
+ *    ZIP 2B par bhi ab invoice-level detail milti hai.
+ *  - `partial` contract: kuch section fail + kuch ok -> ok:true + partial{gstr2b,tcs,notices,text}, taaki app
+ *    jo mila wo save kare aur fail section ka purana data rakhe. Sab maange gaye section fail -> ok:false.
  * v1.12.0 fixes (npm test se pakde gaye):
  *  - GSTR-2B B2B sellers: 2B JSON me items `itms[].itm_det{txval,iamt,camt,samt}` me hote hain — pehle
  *    `items[].igst/cgst/sgst` padha ja raha tha, isliye har supplier ka taxable/tax 0 aata tha
@@ -302,49 +309,100 @@ function readJsonFilesFromBuffer(buf) {
   return { isZip: true, files };
 }
 
-/* ---- GSTR-2B B2B sellers list (naya app ka "B2B Sellers" modal isi se banta hai) ---- */
-// 2B JSON me invoice items `itms[].itm_det{txval,iamt,camt,samt,csamt}` me hote hain
-// (purana code `items[].igst/cgst/sgst` padh raha tha, isliye har supplier ke saare amount 0 aate the).
+/* ---- GSTR-2B B2B sellers list (app ka "B2B Sellers / Invoices" modal isi se banta hai) ----
+ * 2B JSON me invoice items `inv.itms[].itm_det{txval,iamt,camt,samt,csamt}` me hote hain —
+ * `items[].igst/cgst/sgst` (GSTR-1 style) 2B me nahi hota.
+ * App har seller ke saath `invoices[]` expect karta hai (warna wo apna fallback parser chalata hai);
+ * isliye yahan invoice-level detail bhi bhejte hain, app ke field names ke saath:
+ *   num, dt, val, txval, igst, cgst, sgst, cess, rate, itcavl, rev
+ */
 function buildB2bSellers(parsedList) {
   const map = new Map();
   const num = v => { const n = Number(v); return isFinite(n) ? n : 0; };
+  const r2 = n => Math.round(Number(n || 0) * 100) / 100;
+  // 2B keys (iamt/camt/samt/csamt) pehle, phir GSTR-1 style keys (igst/cgst/sgst/cess)
   const pick = (o, a, b) => (o && o[a] !== undefined && o[a] !== null && o[a] !== "" ? o[a] : (o ? o[b] : undefined));
   for (const parsed of parsedList || []) {
     const b2b = Array.isArray(parsed?.data?.docdata?.b2b) ? parsed.data.docdata.b2b : [];
     for (const sup of b2b) {
       const invs = Array.isArray(sup.inv) ? sup.inv : [];
-      let taxable = 0, igst = 0, cgst = 0, sgst = 0;
+      const gstin = String(sup.ctin || "").trim().toUpperCase();
+      const key = gstin || String(sup.trdnm || "Supplier");
+      const cur = map.get(key) || {
+        name: String(sup.trdnm || sup.ctin || "Supplier").trim(), gstin, supfildt: "",
+        invCount: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0, cess: 0, invoices: []
+      };
+      if (!cur.supfildt && sup.supfildt) cur.supfildt = String(sup.supfildt).trim();
       for (const inv of invs) {
         const items = Array.isArray(inv.itms) ? inv.itms : (Array.isArray(inv.items) ? inv.items : []);
+        let tx = 0, ig = 0, cg = 0, sg = 0, cs = 0;
+        const rates = new Set();
         if (items.length) {
           for (const it of items) {
             const d = it.itm_det || it.itm || it || {};
-            taxable += num(d.txval);
-            igst += num(pick(d, "iamt", "igst"));
-            cgst += num(pick(d, "camt", "cgst"));
-            sgst += num(pick(d, "samt", "sgst"));
+            tx += num(d.txval);
+            ig += num(pick(d, "iamt", "igst"));
+            cg += num(pick(d, "camt", "cgst"));
+            sg += num(pick(d, "samt", "sgst"));
+            cs += num(pick(d, "csamt", "cess"));
+            if (d.rt !== undefined && d.rt !== null && d.rt !== "") rates.add(String(d.rt) + "%");
           }
         } else {
-          // Items hi nahi hain (kabhi kabhi 2B me sirf invoice level values hoti hain).
+          // Items hi nahi hain (kabhi 2B me sirf invoice level values hoti hain).
           // txval na ho to invoice value (val) — wo tax ke saath hota hai, isliye sirf last resort.
-          const tx = pick(inv, "txval", "val");
-          taxable += num(tx);
-          igst += num(pick(inv, "iamt", "igst"));
-          cgst += num(pick(inv, "camt", "cgst"));
-          sgst += num(pick(inv, "samt", "sgst"));
+          tx = num(pick(inv, "txval", "val"));
+          ig = num(pick(inv, "iamt", "igst"));
+          cg = num(pick(inv, "camt", "cgst"));
+          sg = num(pick(inv, "samt", "sgst"));
+          cs = num(pick(inv, "csamt", "cess"));
+          if (inv.rt !== undefined && inv.rt !== null && inv.rt !== "") rates.add(String(inv.rt) + "%");
         }
+        cur.invoices.push({
+          num: String(inv.inum || inv.invnum || "").trim(),
+          dt: String(pick(inv, "idt", "dt") || inv.inv_dt || "").trim(),
+          val: r2(inv.val !== undefined && inv.val !== null && inv.val !== "" ? inv.val : (tx + ig + cg + sg + cs)),
+          txval: r2(tx), igst: r2(ig), cgst: r2(cg), sgst: r2(sg), cess: r2(cs),
+          rate: Array.from(rates).join("/"),
+          itcavl: String(inv.itcavl || "Y").trim().toUpperCase(),
+          rev: String(pick(inv, "rev", "rchrg") || "N").trim().toUpperCase()
+        });
+        cur.invCount += 1;
+        cur.taxable += tx; cur.igst += ig; cur.cgst += cg; cur.sgst += sg; cur.cess += cs;
       }
-      const gstin = String(sup.ctin || "").trim().toUpperCase();
-      const key = gstin || String(sup.trdnm || "Supplier");
-      const cur = map.get(key) || { name: String(sup.trdnm || sup.ctin || "Supplier").trim(), gstin, invCount: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0 };
-      cur.invCount += invs.length; cur.taxable += taxable; cur.igst += igst; cur.cgst += cgst; cur.sgst += sgst;
       map.set(key, cur);
     }
   }
   return Array.from(map.values()).map(x => ({
-    name: x.name, gstin: x.gstin, invCount: x.invCount,
-    taxable: Math.round(x.taxable), igst: Math.round(x.igst), cgst: Math.round(x.cgst), sgst: Math.round(x.sgst)
+    name: x.name, gstin: x.gstin, supfildt: x.supfildt, invCount: x.invCount,
+    taxable: r2(x.taxable), igst: r2(x.igst), cgst: r2(x.cgst), sgst: r2(x.sgst), cess: r2(x.cess),
+    invoices: x.invoices
   }));
+}
+
+/* ---- Section outcome (app ke `partial` contract ke liye) ----
+ * App ek hi request me 2B + TCS maangta hai. Pehle bridge kisi ek section ke fail hone par
+ * poora response ok:false kar deta tha -> app kuch bhi save nahi karta tha (jo mila wo bhi loss).
+ * Ab: sab maange gaye section fail -> ok:false (kuch save na ho);
+ *     kuch fail + kuch ok    -> ok:true + partial{...}, app sirf fail section ka purana data rakhta hai.
+ */
+function partialOutcome(status, opts) {
+  const asked = [], failed = [];
+  const check = (key, label) => {
+    asked.push(label);
+    const st = status && status[key];
+    if (st && st.state === "failed") failed.push(label + ": " + (st.message || "fetch nahi hua"));
+  };
+  if (opts && opts.gstr2b) check("gstr2b", "GSTR-2B");
+  if (opts && opts.tcs) check("tcs", "E-Com TCS");
+  if (opts && opts.notices) check("notices", "Notices");
+  const allFailed = failed.length > 0 && failed.length >= asked.length;
+  const partial = failed.length && !allFailed ? {
+    gstr2b: !!(opts && opts.gstr2b) && status?.gstr2b?.state === "failed",
+    tcs: !!(opts && opts.tcs) && status?.tcs?.state === "failed",
+    notices: !!(opts && opts.notices) && status?.notices?.state === "failed",
+    text: "Adhoora fetch — " + failed.join(" | ")
+  } : null;
+  return { asked, failed, allFailed, partial };
 }
 
 /* ======================= SERVER ======================= */
@@ -964,14 +1022,22 @@ function startServer() {
         dbg.steps.noticesError = err.message;
       }
 
+      // Maanga gaya har section fail -> ok:false (sheet me kuch save na ho).
+      // Kuch section ok, kuch fail -> ok:true + partial (app fail section ka purana data rakhta hai,
+      // aur jo mila use save kar deta hai — pehle yahan sab kuch chhoot jata tha).
+      const outcome = partialOutcome(result.status, opts);
+      if (outcome.allFailed) {
+        dbg.status = result.status; dbg.warnings = result.warnings; lastDebug = dbg;
+        return res.json(Object.assign({}, result, { ok: false, error: "Data fetch nahi hua (Sheet me save nahi kiya) -> " + outcome.failed.join(" | ") }));
+      }
+      if (outcome.partial) {
+        result.partial = outcome.partial;
+        result.warnings.push("[partial] " + outcome.partial.text);
+      }
       dbg.status = result.status;
       dbg.warnings = result.warnings;
+      if (result.partial) dbg.partial = result.partial;
       lastDebug = dbg;
-      // GSTR-2B / E-Com maanga gaya tha par fail hua -> app ko error do (0 save na ho)
-      const failed = [];
-      if (opts.gstr2b && result.status.gstr2b?.state === "failed") failed.push("GSTR-2B: " + result.status.gstr2b.message);
-      if (opts.tcs && result.status.tcs?.state === "failed") failed.push("E-Com TCS: " + result.status.tcs.message);
-      if (failed.length) return res.json(Object.assign({}, result, { ok: false, error: "Data fetch nahi hua (Sheet me save nahi kiya) -> " + failed.join(" | ") }));
       res.json(result);
     } finally {
       s.busy = false;
@@ -1064,7 +1130,7 @@ module.exports = {
   parseTcsRecordCount, parseAmt, buildColumnLabels, mapTcsColumns, parseTcsTables, parseNoticeTables,
   summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE,
   // naye helpers bhi test ke liye bahar (browser ke bina testable)
-  readJsonFilesFromBuffer, buildB2bSellers, getMonthName, normalizePeriod, startServer
+  readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod, startServer
 };
 
 if (require.main === module) startServer();
