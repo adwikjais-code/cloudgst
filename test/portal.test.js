@@ -10,6 +10,7 @@ const assert = require("node:assert/strict");
 const {
   openReturnsDashboardAndSearch, selectDropdownByText, dismissModals, classifyStuckPage,
   guessSelectIndex, quarterAliases, monthAliases,
+  isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
   RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL
 } = require("../server.js");
 
@@ -36,24 +37,42 @@ function makePage(opts = {}) {
     selects: opts.selects || DEFAULT_SELECTS(),
     selectsAfter: opts.selectsAfter || null,
     fillAfter: opts.fillAfter || 0, // itne evaluate ke baad options bhar jate hain (AJAX)
+    revealSelects: opts.revealSelects || null, // GET DETAILS/PROCEED click par period dropdown aa jata hai
     gotoPlan: opts.gotoPlan || [],
     popupOnClick: !!opts.popupOnClick,
+    childFrames: opts.childFrames || [],
     pages: []
   };
 
-  const newPage = () => ({
-    url: () => RETURNS_DASHBOARD_URL,
-    waitForLoadState: async () => {},
-    waitForTimeout: async () => {},
-    waitForSelector: async () => ({}),
-    evaluate: async (fn) => (fn.toString().includes("dispatchEvent")
-      ? { matched: true, name: "fy", option: "2026-27" }
-      : { url: RETURNS_DASHBOARD_URL, title: "Returns Dashboard", selects: 3, visibleSelects: 3, text: "", buttons: [] }),
-    locator: () => ({ first: () => ({ count: async () => 1, isVisible: async () => false, click: async () => {} }), count: async () => 1 })
-  });
+  const newPage = () => {
+    const pSel = DEFAULT_SELECTS();
+    return {
+      url: () => RETURNS_DASHBOARD_URL,
+      waitForLoadState: async () => {},
+      waitForTimeout: async () => {},
+      waitForSelector: async () => ({}),
+      evaluate: async (fn, arg) => {
+        const src = fn.toString();
+        if (src.includes("document.title")) return { url: RETURNS_DASHBOARD_URL, title: "Returns Dashboard", selects: 3, visibleSelects: 3, text: "", buttons: [] };
+        if (src.includes("options: Array.from(s.options)")) return pSel;
+        if (src.includes("dispatchEvent")) {
+          const pool = arg.index >= 0 ? [pSel[arg.index]].filter(Boolean) : pSel;
+          for (const sel of pool) for (const want of arg.texts) {
+            const hit = (sel.options || []).find(o => o.toLowerCase().includes(want));
+            if (hit) return { matched: true, name: sel.name, option: hit };
+          }
+          return { matched: false };
+        }
+        return undefined;
+      },
+      locator: () => ({ first: () => ({ count: async () => 1, isVisible: async () => false, click: async () => {} }), count: async () => 1 })
+    };
+  };
 
   const page = {
     url: () => state.url,
+    mainFrame: () => page,
+    frames: () => [page, ...state.childFrames],
     context: () => ({ pages: () => [page, ...state.pages] }),
     keyboard: { press: async () => {} },
     waitForTimeout: async () => {},
@@ -72,6 +91,11 @@ function makePage(opts = {}) {
     evaluate: async (fn, arg) => {
       const src = fn.toString();
       state.evaluates++;
+      // AJAX: kuch evaluate/click ke baad period dropdown bhar jata hai
+      if (state.selectsAfter && !state.filled && state.evaluates > state.fillAfter) {
+        state.selects = state.selectsAfter;
+        state.filled = true;
+      }
       if (src.includes("document.title")) {
         return { url: state.url, title: state.title, selects: state.hasSelect ? 3 : 0, visibleSelects: state.hasSelect ? 3 : 0, text: state.text, buttons: state.buttons };
       }
@@ -79,11 +103,6 @@ function makePage(opts = {}) {
         return state.selects.map(x => ({ i: x.i, name: x.name, options: (x.options || []).slice(0, 15) }));
       }
       if (src.includes("dispatchEvent")) {
-        // AJAX: kuch evaluate ke baad options bhar jate hain
-        if (state.selectsAfter && !state.filled && state.evaluates > state.fillAfter) {
-          state.selects = state.selectsAfter;
-          state.filled = true;
-        }
         const pool = arg.index >= 0 ? [state.selects[arg.index]].filter(Boolean) : state.selects;
         for (const sel of pool) {
           for (const want of arg.texts) {
@@ -102,9 +121,15 @@ function makePage(opts = {}) {
     locator: (sel) => ({
       first: () => ({
         count: async () => 1,
-        isVisible: async () => (/RETURN DASHBOARD/i.test(sel) ? opts.retBtn !== false : false),
+        isVisible: async () => (/RETURN DASHBOARD/i.test(sel)
+          ? opts.retBtn !== false
+          : !!(state.revealSelects && /GET DETAILS/i.test(sel))),
         click: async () => {
           state.clicked.push(sel);
+          if (state.revealSelects && /GET DETAILS/i.test(sel)) {
+            state.selects = state.revealSelects;
+            state.filled = true;
+          }
           if (/RETURN DASHBOARD/i.test(sel)) {
             if (state.popupOnClick && !state.pages.length) state.pages.push(newPage());
             else if (opts.clickNavigates) { state.url = RETURNS_DASHBOARD_URL; state.hasSelect = true; }
@@ -116,6 +141,29 @@ function makePage(opts = {}) {
     _state: state
   };
   return page;
+}
+
+// Andar ke iframe jaisa page (naye portal par Returns Dashboard iframe me hota hai)
+function makeFrame(selects) {
+  return {
+    url: () => "https://return.gst.gov.in/returns/auth/dashboard?iframe=1",
+    waitForTimeout: async () => {},
+    evaluate: async (fn, arg) => {
+      const src = fn.toString();
+      if (src.includes("document.title")) return { url: "https://return.gst.gov.in/iframe", title: "Returns", selects: selects.length, visibleSelects: selects.length, text: "", buttons: [] };
+      if (src.includes("options: Array.from(s.options)")) return selects.map(x => ({ i: x.i, name: x.name, options: (x.options || []).slice(0, 15) }));
+      if (src.includes("dispatchEvent")) {
+        const pool = arg.index >= 0 ? [selects[arg.index]].filter(Boolean) : selects;
+        for (const sel of pool) for (const want of arg.texts) {
+          const hit = (sel.options || []).find(o => o.toLowerCase().includes(want));
+          if (hit) return { matched: true, name: sel.name, option: hit, tryNo: arg.tryNo };
+        }
+        return { matched: false, tryNo: arg.tryNo, seen: [] };
+      }
+      return undefined;
+    },
+    locator: () => ({ first: () => ({ count: async () => 1, isVisible: async () => true, click: async () => {} }), count: async () => 1 })
+  };
 }
 
 /* -------------------------------- tests --------------------------------- */
@@ -340,4 +388,115 @@ test("quarterAliases / monthAliases: portal ke label variants cover hote hain (a
   assert.ok(!mA.includes("Oct"), "bare 'Oct' quarter ke 'Oct - Dec' se match ho jata — nahi hona chahiye");
   assert.ok(monthAliases("02", "2026-27").includes("Feb-2027")); // Jan-Mar next year
   assert.deepEqual(monthAliases("13", "2026-27"), []);
+});
+
+/* ------------- production: FY ke baad month dropdown hi nahi aata (IMG_0446) ------------- */
+test("period select: portal sirf FY dropdown de raha ho to error me poora dump + kya karein aata hai", async () => {
+  // Asli screenshot: "Dropdowns mile -> select0: 2019-20/2020-21/2021-22/2022-23" (month select hi nahi)
+  const page = makePage({
+    url: RETURNS_DASHBOARD_URL,
+    selects: [{ i: 0, name: "", options: ["2019-20", "2020-21", "2021-22", "2022-23", "2026-27"] }]
+  });
+  const dbg = { steps: {} };
+  await assert.rejects(() => openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b"),
+    (err) => {
+      assert.match(err.message, /FY:true, Month:false/);
+      assert.match(err.message, /2026-27/);          // dump me FY ke options
+      assert.match(err.message, /Return Filing Period/); // user ke liye hint
+      assert.match(err.message, /select0:/);
+      return true;
+    });
+  assert.equal(dbg.steps.gstr2b_periodSelectFail.selects.length, 1);
+  assert.equal(dbg.steps.gstr2b_periodSelectFail.fyRes.matched, true);
+  assert.ok(dbg.steps.gstr2b_periodWait1, "period wait ka debug nahi mila");
+});
+
+test("period select: FY ke baad month dropdown der se (AJAX) aata hai to bhi ban jata hai", async () => {
+  const page = makePage({
+    url: RETURNS_DASHBOARD_URL,
+    selects: [{ i: 0, name: "", options: ["2025-26", "2026-27"] }],
+    selectsAfter: DEFAULT_SELECTS(),
+    fillAfter: 4 // kuch polls ke baad poora period dropdown aa jata hai
+  });
+  const dbg = { steps: {} };
+  const out = await openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b");
+  assert.equal(out, page);
+  assert.equal(dbg.steps.gstr2b_dashboard.mRes.option, "October");
+});
+
+test("period select: GET DETAILS/PROCEED button dabane par month dropdown aata hai", async () => {
+  const page = makePage({
+    url: RETURNS_DASHBOARD_URL,
+    selects: [{ i: 0, name: "", options: ["2025-26", "2026-27"] }],
+    revealSelects: DEFAULT_SELECTS()
+  });
+  const dbg = { steps: {} };
+  const out = await openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b");
+  assert.equal(out, page);
+  assert.equal(dbg.steps.gstr2b_dashboard.mRes.option, "October");
+  assert.ok((dbg.steps.gstr2b_periodReveal1.clicked || []).length >= 1, "koi reveal button nahi dabaya");
+});
+
+/* --------------------------- option classifiers ---------------------------- */
+test("isMonthOption/isQuarterOption/hasPeriodSelect: labels aur numeric lists dono pehchante hain", () => {
+  ["October", "Oct-2026", "Oct 2026", "10/2026", "10", " 09 "].forEach(o => assert.equal(isMonthOption(o), true, o));
+  ["2019-20", "2026-27", "Quarter 3", "", "13", "13/2026"].forEach(o => assert.equal(isMonthOption(o), false, o));
+
+  ["Quarter 3", "Q3", "QTR 2", "Oct - Dec", "OctDec", "Apr - Jun"].forEach(o => assert.equal(isQuarterOption(o), true, o));
+  ["October", "2026-27", ""].forEach(o => assert.equal(isQuarterOption(o), false, o));
+
+  assert.equal(hasPeriodSelect(DEFAULT_SELECTS()), true);
+  assert.equal(hasPeriodSelect([{ i: 0, name: "", options: ["2019-20", "2020-21", "2021-22"] }]), false);
+  assert.equal(hasPeriodSelect([]), false);
+});
+
+test("waitForPeriodSelect: options aane ka intezaar karta hai, phir ok deta hai", async () => {
+  const page = makePage({ url: RETURNS_DASHBOARD_URL, selects: [{ i: 0, name: "", options: ["2025-26"] }], selectsAfter: DEFAULT_SELECTS(), fillAfter: 2 });
+  const res = await waitForPeriodSelect(page, 5000);
+  assert.equal(res.ok, true);
+  assert.ok(res.dump.length >= 3);
+});
+
+test("period select: period dropdown andar ke iframe me ho to wahi frame se select hota hai", async () => {
+  const page = makePage({
+    url: RETURNS_DASHBOARD_URL,
+    selects: [{ i: 0, name: "", options: ["2019-20", "2020-21", "2021-22", "2022-23", "2026-27"] }],
+    childFrames: [makeFrame(DEFAULT_SELECTS())]
+  });
+  const dbg = { steps: {} };
+  const out = await openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b");
+  assert.equal(out, page);
+  assert.ok(dbg.steps.gstr2b_periodFrame1, "iframe detect nahi hua");
+  assert.equal(dbg.steps.gstr2b_periodFrame1.index, 1); // index 0 = main page
+  assert.equal(dbg.steps.gstr2b_dashboard.fyRes.option, "2026-27");
+  assert.equal(dbg.steps.gstr2b_dashboard.mRes.option, "October");
+});
+
+test("findPeriodFrame: period dropdown wala frame dhundh leta hai, warna null", async () => {
+  const withMonths = makePage({ childFrames: [makeFrame(DEFAULT_SELECTS())] });
+  const found = await findPeriodFrame(withMonths);
+  assert.ok(found && found.frame && found.dump.length === 3);
+
+  const noMonths = makePage({ childFrames: [makeFrame([{ i: 0, name: "", options: ["2019-20", "2020-21"] }])] });
+  assert.equal(await findPeriodFrame(noMonths), null);
+  assert.equal(await findPeriodFrame({}), null); // frames() hi nahi
+});
+
+test("period select: sirf Quarter wala dashboard (QRMP) -> saaf wajah ke saath ruk jata hai", async () => {
+  const page = makePage({
+    url: RETURNS_DASHBOARD_URL,
+    selects: [
+      { i: 0, name: "fy", options: ["2025-26", "2026-27"] },
+      { i: 1, name: "quarter", options: ["Quarter 1", "Quarter 2", "Quarter 3", "Quarter 4"] }
+    ]
+  });
+  const dbg = { steps: {} };
+  await assert.rejects(() => openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b"),
+    (err) => {
+      assert.match(err.message, /Quarter dikha raha hai/);
+      assert.match(err.message, /QRMP|quarterly/);
+      return true;
+    });
+  assert.equal(dbg.steps.gstr2b_periodSelectFail.qRes.matched, true);
+  assert.equal(dbg.steps.gstr2b_periodSelectFail.mRes.reason, "no-month-select");
 });

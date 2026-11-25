@@ -195,3 +195,28 @@ Bridge `/debug` me is case me: `<step>_selects` (kaun se dropdown, kya options),
 
 **Zaroori:** v1.16.0 deploy ke pehle jo client fail hua tha, uska purana ₹0 data app me "Synced" dikh sakta hai —
 us client ko **Re-Fetch** karein, tab hi naye number par bharosa karein.
+
+---
+
+## `FY:true, Month:false — Dropdowns mile -> select0: 2019-20/2020-21/...` (month dropdown hi nahi mila)
+
+Iska matlab: Returns Dashboard khul gaya, FY bhi select ho gaya, par **Month (Return Filing Period) dropdown page
+par hi nahi tha** — sirf FY wala ek select mila. Isliye bridge ne galat/adhoora data save hone se pehle rok diya.
+
+v1.17.0 me bridge ab:
+1. FY set karne ke baad **12-15 second tak** month dropdown ka intezaar karta hai (polling) — pehle sirf 1.2s dekhta tha,
+   aur portal AJAX/reload ke baad month list der se deta hai.
+2. Dropdown na dikhe to page reload hone par dobara wait karta hai, phir **GET DETAILS / PROCEED / CONTINUE / SUBMIT /
+   SEARCH** jaisa button dabakar (max 2) dubara dekhta hai.
+3. Portal ne dashboard **andar ke iframe** me rakha ho to wahan ke selects bhi padhta/select karta hai.
+4. Month options numeric (`10`, `10/2026`) bhi pehchanta hai; matching pehle exact, phir substring hoti hai.
+5. Fail par error me page title/URL + har dropdown ke poore options + frame list aate hain.
+
+Agar phir bhi ye error aaye to is client ka dashboard **manually** kholein (same login) aur dekhein:
+- **Month/Period dropdown dikh raha hai?** Nahi dikh raha → wo account QRMP/quarterly hoga, 2B month-wise nahi mil sakti
+  (bridge ab ye wajah error me likh deta hai).
+- **2B is month ke liye generate hui hai?** Portal par GSTR-2B section me us month ka kuch data hona chahiye.
+- **GSTIN cancelled/suspended** ho to 2B milti hi nahi.
+
+Bridge `/debug` me: `<step>_periodWait1/2` (intezaar ka result), `<step>_periodReveal1/2` (kaun sa button dabaya),
+`<step>_periodFrame1/2` (iframe mila to uski URL + selects), `<step>_periodSelectFail` (poora dump).
