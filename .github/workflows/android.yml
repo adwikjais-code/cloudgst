@@ -64,6 +64,8 @@ jobs:
             sha256sum "CloudGST.apk"
             unzip -l "CloudGST.apk" | tail -25
             echo "manifest ok: $(unzip -p "CloudGST.apk" AndroidManifest.xml > /dev/null && echo yes)"
+            echo "minSdk: $(unzip -p "CloudGST.apk" AndroidManifest.xml | strings | grep -m1 -E '^2[4-9]$' || echo '?')"
+            echo "signature files: $(unzip -Z1 "CloudGST.apk" | grep -cE '^META-INF/.*(RSA|SF|MF)$' || true)"
             echo "index.html bytes: $(unzip -p "CloudGST.apk" assets/app/index.html | wc -c)"
             echo "native portal hook count: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativePortalBtn || true)"
             echo "json save/select count: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpSavedJsonSel || true)"
@@ -82,7 +84,7 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.8.2 — back gesture + fingerprint lock)
+          ## CloudGST Android APK (v5.8.3 — Android 7+ support)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
@@ -95,8 +97,8 @@ jobs:
           (Settings → 🔒 App lock ON/OFF; device PIN bhi chalta hai).
           EOF
           cat verify.md >> notes.md
-          gh release delete android-v5.8.2 --yes 2>/dev/null || true
-          git push origin :refs/tags/android-v5.8.2 2>/dev/null || true
-          gh release create android-v5.8.2 "CloudGST.apk" \
+          gh release delete android-v5.8.3 --yes 2>/dev/null || true
+          git push origin :refs/tags/android-v5.8.3 2>/dev/null || true
+          gh release create android-v5.8.3 "CloudGST.apk" \
             --title "CloudGST Android v5.8 (APK)" \
             --notes-file notes.md
