@@ -109,3 +109,40 @@ object-form `jsonContent` + `fp` check, `submit-login` ka `status`/`captchaBase6
 server.js ke messages "Render" kehte hain — sirf text hai, function par asar nahi. App har client ke liye
 `keepOthers:true` bhejta hai (bridge max 2 bina-login sessions rakhta hai) — 3+ captcha ek saath khule to sabse
 purana band ho sakta hai ("Session expired").
+
+---
+
+# Troubleshooting: "Data fetch nahi hua (Sheet me save nahi kiya)"
+
+## `GSTR-2B: page.waitForSelector: Timeout 25000ms exceeded` + `E-Com TCS: Menu me 'TDS and TCS credit received' link nahi mila`
+
+**Dono ek hi baat hai: us client ka Returns Dashboard khul hi nahi paya.**
+`openReturnsDashboardAndSearch()` me FY/Quarter/Month ke dropdowns ka wait hota hai; wo na mile to GSTR-2B
+step wahin ruk jata hai. Usi page par TCS ke liye menu link dhunda jata hai — page dashboard hi nahi tha,
+isliye wo bhi nahi mila. 2B aur TCS dono maange gaye the → v1.13 ka `partial` rule bhi `ok:false` deta hai
+(dono fail) → app "Data fetch nahi hua" dikhata hai, sheet me kuch save nahi hota.
+
+Kabhi kabhi 88 me se 1-2 client par aata hai (baaki sync ho jate hain) — matlab bridge-wide bug nahi,
+us ek login ka page tha. Sabse aam wajah:
+
+1. **Portal slow / WAF** — 25s wait kam pad jata hai, ya `return.gst.gov.in` direct load par blank page deta hai.
+2. **Popup naya tab** — RETURNS DASHBOARD click se dashboard naye tab me khulta hai; hum purane tab par ruke rehte the.
+3. **Blocking modal** — "Remind me later", "OK", "Proceed" jaisa popup / pending-return ya Aadhaar alert.
+4. **Client-specific portal state** — GSTIN cancelled/suspended, "already logged in from another device", ya previous
+   period ka return pending — aise case me dashboard dropdowns ke bina koi message page dikhata hai.
+
+**v1.14.0 me kya fix hua:**
+- Dropdown wait 25s → **40s**, aur modals zyada tarah se dismiss (Proceed/Continue/I Agree + Esc).
+- Fail hone par **ek retry**: seedha `return.gst.gov.in/returns/auth/dashboard` kholta hai.
+- Click se **naya tab** khule to wo page adopt kar leta hai (aage 2B/TCS usi page par).
+- Fail hone par error message me **asli page ka URL + title + visible buttons** aate hain, aur `/debug` me
+  `<step>_selectTimeoutAt` aur `<step>_stuck` (page ka 500-char text, selects, buttons) save hote hain.
+- TCS menu link na mile to `/debug` me `tcsLinks` — page par TDS/TCS/returns se jude saare links (text + href).
+
+**Aage kya karein (agar phir aaye):**
+1. Us client ko dobara Fetch karein — retry/popup fix se aksar pehli hi baar me ho jata hai.
+2. Phir bhi error aaye to error line me diya gaya URL/title dekhein:
+   - `Session Expired` / "already logged in" → portal par purana session band karein (ya 5 min wait), phir login.
+   - `services.gst.gov.in/...` hi rahe (dashboard par jata hi nahi) → WAF/slow; thodi der baad dobara.
+   - "cancelled/suspended" jaisa message → client ka GSTIN status portal par check karein.
+3. `tcsLinks` me agar link ka naam alag hai (jaise "TDS/TCS credit received") to us naam ka regex `clickTcsMenu()` me add karna hai.

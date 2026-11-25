@@ -1,5 +1,11 @@
-/* GST Cloud Bridge — v1.13.0 (app-contract fixes) / v1.12.0 (test suite + parsing fixes) / v1.11.0 (b2bSellers) / v1.10.0 (ZIP 2B, autoClose)
+/* GST Cloud Bridge — v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes) / v1.11.0 (b2bSellers)
  * Base: v1.9.6
+ * v1.14.0 fixes ("page.waitForSelector: Timeout 25000ms" / "'TDS and TCS credit received' link nahi mila" wala case):
+ *  - Returns Dashboard na khule to ek retry: seedha return.gst.gov.in/returns/auth/dashboard kholta hai
+ *  - Click se naya tab (popup) khule to us page ko adopt karta hai (pehle purane tab par atka reh jata tha)
+ *  - Dropdown ka wait 25s -> 40s (portal slow ho to), modals zyada tarah se dismiss (Proceed/Continue/Esc)
+ *  - Fail hone par error me ASLI page ka URL/title/visible buttons aate hain + debug me `*_stuck` snapshot
+ *  - TCS menu link na mile to page ke TDS/TCS/returns links debug me (`tcsLinks`) — agla fix aasan
  * v1.13.0 fixes (Drive ke app v5.4 — gst_client_tracker.html — ke contract ke hisaab se):
  *  - b2bSellers me ab har seller ke saath `invoices[]` bhi jata hai (num/dt/val/txval/igst/cgst/sgst/cess/
  *    rate/itcavl/rev) + `supfildt` + `cess`. App ka B2B modal isi shape par chalta hai; `invoices` na hone se
@@ -405,6 +411,149 @@ function partialOutcome(status, opts) {
   return { asked, failed, allFailed, partial };
 }
 
+/* ======================= PORTAL (Playwright) HELPERS — browser ke bina testable ======================= */
+const RETURNS_DASHBOARD_URL = "https://return.gst.gov.in/returns/auth/dashboard";
+
+async function dismissModals(page) {
+  const selectors = [
+    "button:has-text('Remind me later')", "button:has-text('CLOSE')", "button:has-text('OK')", ".modal .close",
+    "button:has-text('Proceed')", "button:has-text('Continue')", "button:has-text('I Agree')"
+  ];
+  for (const sel of selectors) {
+    const btn = page.locator(sel).first();
+    if (await btn.isVisible().catch(() => false)) {
+      await btn.click().catch(() => {});
+      await page.waitForTimeout(350);
+    }
+  }
+  // Kuch modals sirf Esc se band hote hain
+  try { if (page.keyboard) await page.keyboard.press("Escape"); } catch (_) {}
+}
+
+async function selectDropdownByText(page, targetText) {
+  // Khaali text par har option match ho jata tha ("" sab me includes hai) -> galat period select
+  const want = String(targetText == null ? "" : targetText).trim();
+  if (!want) return { matched: false, reason: "empty" };
+  return await page.evaluate((txt) => {
+    const lower = txt.toLowerCase();
+    const selects = Array.from(document.querySelectorAll("select"));
+    for (const sel of selects) {
+      const opt = Array.from(sel.options).find(o => (o.text || "").toLowerCase().includes(lower));
+      if (opt) {
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event("change", { bubbles: true }));
+        return { matched: true, name: sel.name || sel.id || "", option: opt.text.trim() };
+      }
+    }
+    return { matched: false };
+  }, want);
+}
+
+async function waitForDashboardSelects(page, timeoutMs) {
+  try { await page.waitForSelector("select", { timeout: timeoutMs }); return true; } catch (_) { return false; }
+}
+
+// Fail hone par "page par kya dikh raha hai" — error message + /debug dono me jata hai
+async function pageSnapshotBrief(page) {
+  const info = await page.evaluate(() => {
+    const clean = t => String(t || "").replace(/\s+/g, " ").trim();
+    const vis = el => el.offsetParent !== null;
+    return {
+      url: location.href, title: document.title,
+      selects: document.querySelectorAll("select").length,
+      visibleSelects: Array.from(document.querySelectorAll("select")).filter(vis).length,
+      text: clean(document.body.innerText).slice(0, 500),
+      buttons: Array.from(document.querySelectorAll("button, a.btn, a[role='button']")).filter(vis).map(b => clean(b.innerText)).filter(Boolean).slice(0, 12)
+    };
+  }).catch(e => ({ error: String((e && e.message) || e) }));
+  return info || {};
+}
+
+// Click se naya tab khula ho to us page ko apna lein (warna hum purane tab par atke rehte hain)
+async function adoptNewPopupPage(context, currentPage, pagesBefore) {
+  if (!context || typeof context.pages !== "function") return currentPage;
+  let pages = [];
+  try { pages = context.pages() || []; } catch (_) { return currentPage; }
+  if (pages.length <= pagesBefore) return currentPage;
+  const np = pages[pages.length - 1];
+  try { await np.waitForLoadState("domcontentloaded", { timeout: 15000 }); } catch (_) {}
+  return np;
+}
+
+/* Returns Dashboard kholna + FY/Quarter/Month select karna.
+ * Fail hone par ek retry (seedha return.gst.gov.in URL), aur phir bhi fail ho to ASLI page ka
+ * diagnostic error deta hai (pehle sirf "waitForSelector Timeout 25000ms" aata tha — pata hi nahi
+ * chalta tha ki portal ne kaun sa page dikhaya tha).
+ * Returns: page (popup adopt hua ho to naya page) — caller ko isi page se aage kaam karna chahiye.
+ */
+async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
+  const t = tag || "ret";
+  const step = (k, v) => { if (dbg && dbg.steps) dbg.steps[t + "_" + k] = v; };
+  const context = typeof page.context === "function" ? page.context() : null;
+  const pagesBefore = context && typeof context.pages === "function" ? (context.pages() || []).length : 0;
+  const startedOn = page;
+
+  await dismissModals(page);
+  if (!String(page.url() || "").includes("/returns/auth/dashboard")) {
+    const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
+    if (await retBtn.isVisible().catch(() => false)) {
+      await retBtn.click({ force: true }).catch(() => {});
+      await page.waitForTimeout(4500);
+    } else {
+      // Koi cheez (e.g. modal) click rok rahi ho to page par link dhundh kar click karte hain
+      await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll("a"));
+        const retLink = links.find(a => /returns dashboard/i.test(a.textContent || "") || (a.getAttribute("href") || "").includes("/returns/auth/dashboard"));
+        if (retLink) retLink.click();
+      }).catch(() => {});
+      await page.waitForTimeout(4500);
+    }
+    page = await adoptNewPopupPage(context, page, pagesBefore);
+  }
+  await dismissModals(page);
+  if (page !== startedOn) step("adoptedPopup", page.url());
+  step("urlBeforeSelect", page.url());
+
+  let ok = await waitForDashboardSelects(page, 40000);
+  if (!ok) {
+    // Retry: kabhi menu click navigate nahi karta, aur WAF/portal slow hone par 25-40s kam pad jate hain
+    step("selectTimeoutAt", { url: page.url(), snapshot: await pageSnapshotBrief(page) });
+    await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
+    await page.waitForTimeout(3000);
+    await dismissModals(page);
+    page = await adoptNewPopupPage(context, page, pagesBefore);
+    ok = await waitForDashboardSelects(page, 25000);
+  }
+  if (!ok) {
+    const snap = await pageSnapshotBrief(page);
+    step("stuck", snap);
+    const where = snap.url || page.url() || "?";
+    const hint = snap.title ? " (" + snap.title + ")" : "";
+    const btnHint = Array.isArray(snap.buttons) && snap.buttons.length ? " Visible: " + snap.buttons.slice(0, 4).join(" / ") : "";
+    throw new Error(`Returns Dashboard khul hi nahi paya — dropdowns nahi mile. Aakhri page: ${where}${hint}.${btnHint} Debug me ${t}_stuck dekhein.`);
+  }
+
+  const fyRes = await selectDropdownByText(page, fy);
+  await page.waitForTimeout(1000);
+  const qRes = await selectDropdownByText(page, getQuarterForMonth(monthNum));
+  await page.waitForTimeout(1000);
+  const mRes = await selectDropdownByText(page, getMonthName(monthNum));
+  await page.waitForTimeout(800);
+
+  // Agar FY / Quarter / Month me se koi dropdown match nahi hua to galat period ka data na uthe
+  if (!fyRes.matched || !qRes.matched || !mRes.matched) {
+    step("periodSelectFail", { fyRes, qRes, mRes, url: page.url() });
+    throw new Error(`Portal par period select nahi ho paya (FY:${fyRes.matched}, Quarter:${qRes.matched}, Month:${mRes.matched}).`);
+  }
+  const searchBtn = page.locator("button:has-text('SEARCH'), button[type='submit']").first();
+  if (await searchBtn.count()) {
+    await searchBtn.click({ force: true });
+    await page.waitForTimeout(4000);
+  }
+  step("dashboard", { url: page.url(), fyRes, qRes, mRes });
+  return page;
+}
+
 /* ======================= SERVER ======================= */
 
 function startServer() {
@@ -613,35 +762,6 @@ function startServer() {
     }
   });
 
-  async function dismissModals(page) {
-    for (const sel of ["button:has-text('Remind me later')", "button:has-text('CLOSE')", "button:has-text('OK')", ".modal .close"]) {
-      const btn = page.locator(sel).first();
-      if (await btn.isVisible().catch(() => false)) {
-        await btn.click().catch(() => {});
-        await page.waitForTimeout(400);
-      }
-    }
-  }
-
-  async function selectDropdownByText(page, targetText) {
-    // Khaali text par har option match ho jata tha ("" sab me includes hai) -> galat period select
-    const want = String(targetText == null ? "" : targetText).trim();
-    if (!want) return { matched: false, reason: "empty" };
-    return await page.evaluate((txt) => {
-      const lower = txt.toLowerCase();
-      const selects = Array.from(document.querySelectorAll("select"));
-      for (const sel of selects) {
-        const opt = Array.from(sel.options).find(o => (o.text || "").toLowerCase().includes(lower));
-        if (opt) {
-          sel.value = opt.value;
-          sel.dispatchEvent(new Event("change", { bubbles: true }));
-          return { matched: true, name: sel.name || sel.id || "", option: opt.text.trim() };
-        }
-      }
-      return { matched: false };
-    }, want);
-  }
-
   // Page ki visible tables + visible text (plain data) — parsing Node me hoti hai
   async function snapshotPage(page) {
     return await page.evaluate(() => {
@@ -702,49 +822,6 @@ function startServer() {
   }
   const shortErr = e => String((e && e.message) || e).split("\n")[0].slice(0, 200);
 
-  async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
-    await dismissModals(page);
-    if (!page.url().includes("/returns/auth/dashboard")) {
-      const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
-      if (await retBtn.isVisible().catch(() => false)) {
-        await retBtn.click({ force: true });
-        await page.waitForTimeout(4500);
-      } else {
-        await page.evaluate(() => {
-          const links = Array.from(document.querySelectorAll("a"));
-          const retLink = links.find(a => /returns dashboard/i.test(a.textContent || "") || (a.getAttribute("href") || "").includes("/returns/auth/dashboard"));
-          if (retLink) retLink.click();
-        });
-        await page.waitForTimeout(4500);
-        if (!page.url().includes("/returns/auth/dashboard")) {
-          await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => {});
-          await page.waitForTimeout(3500);
-        }
-      }
-    }
-    await dismissModals(page);
-    if (dbg) dbg.steps[(tag || "ret") + "_urlBeforeSelect"] = page.url();
-    await page.waitForSelector("select", { timeout: 25000 });
-
-    const fyRes = await selectDropdownByText(page, fy);
-    await page.waitForTimeout(1000);
-    const qRes = await selectDropdownByText(page, getQuarterForMonth(monthNum));
-    await page.waitForTimeout(1000);
-    const mRes = await selectDropdownByText(page, getMonthName(monthNum));
-    await page.waitForTimeout(800);
-
-    // Agar FY / Quarter / Month me se koi dropdown match nahi hua to galat period ka data na uthe
-    if (!fyRes.matched || !qRes.matched || !mRes.matched) {
-      throw new Error(`Portal par period select nahi ho paya (FY:${fyRes.matched}, Quarter:${qRes.matched}, Month:${mRes.matched}).`);
-    }
-    const searchBtn = page.locator("button:has-text('SEARCH'), button[type='submit']").first();
-    if (await searchBtn.count()) {
-      await searchBtn.click({ force: true });
-      await page.waitForTimeout(4000);
-    }
-    if (dbg) dbg.steps[(tag || "ret") + "_dashboard"] = { url: page.url(), fyRes, qRes, mRes };
-  }
-
   app.post("/api/gst/fetch-all", async (req, res) => {
     const { sessionId, fy, month, autoClose, options } = req.body || {};
     const opts = { gstr2b: options?.gstr2b !== false, tcs: options?.tcs !== false, notices: !!options?.notices };
@@ -756,7 +833,7 @@ function startServer() {
     if (s.busy) return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
 
     s.busy = true;
-    const { page } = s;
+    let page = s.page; // popup tab adopt ho sakta hai -> naya page wapas milta hai
     const dbg = { timestamp: new Date().toISOString(), version: VERSION, fy: per.fy, month: per.month, steps: {} };
     const result = {
       ok: true, fy: dbg.fy, month: dbg.month, period: per.period,
@@ -779,7 +856,8 @@ function startServer() {
     try {
       // --- STEP 1: GSTR-2B ---
       if (!opts.gstr2b) { result.status.gstr2b = { state: "skipped", message: "Option off tha." }; } else try {
-        await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "gstr2b");
+        page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "gstr2b");
+        s.page = page;
         const gstr2bCard = page.locator("div").filter({ hasText: /GSTR-?2B/i }).filter({ has: page.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')") }).last();
         const downloadBtn = gstr2bCard.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')").first();
         dbg.steps.gstr2bCardFound = await downloadBtn.count();
@@ -867,7 +945,10 @@ function startServer() {
       // Sirf padhta hai — portal par ACCEPT / REJECT kabhi nahi dabata.
       // Agar 2B band hai to bhi E-Com se pehle Returns Dashboard kholna padta hai
       if (!opts.gstr2b && opts.tcs) {
-        try { await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "tcs"); } catch (e) { dbg.steps.tcsDashboardError = e.message; }
+        try {
+          page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "tcs");
+          s.page = page;
+        } catch (e) { dbg.steps.tcsDashboardError = e.message; }
       }
       if (!opts.tcs) { result.status.tcs = { state: "skipped", message: "Option off tha." }; } else try {
         const flow = dbg.steps.tcsFlow = [];
@@ -882,13 +963,21 @@ function startServer() {
         await dismissModals(page);
         let menu = await clickTcsMenu();
         if (!menu) {
-          await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" }).catch(() => {});
+          await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
           await page.waitForTimeout(3500);
           await dismissModals(page);
           menu = await clickTcsMenu();
         }
         mark("menuClick", { menu });
-        if (!menu) throw new Error("Menu me 'TDS and TCS credit received' link nahi mila.");
+        if (!menu) {
+          // Debug: page par TDS/TCS/returns se juda kya link hai (agle fix ke liye zaroori)
+          dbg.steps.tcsLinks = await page.evaluate(() => Array.from(document.querySelectorAll("a"))
+            .filter(a => a.offsetParent !== null)
+            .map(a => ({ t: (a.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60), h: (a.getAttribute("href") || "").slice(0, 90) }))
+            .filter(x => x.t && /tds|tcs|return|dashboard/i.test(x.t + " " + x.h)).slice(0, 25)).catch(() => []);
+          const hint = (dbg.steps.tcsLinks || []).map(x => x.t).slice(0, 4).join(" / ");
+          throw new Error("Menu me 'TDS and TCS credit received' link nahi mila." + (hint ? " (Page par ye links mile: " + hint + ")" : "") + " Debug me tcsLinks dekhein.");
+        }
         await page.waitForLoadState("domcontentloaded").catch(() => {});
         await page.waitForSelector("select", { timeout: 20000 });
         await page.waitForTimeout(1500);
@@ -1066,11 +1155,12 @@ function startServer() {
     }
 
     s.busy = true;
-    const { page } = s;
+    let page = s.page;
     const tmpFile = path.join(os.tmpdir(), `${crypto.randomUUID()}_${safeFileName(fileName, "GSTR1.json")}`);
     try {
       fs.writeFileSync(tmpFile, JSON.stringify(obj, null, 2), "utf8");
-      await openReturnsDashboardAndSearch(page, per.fy, per.month, null, "gstr1");
+      page = await openReturnsDashboardAndSearch(page, per.fy, per.month, null, "gstr1");
+      s.page = page;
       const gstr1Card = page.locator("div").filter({ hasText: /GSTR-?1/i }).filter({ has: page.locator("button:has-text('PREPARE OFFLINE'), a:has-text('PREPARE OFFLINE')") }).last();
       const offlineBtn = gstr1Card.locator("button:has-text('PREPARE OFFLINE'), a:has-text('PREPARE OFFLINE')").first();
       if (!(await offlineBtn.count())) throw new Error("GSTR-1 PREPARE OFFLINE button nahi mila.");
@@ -1130,7 +1220,9 @@ module.exports = {
   parseTcsRecordCount, parseAmt, buildColumnLabels, mapTcsColumns, parseTcsTables, parseNoticeTables,
   summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE,
   // naye helpers bhi test ke liye bahar (browser ke bina testable)
-  readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod, startServer
+  readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod,
+  openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
+  RETURNS_DASHBOARD_URL, startServer
 };
 
 if (require.main === module) startServer();
