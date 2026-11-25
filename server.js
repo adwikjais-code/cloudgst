@@ -1,5 +1,8 @@
-/* GST Cloud Bridge — v1.19.0 (login: portal downtime par khud retry) / v1.18.0 (login page robust) / v1.17.0 (period dropdown wait/iframe fix) / v1.16.0 (period select fix) / v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
+/* GST Cloud Bridge — v1.20.0 (live fetch progress) / v1.19.0 (login: portal downtime par khud retry) / v1.18.0 (login page robust) / v1.17.0 (period dropdown wait/iframe fix) / v1.16.0 (period select fix) / v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
  * Base: v1.9.6
+ * v1.20.0 (app v5_6 ke saath): GET /api/gst/fetch-status -> chal rahe fetch ka step (session.progress).
+ *  App har 5s par poochh kar "2B generate ho rahi hai… 42s" dikhata hai, isliye user beech me
+ *  Re-Fetch nahi dabata (jo portal ke WAF ko block karata tha).
  * v1.19.0 fixes (portal downtime / WAF ke baad login page khulta hi nahi tha):
  *  - Login page na khule aur wajah "portal_down"/"blank_page" ho to 45s ruk kar ek teesri koshish (auto-heal).
  *  - Baaki wajahon (access denied, already logged in, password change) par turant saaf error — bewajah lamba wait nahi.
@@ -1020,12 +1023,25 @@ function startServer() {
     return s;
   }
 
+  // App me live progress dikhane ke liye ("2B download ho raha hai…") — GET /api/gst/fetch-status
+  const setProgress = (sess, key, message) => {
+    if (!sess) return;
+    sess.progress = { key, message, at: Date.now() };
+  };
+
   app.get("/health", (req, res) => {
     res.json({ ok: true, service: "gst-cloud-bridge", version: VERSION, secretConfigured: !!API_SECRET, activeSessions: sessions.size, timestamp: new Date().toISOString() });
   });
   // Save & Test ke liye: secret sahi hai ya nahi, ye wahi batata hai
   app.get("/api/gst/ping", (req, res) => res.json({ ok: true, version: VERSION }));
   app.get("/debug", (req, res) => res.type("text/plain").send(JSON.stringify(lastDebug, null, 2)));
+
+  // Chal rahe fetch ka step (app har 5s par poochhta hai) — session chala gaya to 404
+  app.get("/api/gst/fetch-status", (req, res) => {
+    const s = sessions.get(String((req.query && req.query.sessionId) || ""));
+    if (!s) return res.status(404).json({ ok: false, error: "Session nahi mila (khatam ho gaya)." });
+    res.json({ ok: true, busy: !!s.busy, progress: s.progress || null });
+  });
 
   app.post("/api/gst/init-login", async (req, res) => {
     let browser, context;
@@ -1259,6 +1275,7 @@ function startServer() {
     if (s.busy) return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
 
     s.busy = true;
+    setProgress(s, "start", "Returns Dashboard khol rahe hain…");
     let page = s.page; // popup tab adopt ho sakta hai -> naya page wapas milta hai
     const dbg = { timestamp: new Date().toISOString(), version: VERSION, fy: per.fy, month: per.month, steps: {} };
     const result = {
@@ -1284,6 +1301,7 @@ function startServer() {
       if (!opts.gstr2b) { result.status.gstr2b = { state: "skipped", message: "Option off tha." }; } else try {
         page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "gstr2b");
         s.page = page;
+        setProgress(s, "gstr2b_card", "GSTR-2B ka DOWNLOAD button dhundh rahe hain…");
         const gstr2bCard = page.locator("div").filter({ hasText: /GSTR-?2B/i }).filter({ has: page.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')") }).last();
         const downloadBtn = gstr2bCard.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')").first();
         dbg.steps.gstr2bCardFound = await downloadBtn.count();
@@ -1291,6 +1309,7 @@ function startServer() {
         if (!(await downloadBtn.count())) {
           setStatus("gstr2b", "failed", "GSTR-2B card ya Download button nahi mila (2B abhi generate na hui ho to bhi aisa hota hai).");
         } else {
+          setProgress(s, "gstr2b_click", "GSTR-2B DOWNLOAD dabaya ja raha hai…");
           await downloadBtn.click({ force: true });
           await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
           await page.waitForTimeout(4500);
@@ -1309,11 +1328,13 @@ function startServer() {
             page.on("download", onDl);
             let download = null, polls = 0, linkClicked = 0;
             try {
+              setProgress(s, "gstr2b_generate", "2B JSON generate ho rahi hai (portal ko 30-90s lagte hain)…");
               await genJsonBtn.click({ force: true });
               const started = Date.now();
               while (Date.now() - started < 90000) {
                 await page.waitForTimeout(3000);
                 polls++;
+                if (polls % 4 === 0) setProgress(s, "gstr2b_generate", `2B JSON generate ho rahi hai… ${Math.round((Date.now() - started) / 1000)}s`);
                 if (downloads.length) { download = downloads[0]; break; }
                 await dismissModals(page);
                 if (!linkClicked) {
@@ -1367,6 +1388,7 @@ function startServer() {
         dbg.steps.gstr2bError = err.message;
       }
 
+      setProgress(s, "tcs_open", "E-Com / TCS section khol rahe hain…");
       // --- STEP 2: E-COMMERCE TCS  (Services > Returns > TDS and TCS credit received > PREPARE ONLINE > TCS Credit received) ---
       // Sirf padhta hai — portal par ACCEPT / REJECT kabhi nahi dabata.
       // Agar 2B band hai to bhi E-Com se pehle Returns Dashboard kholna padta hai
@@ -1545,6 +1567,7 @@ function startServer() {
       // Kuch section ok, kuch fail -> ok:true + partial (app fail section ka purana data rakhta hai,
       // aur jo mila use save kar deta hai — pehle yahan sab kuch chhoot jata tha).
       const outcome = partialOutcome(result.status, opts);
+      setProgress(s, "done", outcome.allFailed ? "Fetch fail hua." : "Ho gaya.");
       if (outcome.allFailed) {
         dbg.status = result.status; dbg.warnings = result.warnings; lastDebug = dbg;
         return res.json(Object.assign({}, result, { ok: false, error: "Data fetch nahi hua (Sheet me save nahi kiya) -> " + outcome.failed.join(" | ") }));

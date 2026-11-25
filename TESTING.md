@@ -247,3 +247,17 @@ Agar wajah `portal_down` ya `blank_page` ho to bridge **45 second ruk kar teesri
 (portal downtime/WAF aksar 1-2 min me theek ho jata hai). Baaki wajahon par turant saaf error aata hai.
 
 Bridge `/debug` me: `init-login_stuck` (us waqt ka page ka URL/title/text/buttons).
+
+---
+
+## Live progress (v1.20.0 + app v5_6)
+
+Fetch 2-5 minute le sakta hai (2B generate 90s tak). Ab bridge chalte hue apna step batata hai:
+
+```
+GET /api/gst/fetch-status?sessionId=<id>     (x-api-secret zaroori)
+-> { ok: true, busy: true, progress: { key: "gstr2b_generate", message: "2B JSON generate ho rahi hai… 42s", at: … } }
+```
+
+App (v5_6) har 5 second par ye poochhta hai aur row me "⏳ Fetching… / 2B JSON generate ho rahi hai… 42s" dikhata hai.
+Session khatam ho gaya ho to `404` aata hai (app chup-chaap ignore karta hai — purane bridge par bhi app chalta rahega).

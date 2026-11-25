@@ -139,6 +139,23 @@ test("fetch-all: sessionId hi na ho to bhi 401, crash nahi", async () => {
   });
 });
 
+test("fetch-status: anjaan session par JSON 404 (HTML nahi), progress leak nahi", async () => {
+  await withServer({ API_SECRET: SECRET }, async (base) => {
+    const r = await fetch(base + "/api/gst/fetch-status?sessionId=nahi-hai", auth());
+    assert.equal(r.status, 404);
+    const j = await r.json();
+    assert.equal(j.ok, false);
+    assert.match(j.error, /session/i);
+  });
+});
+
+test("fetch-status: secret ke bina 401", async () => {
+  await withServer({ API_SECRET: SECRET }, async (base) => {
+    const r = await fetch(base + "/api/gst/fetch-status?sessionId=x");
+    assert.equal(r.status, 401);
+  });
+});
+
 test("upload-gstr1: session/submit checks", async () => {
   await withServer({ API_SECRET: SECRET }, async (base) => {
     // session ke bina -> 401
