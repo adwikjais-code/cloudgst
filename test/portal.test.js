@@ -11,6 +11,7 @@ const {
   openReturnsDashboardAndSearch, selectDropdownByText, dismissModals, classifyStuckPage,
   guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
+  firstVisibleSelector, waitForLoginForm, classifyLoginPage, LOGIN_USER_SELECTORS, LOGIN_PASS_SELECTORS,
   RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL
 } = require("../server.js");
 
@@ -499,4 +500,45 @@ test("period select: sirf Quarter wala dashboard (QRMP) -> saaf wajah ke saath r
     });
   assert.equal(dbg.steps.gstr2b_periodSelectFail.qRes.matched, true);
   assert.equal(dbg.steps.gstr2b_periodSelectFail.mRes.reason, "no-month-select");
+});
+
+/* ------------------------- login page (IMG_0447 wala case) ------------------------- */
+function makeFieldsPage(selectors) {
+  return {
+    waitForTimeout: async () => {},
+    locator: (sel) => ({
+      first: () => ({
+        count: async () => (selectors.includes(sel) ? 1 : 0),
+        isVisible: async () => selectors.includes(sel)
+      })
+    })
+  };
+}
+
+test("waitForLoginForm: #username na ho to alternate selector se login form pehchanta hai", async () => {
+  const normal = makeFieldsPage(["#username", "#user_pass"]);
+  assert.deepEqual(await waitForLoginForm(normal, 0), { ok: true, userSel: "#username", passSel: "#user_pass" });
+
+  // portal ne id badal di -> name/placeholder wale selectors
+  const renamed = makeFieldsPage(["input[name='username']", "input[type='password']"]);
+  const res = await waitForLoginForm(renamed, 0);
+  assert.equal(res.ok, true);
+  assert.equal(res.userSel, "input[name='username']");
+  assert.equal(res.passSel, "input[type='password']");
+});
+
+test("waitForLoginForm: login page hi na ho to ok:false (timeout jhelta hai, crash nahi)", async () => {
+  const res = await waitForLoginForm(makeFieldsPage([]), 0);
+  assert.equal(res.ok, false);
+  assert.equal(await firstVisibleSelector(makeFieldsPage([]), LOGIN_USER_SELECTORS), null);
+});
+
+test("classifyLoginPage: login page ki jagah kaun sa page aaya — wajah + hint deta hai", () => {
+  assert.equal(classifyLoginPage({ url: "https://services.gst.gov.in/services/auth/dashboard", text: "Dashboard" }).kind, "already_logged_in");
+  assert.match(classifyLoginPage({ url: "x", text: "Please change password" }).hint, /password/i);
+  assert.equal(classifyLoginPage({ url: "x", text: "Site under maintenance, try again later" }).kind, "portal_down");
+  assert.equal(classifyLoginPage({ url: "https://services.gst.gov.in/services/login", text: "" }).kind, "blank_page");
+  // pehle se maujood classifiers hi lagte hain
+  assert.equal(classifyLoginPage({ url: "https://services.gst.gov.in/services/error/accessdenied" }).kind, "access_denied");
+  assert.equal(classifyLoginPage({ text: "You are already logged in from another device" }).kind, "concurrent_session");
 });
