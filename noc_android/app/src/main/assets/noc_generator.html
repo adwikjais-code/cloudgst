@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NOC Maker — BR / NBR</title>
+<style>
+  :root{ --navy:#12265C; --gold:#C19A38; --line:#c9cfdb; --ink:#0f172a; }
+  *{ box-sizing:border-box; }
+  body{ margin:0; font-family:"Noto Sans Devanagari","Nirmala UI",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+        background:#eef1f6; color:var(--ink); }
+  header{ background:var(--navy); color:#fff; padding:12px 16px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between;}
+  header h1{ font-size:16px; margin:0; letter-spacing:.2px; }
+  header h1 b{ color:var(--gold); }
+  .tabs{ display:flex; gap:8px; }
+  .tab{ border:1px solid rgba(255,255,255,.35); background:transparent; color:#fff; padding:7px 14px; border-radius:10px; font-size:13px; font-weight:600; cursor:pointer;}
+  .tab.on{ background:var(--gold); border-color:var(--gold); color:#12265C; }
+  .wrap{ display:grid; grid-template-columns:minmax(320px,430px) 1fr; gap:14px; padding:14px; align-items:start; }
+  @media (max-width:900px){ .wrap{ grid-template-columns:1fr; } }
+  .card{ background:#fff; border-radius:14px; box-shadow:0 1px 3px rgba(15,23,42,.10); overflow:hidden; }
+  .card h2{ margin:0; padding:10px 14px; font-size:13px; background:#f6f8fc; border-bottom:1px solid #e6eaf2; color:#334155; letter-spacing:.3px;}
+  form{ padding:12px 14px 16px; }
+  .row{ margin-bottom:10px; }
+  label{ display:block; font-size:11.5px; font-weight:700; color:#475569; margin-bottom:4px; }
+  input,select,textarea{ width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:9px; font-size:13px; font-family:inherit; background:#fff; }
+  input:focus,select:focus,textarea:focus{ outline:2px solid #bfd0ff; border-color:#7c9cf5; }
+  textarea{ resize:vertical; min-height:58px; }
+  .two{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .btns{ display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; }
+  .btn{ border:0; padding:9px 13px; border-radius:10px; font-size:12.5px; font-weight:700; cursor:pointer; }
+  .btn.p{ background:var(--navy); color:#fff; }
+  .btn.g{ background:#0f7a4d; color:#fff; }
+  .btn.s{ background:#f1f5f9; color:#334155; border:1px solid var(--line); }
+  .btn.w{ background:#fff7e6; color:#8a5a00; border:1px solid #f0d9a8; }
+  .hint{ font-size:11px; color:#64748b; margin-top:6px; }
+  .paperbox{ padding:14px; background:#e2e7ef; border-radius:14px; }
+  .paper{ background:#fff; margin:0 auto; max-width:794px; min-height:1050px; padding:56px 62px;
+          box-shadow:0 6px 22px rgba(15,23,42,.16); border-radius:3px;
+          font-family:"Noto Serif Devanagari","Mangal","Nirmala UI",serif; font-size:16px; line-height:2.05; white-space:pre-wrap; }
+  .paper .fill{ border-bottom:1px dotted #64748b; padding:0 3px; font-weight:600; }
+  .paper .fill:empty::after{ content:"…………"; color:#94a3b8; font-weight:400; }
+  .paper .gap{ display:inline-block; min-width:120px; }
+  .toolbar{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }
+  .badge{ font-size:11px; background:#fff; border:1px solid var(--line); color:#475569; padding:4px 9px; border-radius:999px; }
+  .toast{ position:fixed; left:50%; transform:translateX(-50%); bottom:22px; background:#12265C; color:#fff;
+          padding:10px 16px; border-radius:10px; font-size:13px; opacity:0; pointer-events:none; transition:.25s; z-index:50;}
+  .toast.on{ opacity:1; }
+  @media print{
+    @page{ size:A4; margin:0; }
+    body{ background:#fff; }
+    header,.card.form,.toolbar,.toast{ display:none !important; }
+    .wrap{ display:block; padding:0; }
+    .paperbox{ padding:0; background:#fff; border-radius:0; }
+    .paper{ box-shadow:none; border-radius:0; max-width:none; min-height:auto; padding:22mm 20mm; font-size:12.6pt; line-height:2.0; page-break-after:always; }
+    .paper:last-child{ page-break-after:auto; }
+    .paper .fill{ border-bottoM:1px solid #000; font-weight:600; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📄 NOC Maker <b>· BR / NBR</b></h1>
+  <div class="tabs">
+    <button class="tab on" id="tabBR" type="button">BR NOC (शपथ पत्र)</button>
+    <button class="tab" id="tabNBR" type="button">NBR NOC (अनापत्ति)</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- ================= FORM ================= -->
+  <div class="card form">
+    <h2 id="formTitle">विवरण भरें — BR NOC</h2>
+
+    <!-- BR fields -->
+    <form id="fBR">
+      <div class="row two">
+        <div><label>शपथकर्ता (मकान मालिक)</label><input id="brDeponent" placeholder="अब्बास अली" /></div>
+        <div><label>पुत्र/पिता का नाम</label><input id="brFather" placeholder="जब्बार" /></div>
+      </div>
+      <div class="row"><label>निवासी (गाँव/मोहल्ला, थाना)</label><input id="brResidence" placeholder="गरौली औराई, संत रविदास नगर (भदोही)" /></div>
+      <div class="row two">
+        <div><label>राज्य</label><input id="brState" placeholder="उत्तर प्रदेश" /></div>
+        <div><label>पिन कोड</label><input id="brPincode" placeholder="221301" inputmode="numeric" /></div>
+      </div>
+      <div class="row"><label>मकान/संपत्ति का पूरा पता (पैरा 1 में)</label><textarea id="brProperty" placeholder="गरौली औराई, संत रविदास नगर (भदोही), उत्तर प्रदेश-221301"></textarea></div>
+      <div class="row two">
+        <div><label>पुत्र का नाम (व्यवसाय करने वाला)</label><input id="brSon" placeholder="आशिक़ अली" /></div>
+        <div><label>फर्म का नाम</label><input id="brFirm" placeholder="AA CARPETS & RUGS" /></div>
+      </div>
+      <div class="row"><label>व्यवसाय (पैरा 2)</label><input id="brBusiness" placeholder="कारपेट सम्बंधित व्यवसाय" /></div>
+      <div class="row two">
+        <div><label>दिनांक</label><input id="brDate" type="date" /></div>
+        <div><label>लिंग (शपथकर्ता)</label>
+          <select id="brGender"><option value="m">पुरुष (करता हूँ)</option><option value="f">स्त्री (करती हूँ)</option></select>
+        </div>
+      </div>
+      <div class="row"><label><input type="checkbox" id="brDev" checked style="width:auto;margin-right:6px"/>पिन कोड/दिनांक देवनागरी अंकों में (२२१३०१)</label></div>
+      <div class="btns">
+        <button class="btn p" id="brSample" type="button">नमूना भरें</button>
+        <button class="btn s" id="brClear" type="button">खाली करें</button>
+      </div>
+      <div class="hint">जो खाली छोड़ेंगे उसकी जगह डॉटेड लाइन दिखेगी — हाथ से भरने के लिए।</div>
+    </form>
+
+    <!-- NBR fields -->
+    <form id="fNBR" style="display:none">
+      <div class="row two">
+        <div><label>मालिक / अनापत्ति देने वाला</label><input id="nbOwner" placeholder="समीर अंसारी" /></div>
+        <div><label>पिता का नाम</label><input id="nbOwnerFather" placeholder="मोहम्मद कासिम अंसारी" /></div>
+      </div>
+      <div class="row two">
+        <div><label>मालिक का संबंध</label>
+          <select id="nbOwnerRel"><option value="पुत्र">पुत्र</option><option value="पुत्री">पुत्री</option><option value="पत्नी">पत्नी</option></select>
+        </div>
+        <div><label>लिंग (प्रमाणित करने वाला)</label>
+          <select id="nbGender"><option value="f">स्त्री (करती हूँ)</option><option value="m">पुरुष (करता हूँ)</option></select>
+        </div>
+      </div>
+      <div class="row"><label>मालिक का निवास (गाँव/मोहल्ला)</label><input id="nbResidence" placeholder="कांतित बौलिया" /></div>
+      <div class="row two">
+        <div><label>जिला</label><input id="nbDistrict" placeholder="मिर्जापुर" /></div>
+        <div><label>पिन कोड</label><input id="nbPincode" placeholder="231001" inputmode="numeric" /></div>
+      </div>
+      <div class="row"><label>संपत्ति का पूरा पता</label><textarea id="nbProperty" placeholder="कांतित बौलिया, मिर्जापुर 231001, उत्तर प्रदेश, भारत"></textarea></div>
+      <div class="row two">
+        <div><label>जिसके नाम से GST होगा</label><input id="nbPerson" placeholder="रूबी" /></div>
+        <div><label>उसका संबंध</label>
+          <select id="nbPersonRel"><option value="पुत्री">पुत्री</option><option value="पुत्र">पुत्र</option><option value="पत्नी">पत्नी</option><option value="पति">पति</option></select>
+        </div>
+      </div>
+      <div class="row two">
+        <div><label>उसके पिता/पति का नाम</label><input id="nbPersonFather" placeholder="मोहम्मद क़ासिम" /></div>
+        <div><label>दिनांक</label><input id="nbDate" type="date" /></div>
+      </div>
+      <div class="row"><label><input type="checkbox" id="nbDev" checked style="width:auto;margin-right:6px"/>पिन कोड/दिनांक देवनागरी अंकों में (२३१००१)</label></div>
+      <div class="btns">
+        <button class="btn p" id="nbSample" type="button">नमूना भरें</button>
+        <button class="btn s" id="nbClear" type="button">खाली करें</button>
+      </div>
+      <div class="hint">जो खाली छोड़ेंगे उसकी जगह डॉटेड लाइन दिखेगी — हाथ से भरने के लिए।</div>
+    </form>
+  </div>
+
+  <!-- ================= PREVIEW ================= -->
+  <div>
+    <div class="toolbar">
+      <button class="btn g" id="btnPrint" type="button">🖨️ Print / PDF</button>
+      <button class="btn s" id="btnCopy" type="button">📋 टेक्स्ट कॉपी</button>
+      <button class="btn s" id="btnTxt" type="button">⬇️ .txt डाउनलोड</button>
+      <span class="badge" id="statBadge">A4 प्रीव्यू</span>
+      <span class="badge" id="wordsBadge"></span>
+    </div>
+    <div class="paperbox">
+      <div class="paper" id="paper"></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const DSUB = n => String(n||"").replace(/[0-9]/g, d => "०१२३४५६७८९"[+d]);
+  const esc = s => String(s==null?"":s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const fill = v => '<span class="fill">' + esc((v||"").trim()) + '</span>';
+  const dnum = (v, on) => on ? DSUB((v||"").replace(/-/g,"")) : (v||"");
+  const fmtDate = iso => { if(!iso) return ""; const [y,m,d] = iso.split("-"); return d + "/" + m + "/" + y; };
+  let cur = "BR";
+  let toastTimer = null;
+  function toast(msg){ const t = $("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(toastTimer); toastTimer = setTimeout(()=>t.classList.remove("on"), 1800); }
+
+  // ---------- text builders (words doc ke bilkul wahi) ----------
+  function brText(v){
+    const g = v.gender === "f";
+    const date = v.date ? dnum(fmtDate(v.date), v.dev) : "";
+    const prop = String(v.property||"").replace(/\s*।\s*$/,"");
+    return [
+'समक्ष,',
+'असिस्टेंट कमिश्नर वस्तु एवं सेवा कर ',
+'',
+'',
+'मै, ' + v.deponent + ' पुत्र ' + v.father + ' निवासी-' + v.residence + ', ' + v.state + '-' + v.pincode,
+'बहलफ़ निम्नलिखित बयान ' + (g ? 'करती' : 'करता') + ' हूँ कि :-',
+'',
+'',
+'1:- यह कि शपथकर्ता का मकान- ' + v.property + ' में स्थित हैं।             ',
+'     जिसका स्वामी शपथकर्ता हैं और समस्त तथ्यों से परिचित हैं।',
+'2:- यह शपथकर्ता के पुत्र उपरोक्त फर्म "' + v.firm + '"',
+'      के नाम से ' + v.business + ' मेरे उक्त मकान से करेंगें।',
+'3:- यह कि शपथकर्ता के पुत्र ' + v.son + ' जब तक चाहे मेरे मकान से उपरोक्त ',
+'      व्यवसाय करते रहे।',
+'4:- यह कि मेरे पुत्र को उपरोक्त व्यवसाय करने से मुझे कोई आपत्ति नहीं हैं ना तो भविष्य में होगा। ',
+'                                               (सत्यापन )',
+'',
+'',
+'मै शपथकर्ता ' + v.deponent + ' सत्यापित करता हूं कि पैरा 1 लगायत पैरा 4 तक मेरी जानकारी में ',
+'सत्य और सही हैं। इसमें कोई बात झूठी नहीं हैं और ना ही छीपाई गई हैं। ईश्वर मेरी मदद करें।',
+'',
+'',
+'',
+'',
+'दिनांक ' + date + '                                                            शपथकर्ता'
+    ].join("\n");
+  }
+  function nbrText(v){
+    const f = v.gender !== "m";
+    const date = v.date ? dnum(fmtDate(v.date), v.dev) : "";
+    const prop = String(v.property||"").replace(/\s*।\s*$/,"");
+    return [
+'समक्ष,',
+'असिस्टेंट कमिश्नर वस्तु एवं सेवा कर ',
+'',
+'',
+'',
+'मैं, ' + v.owner + ' ' + v.ownerRel + ' ' + v.ownerFather + ', निवासी-' + v.residence + ', ' + v.district + ' ' + v.pincode + ', उत्तर प्रदेश,',
+'भारत यह प्रमाणित ' + (f ? 'करती' : 'करता') + ' हूँ कि',
+'नीचे दिए गए पते वाली संपत्ति पर मेरा अधिकार है:',
+'',
+'',
+'संपत्ति का पूरा पता:  ' + prop + ' ।',
+'',
+'',
+'मुझे इस बात पर कोई आपत्ति नहीं है की ' + v.person + ' ' + v.personRel + ' ' + v.personFather + ', उपरोक्त',
+'परिसर का उपयोग अपने व्यवसाय के मुख्य स्थान के रूप में करते हुए GST पंजीकरण प्राप्त करें।',
+'',
+'',
+'मुझे यह भी कोई आपत्ति नहीं है कि उक्त व्यक्ति अपने व्यवसाय से संबंधित गतिविधियां इस परिसर से ',
+'संचालित करें तथा उक्त पते का उपयोग GST पंजीकरण एवं संबंधित सरकारी कार्यों/पत्राचार के लिए करें।',
+'',
+'',
+'यह अनापत्ति प्रमाण पत्र मैंने अपनी स्वेच्छा से GST पंजीकरण के उद्देश्य से प्रदान किया है।',
+'',
+'',
+'दिनांक: ' + date + '                                                              हस्ताक्षर:'
+    ].join("\n");
+  }
+
+  // ---------- read / write ----------
+  function brVals(){
+    return { deponent:$("brDeponent").value, father:$("brFather").value, residence:$("brResidence").value,
+      state:$("brState").value, pincode:dnum($("brPincode").value.trim(), $("brDev").checked),
+      property:$("brProperty").value, son:$("brSon").value, firm:$("brFirm").value,
+      business:$("brBusiness").value, date:$("brDate").value, gender:$("brGender").value, dev:$("brDev").checked };
+  }
+  function nbVals(){
+    return { owner:$("nbOwner").value, ownerRel:$("nbOwnerRel").value, ownerFather:$("nbOwnerFather").value,
+      residence:$("nbResidence").value, district:$("nbDistrict").value, pincode:dnum($("nbPincode").value.trim(), $("nbDev").checked),
+      property:$("nbProperty").value, person:$("nbPerson").value, personRel:$("nbPersonRel").value,
+      personFather:$("nbPersonFather").value, date:$("nbDate").value, gender:$("nbGender").value, dev:$("nbDev").checked };
+  }
+  function htmlPaper(text){
+    return esc(text).replace(/दिनांक[ :]+([०-९0-9\/]*)\s{3,}(शपथकर्ता|हस्ताक्षर:)/g,
+      (m,date,label) => 'दिनांक: ' + (date ? '<span class="fill">'+date+'</span>' : '………………') + '<span class="gap"></span>' + label);
+  }
+  function rawText(){ return cur === "BR" ? brText(brVals()) : nbrText(nbVals()); }
+  function render(){
+    const txt = rawText();
+    $("paper").innerHTML = htmlPaper(txt);
+    const words = txt.trim().split(/\s+/).filter(Boolean).length;
+    $("wordsBadge").textContent = words + " शब्द";
+    save();
+  }
+  function save(){
+    try{
+      localStorage.setItem("noc_br_v1", JSON.stringify(brValsRaw()));
+      localStorage.setItem("noc_nbr_v1", JSON.stringify(nbValsRaw()));
+      localStorage.setItem("noc_tab_v1", cur);
+    }catch(_){}
+  }
+  function brValsRaw(){ return { deponent:$("brDeponent").value, father:$("brFather").value, residence:$("brResidence").value,
+      state:$("brState").value, pincode:$("brPincode").value, property:$("brProperty").value, son:$("brSon").value,
+      firm:$("brFirm").value, business:$("brBusiness").value, date:$("brDate").value, gender:$("brGender").value, dev:$("brDev").checked }; }
+  function nbValsRaw(){ return { owner:$("nbOwner").value, ownerRel:$("nbOwnerRel").value, ownerFather:$("nbOwnerFather").value,
+      residence:$("nbResidence").value, district:$("nbDistrict").value, pincode:$("nbPincode").value, property:$("nbProperty").value,
+      person:$("nbPerson").value, personRel:$("nbPersonRel").value, personFather:$("nbPersonFather").value, date:$("nbDate").value,
+      gender:$("nbGender").value, dev:$("nbDev").checked }; }
+  function load(){
+    try{
+      const b = JSON.parse(localStorage.getItem("noc_br_v1") || "{}");
+      if(b.deponent !== undefined){ $("brDeponent").value=b.deponent||""; $("brFather").value=b.father||""; $("brResidence").value=b.residence||"";
+        $("brState").value=b.state||""; $("brPincode").value=b.pincode||""; $("brProperty").value=b.property||""; $("brSon").value=b.son||"";
+        $("brFirm").value=b.firm||""; $("brBusiness").value=b.business||""; $("brDate").value=b.date||""; $("brGender").value=b.gender||"m";
+        $("brDev").checked = b.dev !== false; }
+      const n = JSON.parse(localStorage.getItem("noc_nbr_v1") || "{}");
+      if(n.owner !== undefined){ $("nbOwner").value=n.owner||""; $("nbOwnerRel").value=n.ownerRel||"पुत्र"; $("nbOwnerFather").value=n.ownerFather||"";
+        $("nbResidence").value=n.residence||""; $("nbDistrict").value=n.district||""; $("nbPincode").value=n.pincode||"";
+        $("nbProperty").value=n.property||""; $("nbPerson").value=n.person||""; $("nbPersonRel").value=n.personRel||"पुत्री";
+        $("nbPersonFather").value=n.personFather||""; $("nbDate").value=n.date||""; $("nbGender").value=n.gender||"f";
+        $("nbDev").checked = n.dev !== false; }
+      const tab = localStorage.getItem("noc_tab_v1"); if(tab === "NBR") switchTab("NBR", true);
+    }catch(_){}
+  }
+  function switchTab(which, silent){
+    cur = which;
+    $("tabBR").classList.toggle("on", which === "BR");
+    $("tabNBR").classList.toggle("on", which === "NBR");
+    $("fBR").style.display = which === "BR" ? "" : "none";
+    $("fNBR").style.display = which === "NBR" ? "" : "none";
+    $("formTitle").textContent = "विवरण भरें — " + (which === "BR" ? "BR NOC (शपथ पत्र)" : "NBR NOC (अनापत्ति प्रमाण पत्र)");
+    if(!silent) save();
+    render();
+  }
+
+  // ---------- samples (aapke docs se) ----------
+  const BR_SAMPLE = { deponent:"अब्बास अली", father:"जब्बार", residence:"गरौली औराई, संत रविदास नगर (भदोही)", state:"उत्तर प्रदेश",
+    pincode:"221301", property:"गरौली औराई, संत रविदास नगर (भदोही), उत्तर प्रदेश-२२१३०१", son:"आशिक़ अली",
+    firm:"AA CARPETS & RUGS", business:"कारपेट सम्बंधित व्यवसाय", gender:"m", dev:true };
+  const NB_SAMPLE = { owner:"समीर अंसारी", ownerRel:"पुत्र", ownerFather:"मोहम्मद कासिम अंसारी", residence:"कांतित बौलिया",
+    district:"मिर्जापुर", pincode:"231001", property:"कांतित बौलिया, मिर्जापुर २३१००१, उत्तर प्रदेश, भारत",
+    person:"रूबी", personRel:"पुत्री", personFather:"मोहम्मद क़ासिम", gender:"f", dev:true };
+  function applyBR(v){
+    $("brDeponent").value=v.deponent; $("brFather").value=v.father; $("brResidence").value=v.residence; $("brState").value=v.state;
+    $("brPincode").value=v.pincode; $("brProperty").value=v.property; $("brSon").value=v.son; $("brFirm").value=v.firm;
+    $("brBusiness").value=v.business; $("brGender").value=v.gender; $("brDev").checked=!!v.dev;
+    if(!$("brDate").value){ const d=new Date(); $("brDate").value=[d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-"); }
+    render();
+  }
+  function applyNB(v){
+    $("nbOwner").value=v.owner; $("nbOwnerRel").value=v.ownerRel||"पुत्र"; $("nbOwnerFather").value=v.ownerFather; $("nbResidence").value=v.residence;
+    $("nbDistrict").value=v.district; $("nbPincode").value=v.pincode; $("nbProperty").value=v.property; $("nbPerson").value=v.person;
+    $("nbPersonRel").value=v.personRel||"पुत्री"; $("nbPersonFather").value=v.personFather; $("nbGender").value=v.gender; $("nbDev").checked=!!v.dev;
+    if(!$("nbDate").value){ const d=new Date(); $("nbDate").value=[d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-"); }
+    render();
+  }
+
+  // ---------- wiring ----------
+  $("tabBR").addEventListener("click", () => switchTab("BR"));
+  $("tabNBR").addEventListener("click", () => switchTab("NBR"));
+  $("brSample").addEventListener("click", () => { applyBR(BR_SAMPLE); toast("नमूना भर दिया — बदलकर अपना डेटा डालें"); });
+  $("nbSample").addEventListener("click", () => { applyNB(NB_SAMPLE); toast("नमूना भर दिया — बदलकर अपना डेटा डालें"); });
+  $("brClear").addEventListener("click", () => {
+    ["brDeponent","brFather","brResidence","brState","brPincode","brProperty","brSon","brFirm","brBusiness"].forEach(k => $(k).value = "");
+    render(); toast("फॉर्म खाली");
+  });
+  $("nbClear").addEventListener("click", () => {
+    ["nbOwner","nbOwnerFather","nbResidence","nbDistrict","nbPincode","nbProperty","nbPerson","nbPersonFather"].forEach(k => $(k).value = "");
+    render(); toast("फॉर्म खाली");
+  });
+  document.querySelectorAll("#fBR input, #fBR select, #fBR textarea, #fNBR input, #fNBR select, #fNBR textarea")
+    .forEach(el => { el.addEventListener("input", render); el.addEventListener("change", render); });
+  const NAT = (typeof window !== "undefined") ? window.NOCBridge : null;   // Android APK bridge
+  $("btnPrint").addEventListener("click", () => {
+    if (NAT && NAT.printPage) { try { NAT.printPage(); return; } catch(_){} }
+    window.print();
+  });
+  $("btnCopy").addEventListener("click", async () => {
+    const t = rawText();
+    if (NAT && NAT.copyText) { try { NAT.copyText(t); toast("📋 टेक्स्ट कॉपी हो गया"); return; } catch(_){} }
+    try { await navigator.clipboard.writeText(t); toast("📋 टेक्स्ट कॉपी हो गया"); }
+    catch(_){ const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); toast("📋 टेक्स्ट कॉपी हो गया"); }
+  });
+  $("btnTxt").addEventListener("click", () => {
+    const name = (cur === "BR" ? "BR-NOC" : "NBR-NOC") + "-" + new Date().toISOString().slice(0,10) + ".txt";
+    const txt = rawText();
+    if (NAT && NAT.saveText) { try { const r = NAT.saveText(name, txt); toast("⬇️ सेव: " + (r||name)); return; } catch(_){} }
+    const blob = new Blob([txt], { type:"text/plain;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 3000);
+    toast("⬇️ .txt डाउनलोड");
+  });
+
+  load();
+  render();
+  // test hooks (harmless)
+  window.__noc = { brText, nbrText, brVals, nbVals, switchTab, render, rawText: () => rawText() };
+})();
+</script>
+</body>
+</html>

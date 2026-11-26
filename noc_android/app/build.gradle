@@ -1,0 +1,40 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.cloudgst.noc'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.cloudgst.noc'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    signingConfigs {
+        release {
+            storeFile file('../../android/keystore.p12')
+            storePassword 'cloudgst2026'
+            keyAlias 'cloudgst'
+            keyPassword 'cloudgst2026'
+            storeType 'PKCS12'
+            enableV1Signing true
+            enableV2Signing true
+            enableV3Signing true
+            enableV4Signing false
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

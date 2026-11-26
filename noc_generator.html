@@ -340,17 +340,25 @@
   });
   document.querySelectorAll("#fBR input, #fBR select, #fBR textarea, #fNBR input, #fNBR select, #fNBR textarea")
     .forEach(el => { el.addEventListener("input", render); el.addEventListener("change", render); });
-  $("btnPrint").addEventListener("click", () => window.print());
+  const NAT = (typeof window !== "undefined") ? window.NOCBridge : null;   // Android APK bridge
+  $("btnPrint").addEventListener("click", () => {
+    if (NAT && NAT.printPage) { try { NAT.printPage(); return; } catch(_){} }
+    window.print();
+  });
   $("btnCopy").addEventListener("click", async () => {
     const t = rawText();
+    if (NAT && NAT.copyText) { try { NAT.copyText(t); toast("📋 टेक्स्ट कॉपी हो गया"); return; } catch(_){} }
     try { await navigator.clipboard.writeText(t); toast("📋 टेक्स्ट कॉपी हो गया"); }
     catch(_){ const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); toast("📋 टेक्स्ट कॉपी हो गया"); }
   });
   $("btnTxt").addEventListener("click", () => {
-    const blob = new Blob([rawText()], { type:"text/plain;charset=utf-8" });
+    const name = (cur === "BR" ? "BR-NOC" : "NBR-NOC") + "-" + new Date().toISOString().slice(0,10) + ".txt";
+    const txt = rawText();
+    if (NAT && NAT.saveText) { try { const r = NAT.saveText(name, txt); toast("⬇️ सेव: " + (r||name)); return; } catch(_){} }
+    const blob = new Blob([txt], { type:"text/plain;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = (cur === "BR" ? "BR-NOC" : "NBR-NOC") + "-" + new Date().toISOString().slice(0,10) + ".txt";
+    a.download = name;
     a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 3000);
     toast("⬇️ .txt डाउनलोड");
   });

@@ -1,0 +1,74 @@
+name: NOC Maker APK
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "noc_android/**"
+      - "noc_generator.html"
+      - ".github/workflows/noc-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: noc-apk-v1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.7"
+
+      - name: Sync latest noc_generator.html into assets
+        run: |
+          cp noc_generator.html noc_android/app/src/main/assets/noc_generator.html
+          echo "asset bytes: $(wc -c < noc_android/app/src/main/assets/noc_generator.html)"
+
+      - name: Build release APK
+        run: |
+          gradle -p noc_android assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Verify APK
+        if: success()
+        run: |
+          set -e
+          cp noc_android/app/build/outputs/apk/release/app-release.apk NOC_Maker.apk
+          ls -l NOC_Maker.apk
+          sha256sum NOC_Maker.apk
+          md5sum NOC_Maker.apk
+          echo "signature files: $(unzip -Z1 NOC_Maker.apk | grep -cE '^META-INF/.*(RSA|DST|SF|MF)$' || true)"
+          echo "asset bytes in apk: $(unzip -p NOC_Maker.apk assets/noc_generator.html | wc -c)"
+          echo "has NOCBridge in dex: $(unzip -p NOC_Maker.apk 'classes*.dex' | grep -ac NOCBridge || true)"
+          echo "has bridge hook in asset: $(unzip -p NOC_Maker.apk assets/noc_generator.html | grep -c NOCBridge || true)"
+
+      - name: Upload APK artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: noc-maker-apk
+          path: NOC_Maker.apk
+
+      - name: Publish APK to Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          VER="1.0"
+          NOTES="NOC Maker v$VER — BR NOC (शपथ पत्र) + NBR NOC (अनापत्ति) offline app. Live preview, Print/PDF (A4), Copy, .txt download. Koi internet ki zarurat nahi."
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" \
+            --title "NOC Maker APK (v$VER)" --notes "$NOTES" --latest=false
+          gh release upload "$RELEASE_TAG" NOC_Maker.apk --clobber
+          echo "download: https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/NOC_Maker.apk"
