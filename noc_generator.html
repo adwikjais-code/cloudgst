@@ -96,6 +96,7 @@
         <div><label>पिन कोड</label><input id="brPincode" placeholder="221301" inputmode="numeric" /></div>
       </div>
       <div class="row"><label>मकान/संपत्ति का पूरा पता (पैरा 1 में)</label><textarea id="brProperty" placeholder="गरौली औराई, संत रविदास नगर (भदोही), उत्तर प्रदेश-221301"></textarea></div>
+      <div class="row"><button class="btn s" id="brSameAddr" type="button" style="width:100%">⤵️ 1 क्लिक — निवासी + राज्य + पिन कोड wala hi पता</button></div>
       <div class="row two">
         <div><label>व्यक्ति का नाम (जो व्यवसाय करेगा)</label><input id="brSon" placeholder="आशिक़ अली" /></div>
         <div><label>शपथकर्ता से संबंध</label>
@@ -164,7 +165,11 @@
       <div class="row"><label>मालिक का निवास (गाँव/मोहल्ला)</label><input id="nbResidence" placeholder="कांतित बौलिया" /></div>
       <div class="row two">
         <div><label>जिला</label><input id="nbDistrict" placeholder="मिर्जापुर" /></div>
+        <div><label>राज्य</label><input id="nbState" placeholder="उत्तर प्रदेश" /></div>
+      </div>
+      <div class="row two">
         <div><label>पिन कोड</label><input id="nbPincode" placeholder="231001" inputmode="numeric" /></div>
+        <div><label>&nbsp;</label><button class="btn s" id="nbSameAddr" type="button" style="width:100%">⤵️ 1 क्लिक — निवासी वाला ही पता</button></div>
       </div>
       <div class="row"><label>संपत्ति का पूरा पता</label><textarea id="nbProperty" placeholder="कांतित बौलिया, मिर्जापुर 231001, उत्तर प्रदेश, भारत"></textarea></div>
       <div class="row two">
@@ -264,7 +269,7 @@
 '',
 '',
 '',
-'मैं, ' + v.owner + ' ' + v.ownerRel + ' ' + v.ownerFather + ', निवासी-' + v.residence + ', ' + v.district + ' ' + v.pincode + ', उत्तर प्रदेश,',
+'मैं, ' + v.owner + ' ' + v.ownerRel + ' ' + v.ownerFather + ', निवासी-' + v.residence + ', ' + v.district + ' ' + v.pincode + ', ' + (v.state || "उत्तर प्रदेश") + ',',
 'भारत यह प्रमाणित ' + (f ? 'करती' : 'करता') + ' हूँ कि',
 'नीचे दिए गए पते वाली संपत्ति पर मेरा अधिकार है:',
 '',
@@ -307,6 +312,35 @@
   function relToggle(selId, rowId){
     $(rowId).style.display = ($(selId).value === "__custom__") ? "" : "none";
   }
+  // ---------- 1-click: निवासी ka pura pata = मकान/संपत्ति ka pura pata (राज्य + पिन सहित) ----------
+  function brAddr(){
+    const res = $("brResidence").value.trim();
+    const st  = $("brState").value.trim();
+    const pin = dnum($("brPincode").value.trim(), $("brDev").checked);
+    const tail = [st, pin].filter(Boolean).join("-");
+    return [res, tail].filter(Boolean).join(", ");
+  }
+  function nbAddr(){
+    const res  = $("nbResidence").value.trim();
+    const dist = $("nbDistrict").value.trim();
+    const st   = $("nbState").value.trim() || "उत्तर प्रदेश";
+    const pin  = dnum($("nbPincode").value.trim(), $("nbDev").checked);
+    const mid  = [dist, pin].filter(Boolean).join(" ");
+    return [res, mid, st, "भारत"].filter(Boolean).join(", ");
+  }
+  function fillSameAddrBR(){
+    const a = brAddr();
+    if (!a) { toast("पहले निवासी / राज्य / पिन भरें"); return; }
+    $("brProperty").value = a; render();
+    toast("✅ संपत्ति का पता = निवासी वाला ही");
+  }
+  function fillSameAddrNB(){
+    const a = nbAddr();
+    if (!a || !$("nbResidence").value.trim()) { toast("पहले निवासी / जिला / पिन भरें"); return; }
+    $("nbProperty").value = a; render();
+    toast("✅ संपत्ति का पता = निवासी वाला ही");
+  }
+
   function relRefresh(){
     relToggle("brDepRel", "brDepRelCustomRow");
     relToggle("brRel", "brRelCustomRow");
@@ -322,7 +356,7 @@
   }
   function nbVals(){
     return { owner:$("nbOwner").value, ownerRel:$("nbOwnerRel").value, ownerFather:$("nbOwnerFather").value,
-      residence:$("nbResidence").value, district:$("nbDistrict").value, pincode:dnum($("nbPincode").value.trim(), $("nbDev").checked),
+      residence:$("nbResidence").value, district:$("nbDistrict").value, state:$("nbState").value, pincode:dnum($("nbPincode").value.trim(), $("nbDev").checked),
       property:$("nbProperty").value, person:$("nbPerson").value, personRel:$("nbPersonRel").value,
       personFather:$("nbPersonFather").value, date:$("nbDate").value, gender:$("nbGender").value, dev:$("nbDev").checked };
   }
@@ -351,7 +385,7 @@
       depRelSel:$("brDepRel").value, depRelCustom:$("brDepRelCustom").value,
       relSel:$("brRel").value, relCustom:$("brRelCustom").value, relGender:$("brRelGender").value }; }
   function nbValsRaw(){ return { owner:$("nbOwner").value, ownerRel:$("nbOwnerRel").value, ownerFather:$("nbOwnerFather").value,
-      residence:$("nbResidence").value, district:$("nbDistrict").value, pincode:$("nbPincode").value, property:$("nbProperty").value,
+      residence:$("nbResidence").value, district:$("nbDistrict").value, state:$("nbState").value, pincode:$("nbPincode").value, property:$("nbProperty").value,
       person:$("nbPerson").value, personRel:$("nbPersonRel").value, personFather:$("nbPersonFather").value, date:$("nbDate").value,
       gender:$("nbGender").value, dev:$("nbDev").checked }; }
   function load(){
@@ -367,7 +401,7 @@
         relRefresh(); }
       const n = JSON.parse(localStorage.getItem("noc_nbr_v1") || "{}");
       if(n.owner !== undefined){ $("nbOwner").value=n.owner||""; $("nbOwnerRel").value=n.ownerRel||"पुत्र"; $("nbOwnerFather").value=n.ownerFather||"";
-        $("nbResidence").value=n.residence||""; $("nbDistrict").value=n.district||""; $("nbPincode").value=n.pincode||"";
+        $("nbResidence").value=n.residence||""; $("nbDistrict").value=n.district||""; $("nbState").value=n.state||""; $("nbPincode").value=n.pincode||"";
         $("nbProperty").value=n.property||""; $("nbPerson").value=n.person||""; $("nbPersonRel").value=n.personRel||"पुत्री";
         $("nbPersonFather").value=n.personFather||""; $("nbDate").value=n.date||""; $("nbGender").value=n.gender||"f";
         $("nbDev").checked = n.dev !== false; }
@@ -390,7 +424,7 @@
     pincode:"221301", property:"गरौली औराई, संत रविदास नगर (भदोही), उत्तर प्रदेश-२२१३०१", son:"आशिक़ अली",
     firm:"AA CARPETS & RUGS", business:"कारपेट सम्बंधित व्यवसाय", gender:"m", dev:true, depRel:"पुत्र", rel:"पुत्र" };
   const NB_SAMPLE = { owner:"समीर अंसारी", ownerRel:"पुत्र", ownerFather:"मोहम्मद कासिम अंसारी", residence:"कांतित बौलिया",
-    district:"मिर्जापुर", pincode:"231001", property:"कांतित बौलिया, मिर्जापुर २३१००१, उत्तर प्रदेश, भारत",
+    district:"मिर्जापुर", state:"उत्तर प्रदेश", pincode:"231001", property:"कांतित बौलिया, मिर्जापुर २३१००१, उत्तर प्रदेश, भारत",
     person:"रूबी", personRel:"पुत्री", personFather:"मोहम्मद क़ासिम", gender:"f", dev:true };
   function applyBR(v){
     $("brDeponent").value=v.deponent; $("brFather").value=v.father; $("brResidence").value=v.residence; $("brState").value=v.state;
@@ -404,7 +438,7 @@
   }
   function applyNB(v){
     $("nbOwner").value=v.owner; $("nbOwnerRel").value=v.ownerRel||"पुत्र"; $("nbOwnerFather").value=v.ownerFather; $("nbResidence").value=v.residence;
-    $("nbDistrict").value=v.district; $("nbPincode").value=v.pincode; $("nbProperty").value=v.property; $("nbPerson").value=v.person;
+    $("nbDistrict").value=v.district; $("nbState").value=v.state||"उत्तर प्रदेश"; $("nbPincode").value=v.pincode; $("nbProperty").value=v.property; $("nbPerson").value=v.person;
     $("nbPersonRel").value=v.personRel||"पुत्री"; $("nbPersonFather").value=v.personFather; $("nbGender").value=v.gender; $("nbDev").checked=!!v.dev;
     if(!$("nbDate").value){ const d=new Date(); $("nbDate").value=[d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-"); }
     render();
@@ -426,6 +460,8 @@
   document.querySelectorAll("#fBR input, #fBR select, #fBR textarea, #fNBR input, #fNBR select, #fNBR textarea")
     .forEach(el => { el.addEventListener("input", render); el.addEventListener("change", render); });
   ["brRel", "brDepRel"].forEach(id => $(id).addEventListener("change", relRefresh));
+  $("brSameAddr").addEventListener("click", fillSameAddrBR);
+  $("nbSameAddr").addEventListener("click", fillSameAddrNB);
   const NAT = (typeof window !== "undefined") ? window.NOCBridge : null;   // Android APK bridge
   $("btnPrint").addEventListener("click", () => {
     if (NAT && NAT.printPage) { try { NAT.printPage(); return; } catch(_){} }
@@ -452,7 +488,7 @@
   load();
   render();
   // test hooks (harmless)
-  window.__noc = { brText, nbrText, brVals, nbVals, switchTab, render, rawText: () => rawText() };
+  window.__noc = { brText, nbrText, brVals, nbVals, switchTab, render, rawText: () => rawText(), fillSameAddrBR, fillSameAddrNB, brAddr, nbAddr };
 })();
 </script>
 </body>
