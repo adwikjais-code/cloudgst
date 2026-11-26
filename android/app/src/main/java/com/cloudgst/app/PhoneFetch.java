@@ -60,6 +60,7 @@ public class PhoneFetch {
     private boolean clicked = false;
     private boolean finished = false;
     private boolean retriedDirect = false;
+    private boolean netRetried = false;
     private String cachedUa = "Mozilla/5.0";
     private String lastToken = "";
 
@@ -97,6 +98,7 @@ public class PhoneFetch {
         clicked = false;
         finished = false;
         retriedDirect = false;
+        netRetried = false;
         lastToken = "";
         ensureWeb(host);
         wv.loadUrl(AUTH_DASHBOARD);
@@ -139,6 +141,24 @@ public class PhoneFetch {
                 if (finished) return;
                 h.removeCallbacks(tickRun);
                 h.postDelayed(tickRun, 900);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, android.webkit.WebResourceRequest req,
+                                        android.webkit.WebResourceError errInfo) {
+                if (req == null || !req.isForMainFrame()) return;
+                final String desc = errInfo == null ? "" : (errInfo.getErrorCode() + " " + errInfo.getDescription());
+                h.post(() -> {
+                    if (finished) return;
+                    if (!netRetried) {                 // ek baar dobara load
+                        netRetried = true;
+                        if (wv != null) { h.postDelayed(() -> { if (wv != null && !finished) wv.loadUrl(AUTH_DASHBOARD); }, 2500); }
+                        return;
+                    }
+                    deliver(reqId, err("network",
+                            "Phone mode: portal ka server hi nahi mila (" + desc + "). Internet/DNS check karein "
+                                    + "ya ☁️ Cloud mode use karein." + diagText()));
+                });
             }
         });
         v.setDownloadListener(new DownloadListener() {

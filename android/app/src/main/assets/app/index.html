@@ -21240,24 +21240,32 @@ function buildEtsyPdfReport(opts) {
         }
         const st = gpGetState(clientKey);
         st.pendingAction = actionMode || "FETCH";
-        if (gpPhoneModeNow()) {
-          // 📱 Phone mode: cloud captcha/login nahi — phone ki apni portal session use hoti hai
+        if (gpPhoneModeNow() && gpPhoneLoginAvailable()) {
+          // 📱 Phone mode = cloud jaisa: login chhupe WebView me, captcha app me, phir background fetch
           st.sessionId = "PHONE";
           st.captchaBase64 = "";
           st.note = "";
-          const who = gpPhoneLoginClient();
-          const mine = String(c.gstin || c.portalId || "").trim();
-          if (!who || (mine && who !== mine)) {
-            // Phone par is client ka login nahi hai -> login screen khud khule (captcha + OTP aap dalenge)
-            st.phase = "idle";
-            st.note = "🔐 Phone par login nahi — pehle ek baar login karein";
-            gpRenderSerialList();
-            gpToast("🔐 " + (c.clientName || "Client") + ": phone mode ke liye pehle ek baar portal login (captcha + OTP aap dalenge) — uske baad sab background me");
-            setTimeout(() => { try { gpNativeOpenPortal(clientKey); } catch (_) {} }, 500);
-            return;
-          }
+          st.cooldownUntil = 0;
+          st.phase = "loading_cap";
           gpRenderSerialList();
-          return gpTriggerFetchInBackground(c, st);
+          try {
+            const pres = await gpPhoneLoginStart(c, (pwCheck && pwCheck.pw) || "");
+            if (pres && pres.loggedIn) {          // session pehle se zinda hai -> seedha fetch
+              st.phase = "idle";
+              gpRenderSerialList();
+              return gpTriggerFetchInBackground(c, st);
+            }
+            st.captchaBase64 = (pres && pres.captchaBase64) || "";
+            st.phase = st.captchaBase64 ? "captcha" : "error";
+            if (!st.captchaBase64) st.note = "Phone login: captcha nahi mila";
+          } catch (e) {
+            st.phase = "error";
+            st.note = e.message;
+            gpErrLogAdd(clientKey, e.message);
+            gpToast("❌ " + e.message);
+          }
+          gpRenderSerialList(clientKey);
+          return;
         }
         st.phase = "loading_cap";
         st.note = "";
@@ -21344,8 +21352,8 @@ function buildEtsyPdfReport(opts) {
                 : `❌ ${c.clientName}: ${err.message} — 90s baad dobara try karein.`);
               if (_needLogin) {
                 gpPhoneLoginClient("");
-                // ek hi tap: login screen khud khule (captcha + OTP user dalega)
-                setTimeout(() => { try { gpNativeOpenPortal(c.clientKey); } catch (_) {} }, 700);
+                // phone mode: captcha/OTP wala card khud khul jata hai (portal screen nahi)
+                setTimeout(() => { try { gpLoadCaptchaForClient(c.clientKey, "FETCH"); } catch (_) {} }, 500);
               }
             }
             if (st.sessionId && st.sessionId !== "PHONE") gpCallBridge("/api/gst/logout", { sessionId: st.sessionId }).catch(() => {});
@@ -21533,6 +21541,10 @@ function buildEtsyPdfReport(opts) {
       }
 
       function gpAutoOpenNextSerialCaptcha(currentKey, actionMode) {
+        const nextChk = document.getElementById("gpAutoNextChk");
+        if (nextChk && !nextChk.checked && (typeof gpPhoneModeNow === "function") && gpPhoneModeNow()) {
+          nextChk.checked = true;   // 📱 Phone mode: ek ke baad ek sab clients (serial) — checkbox apne aap on
+        }
         if (!document.getElementById("gpAutoNextChk")?.checked) return;
         const visible = gpGetFilteredClients();
         if (visible.length <= 1) return;
@@ -21548,9 +21560,12 @@ function buildEtsyPdfReport(opts) {
             if (!mj || mj.uploaded || (mj.fp && mj.fp !== wantFp)) continue;
           }
           const isCloud = !gpGetBridgeUrl().includes("localhost") && !gpGetBridgeUrl().includes("127.0.0.1");
-          if (isCloud && gpActiveFetches >= 2) {
+          // 📱 Phone mode: ek hi chhupa WebView — isliye ek ke baad ek (serial), parallel nahi
+          const isPhone = (typeof gpPhoneModeNow === "function") && gpPhoneModeNow();
+          const maxPar = isPhone ? 1 : 2;
+          if ((isPhone || isCloud) && gpActiveFetches >= maxPar) {
             const waitSlot = () => {
-              if (gpActiveFetches < 2) gpLoadCaptchaForClient(nxt.clientKey, actionMode || "FETCH");
+              if (gpActiveFetches < maxPar) gpLoadCaptchaForClient(nxt.clientKey, actionMode || "FETCH");
               else setTimeout(waitSlot, 1200);
             };
             setTimeout(waitSlot, 1200);
@@ -21575,6 +21590,36 @@ function buildEtsyPdfReport(opts) {
 
         const btn = document.querySelector(`#pagePortalMain .gp-cap-submit-btn[data-k="${CSS.escape(clientKey)}"]`);
         if (btn) { btn.disabled = true; btn.textContent = "⏳"; }
+
+        if (gpPhoneModeNow() && gpPhoneLoginAvailable()) {
+          // 📱 Phone mode: captcha chhupe WebView ke login page me jata hai (cloud ki zaroorat nahi)
+          try {
+            const pres = await gpPhoneLoginCaptcha(cap);
+            if (pres && pres.otpRequired) {
+              st.phase = "otp";
+              gpRenderSerialList(clientKey);
+            } else {
+              st.phase = "idle";
+              st.note = "";
+              gpRenderSerialList();
+              gpTriggerFetchInBackground(c, st);
+              gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
+            }
+          } catch (e) {
+            if (e && e.data && e.data.captchaBase64) {
+              st.captchaBase64 = e.data.captchaBase64;
+              st.phase = "captcha";
+            } else {
+              st.phase = "error";
+              st.note = e.message;
+              gpErrLogAdd(clientKey, e.message);
+            }
+            gpRenderSerialList(clientKey);
+            gpToast("❌ " + e.message);
+          }
+          return;
+        }
+
         try {
           const res = await gpCallBridge("/api/gst/submit-login", {
             sessionId: st.sessionId,
@@ -21612,6 +21657,24 @@ function buildEtsyPdfReport(opts) {
         const inp = document.querySelector(`#pagePortalMain .gp-otp-inp[data-k="${CSS.escape(clientKey)}"]`);
         const otp = (inp?.value || "").trim();
         if (!otp) return gpToast("⚠️ OTP dalein.");
+
+        if (gpPhoneModeNow() && gpPhoneLoginAvailable()) {
+          try {
+            await gpPhoneLoginOtp(otp);
+            st.phase = "idle";
+            st.note = "";
+            gpRenderSerialList();
+            gpTriggerFetchInBackground(c, st);
+            gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
+          } catch (e) {
+            st.phase = "error";
+            st.note = e.message;
+            gpRenderSerialList(clientKey);
+            gpToast("❌ " + e.message);
+          }
+          return;
+        }
+
         try {
           await gpCallBridge("/api/gst/submit-otp", { sessionId: st.sessionId, otp });
           if (st.pendingAction === "UPLOAD") {
@@ -21860,7 +21923,15 @@ function buildEtsyPdfReport(opts) {
       window.__gpSetSrc = gpSetDataSource;
       window.__gpPhoneMode = gpPhoneModeNow;
       window.__gpPhoneFetch = (fy, mon) => gpPhoneFetch2b(fy, mon);
+      window.__gpPhoneLoginStart = (c, pw) => gpPhoneLoginStart(c, pw);
+      window.__gpPhoneLoginCaptcha = (cap) => gpPhoneLoginCaptcha(cap);
+      window.__gpPhoneLoginOtp = (otp) => gpPhoneLoginOtp(otp);
+      window.__gpPhoneLoginAvailable = gpPhoneLoginAvailable;
 
+      function gpPhoneLoginAvailable() {
+        try { return !!(window.CloudGSTNative && CloudGSTNative.phoneLoginStart); } catch (_) { return false; }
+      }
+      let gpPhoneLoginId = "";
       const gpPhonePending = {};
       window.gpPhoneFetchReady = function (id) {
         const p = gpPhonePending[id];
@@ -21887,6 +21958,42 @@ function buildEtsyPdfReport(opts) {
           p.reject(new Error("Phone mode ka jawab padh nahi paye: " + (e.message || e)));
         }
       };
+      function gpPhoneLoginStart(c, pw) {
+        return new Promise((resolve, reject) => {
+          if (!gpPhoneLoginAvailable()) return reject(new Error("Phone login is app me nahi hai — app update karein (ya ☁️ Cloud mode)."));
+          let id = "";
+          try { id = String(window.CloudGSTNative.phoneLoginStart(String(c.portalId || "").trim(), String(pw || "")) || ""); } catch (e) { id = ""; }
+          if (!id) return reject(new Error("Phone login start nahi ho paya."));
+          gpPhoneLoginId = id;
+          gpPhonePending[id] = { resolve, reject };
+          setTimeout(() => {
+            if (gpPhonePending[id]) { delete gpPhonePending[id]; reject(new Error("Phone login: time par jawab nahi aaya.")); }
+          }, 170000);
+        });
+      }
+      function gpPhoneLoginCaptcha(cap) {
+        return new Promise((resolve, reject) => {
+          if (!gpPhoneLoginId) return reject(new Error("Pehle phone login start karein."));
+          gpPhonePending[gpPhoneLoginId] = { resolve, reject };
+          setTimeout(() => {
+            if (gpPhonePending[gpPhoneLoginId]) { delete gpPhonePending[gpPhoneLoginId]; reject(new Error("Phone login: captcha ke baad jawab nahi aaya.")); }
+          }, 170000);
+          try { window.CloudGSTNative.phoneLoginCaptcha(String(cap || "")); }
+          catch (e) { delete gpPhonePending[gpPhoneLoginId]; reject(new Error("Captcha bhej nahi paye: " + (e.message || e))); }
+        });
+      }
+      function gpPhoneLoginOtp(otp) {
+        return new Promise((resolve, reject) => {
+          if (!gpPhoneLoginId) return reject(new Error("Pehle phone login start karein."));
+          gpPhonePending[gpPhoneLoginId] = { resolve, reject };
+          setTimeout(() => {
+            if (gpPhonePending[gpPhoneLoginId]) { delete gpPhonePending[gpPhoneLoginId]; reject(new Error("Phone login: OTP ke baad jawab nahi aaya.")); }
+          }, 170000);
+          try { window.CloudGSTNative.phoneLoginOtp(String(otp || "")); }
+          catch (e) { delete gpPhonePending[gpPhoneLoginId]; reject(new Error("OTP bhej nahi paye: " + (e.message || e))); }
+        });
+      }
+
       function gpPhoneFetch2b(fy, mon) {
         return new Promise((resolve, reject) => {
           if (!gpPhoneAvailable()) return reject(new Error("Phone mode sirf Android app me chalta hai — ☁️ Cloud mode use karein."));

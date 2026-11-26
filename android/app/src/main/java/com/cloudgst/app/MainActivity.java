@@ -61,7 +61,7 @@ import java.util.concurrent.Executor;
 public class MainActivity extends FragmentActivity {
 
     public static final String APP_URL = "https://appassets.androidplatform.net/assets/app/index.html";
-    public static final String APP_VERSION = "android-5.9.8";
+    public static final String APP_VERSION = "android-5.9.9";
 
     private static final int REQ_FILE = 1001;
     private static final int REQ_STORAGE = 1002;
@@ -76,6 +76,8 @@ public class MainActivity extends FragmentActivity {
     private boolean appLoaded = false;
     private boolean bioUnlocked = false;
     private PhoneFetch phoneFetch;
+    private PhoneLogin phoneLogin;
+    private String phoneLoginId = "";
     /** Phone-mode fetch ka poora JSON payload (JS chunks me kheenchta hai). */
     private String phonePayload = "";
     private String phonePayloadId = "";
@@ -533,6 +535,7 @@ public class MainActivity extends FragmentActivity {
     protected void onDestroy() {
         try {
             if (phoneFetch != null) phoneFetch.destroy();
+            if (phoneLogin != null) phoneLogin.destroy();
         } catch (Exception ignored) { }
         if (web != null) {
             web.destroy();
@@ -584,6 +587,46 @@ public class MainActivity extends FragmentActivity {
                             + org.json.JSONObject.quote(phonePayloadId) + ");}catch(e){}})()", null);
         } catch (Throwable t) {
             Log.e(TAG, "deliverPhonePayload fail", t);
+        }
+    }
+
+    // ---------- 📱 Phone login (cloud jaisa: captcha app me, login back me) ----------
+
+    void startPhoneLogin(final String id, final String user, final String pass) {
+        try {
+            phoneLoginId = id == null ? "" : id;
+            if (phoneLogin == null) {
+                phoneLogin = new PhoneLogin(this, payload -> runOnUiThread(
+                        () -> deliverPhonePayload(phoneLoginId, payload)));
+            }
+            if (phoneLogin.isBusy()) {
+                deliverPhonePayload(phoneLoginId, "{\"ok\":false,\"source\":\"phone\",\"code\":\"busy\","
+                        + "\"error\":\"Phone login pehle se chal raha hai — thoda rukein.\"}");
+                return;
+            }
+            phoneLogin.start(phoneLoginId, user, pass, rootView);
+        } catch (Throwable t) {
+            Log.e(TAG, "phone login start fail", t);
+            deliverPhonePayload(phoneLoginId, "{\"ok\":false,\"source\":\"phone\",\"code\":\"start_failed\","
+                    + "\"error\":\"Phone login start nahi ho paya. ☁️ Cloud mode try karein.\"}");
+        }
+    }
+
+    void phoneLoginSubmitCaptcha(final String captcha) {
+        try {
+            if (phoneLogin == null) return;
+            phoneLogin.submitCaptcha(captcha);
+        } catch (Throwable t) {
+            Log.e(TAG, "phone login captcha fail", t);
+        }
+    }
+
+    void phoneLoginSubmitOtp(final String otp) {
+        try {
+            if (phoneLogin == null) return;
+            phoneLogin.submitOtp(otp);
+        } catch (Throwable t) {
+            Log.e(TAG, "phone login otp fail", t);
         }
     }
 
@@ -715,6 +758,29 @@ public class MainActivity extends FragmentActivity {
                 if (title != null && !title.isEmpty()) i.putExtra(Intent.EXTRA_SUBJECT, title);
                 act.startActivity(Intent.createChooser(i, title == null ? "Share" : title));
             });
+        }
+
+        /** 📱 Phone login (cloud jaisa): chhupe WebView me login page, captcha image app ko. */
+        @JavascriptInterface
+        public String phoneLoginStart(final String user, final String pass) {
+            final String id = "pl" + System.currentTimeMillis();
+            act.runOnUiThread(() -> act.startPhoneLogin(id, user, pass));
+            return id;
+        }
+
+        @JavascriptInterface
+        public void phoneLoginCaptcha(final String captcha) {
+            act.runOnUiThread(() -> act.phoneLoginSubmitCaptcha(captcha));
+        }
+
+        @JavascriptInterface
+        public void phoneLoginOtp(final String otp) {
+            act.runOnUiThread(() -> act.phoneLoginSubmitOtp(otp));
+        }
+
+        @JavascriptInterface
+        public boolean phoneLoginAvailable() {
+            return true;
         }
 
         /** Phone mode: phone par login session se GSTR-2B JSON (chhupe WebView me, screen par kuch nahi). */
