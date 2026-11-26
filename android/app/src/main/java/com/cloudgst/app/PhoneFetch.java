@@ -185,7 +185,7 @@ public class PhoneFetch {
                         p.put("gstr2b", g);
                         p.put("warnings", new JSONArray().put("GSTR-2B is month generate nahi hui (portal: not generated)."));
                     } catch (Exception ignored) { }
-                    deliver(reqId, p);
+                    deliver(reqId, p.toString());
                     return;
                 }
                 if ("CLICKED".equals(tok)) clicked = true;
@@ -341,7 +341,7 @@ public class PhoneFetch {
             tcs.put("message", "Phone mode: TCS data sirf ☁️ Cloud mode me aata hai.");
             p.put("tcs", tcs);
             p.put("warnings", new JSONArray().put("📱 Phone mode: GSTR-2B phone se fetch hui (cloud use nahi hua). TCS ke liye ☁️ Cloud."));
-            deliver(reqId, p);
+            deliver(reqId, p.toString());
         } catch (Exception e) {
             deliver(reqId, err("parse_failed", "Phone mode: 2B file khol nahi paye (" + e.getMessage() + ")."));
         }
