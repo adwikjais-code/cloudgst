@@ -1,9 +1,9 @@
-# NOC Maker — Android APK (v1.4)
+# NOC Maker — Android APK (v1.5)
 
 **Download (phone me seedha):**
 👉 https://github.com/adwikjais-code/cloudgst/releases/download/noc-apk-v1/NOC_Maker.apk
 
-- Size: **227,117 bytes (~222 KB)** · signed release APK (v1+v2+v3 signature) · v1.4, `minSdk 24` (Android 7+), `targetSdk 34`
+- Size: **227,117 bytes (~222 KB)** · signed release APK (v1+v2+v3 signature) · v1.5, `minSdk 24` (Android 7+), `targetSdk 34`
 - Package: **`com.cloudgst.noc`** ("NOC Maker") — aapke CloudGST app (`com.cloudgst.app`) se **alag** hai, dono saath-saath install rehte hain.
 - **Internet ki zarurat nahi** — INTERNET permission hi nahi maangi gayi. Poora tool APK ke andar hai.
 
@@ -17,6 +17,8 @@
 | Cheez | Detail |
 |---|---|
 | Tabs | **BR NOC (शपथ पत्र)** aur **NBR NOC (अनापत्ति प्रमाण पत्र)** |
+| ✍️ हस्ताक्षर (auto) | Default: **शपथकर्ता ka naam hi handwriting font (Kalam, embedded) me signature** ban kar "शपथकर्ता" ke upar chhapta hai — apne aap. Naam badla to signature bhi badal jata hai. Toolbar se: **नाम से (अपने आप)** / **खुद बनाएँ (उँगली से)** / **कोई हस्ताक्षर नहीं** |
+| हाथ से साइन की जगह | Form me checkbox — 2 extra khaali line, taaki print ke baad pen se sign kar sakein |
 | किनारे बराबर (justify) | Page ka **right edge seedha** — words tay hadd tak jaate hain, aage wala word apne aap agli line me chala jata hai (page odd nahi lagta). Toolbar me switch: **किनारे बराबर (justify)** [default] / **जैसा लिखा है** |
 | दिनांक/हस्ताक्षर की जगह | Naya dropdown: **0 (एकदम ऊपर) / 1 (कम — डिफ़ॉल्ट) / 2 / 3-4 (पुराना ज़्यादा नीचे)** — default ab **1**, isliye दिनांक + शपथकर्ता pehle se **3 line upar** |
 | 1-क्लिक पता | **"⤵️ 1 क्लिक — निवासी वाला ही पता"** button: निवासी + राज्य + पिन कोड se **मकान/संपत्ति का पूरा पता** turant bhar jata hai (BR me `पता, राज्य-पिन`, NBR me `पता, जिला पिन, राज्य, भारत`) |
