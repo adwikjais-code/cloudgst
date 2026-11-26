@@ -20290,6 +20290,30 @@ function buildEtsyPdfReport(opts) {
         return [];
       }
 
+      // 📱 Phone mode me portal sirf 2B JSON deta hai (summary object nahi) —
+      // sellers se IGST/CGST/SGST/cess total nikaal lete hain taaki ₹0 na dikhe.
+      function gpB2bSummaryFromSellers(list) {
+        const arr = Array.isArray(list) ? list : [];
+        const t = arr.reduce((a, s) => {
+          a.igst += Number(s && s.igst || 0);
+          a.cgst += Number(s && s.cgst || 0);
+          a.sgst += Number(s && s.sgst || 0);
+          a.cess += Number(s && s.cess || 0);
+          a.taxable += Number(s && s.taxable || 0);
+          return a;
+        }, { igst: 0, cgst: 0, sgst: 0, cess: 0, taxable: 0 });
+        return {
+          igst: Math.round(t.igst * 100) / 100,
+          cgst: Math.round(t.cgst * 100) / 100,
+          sgst: Math.round(t.sgst * 100) / 100,
+          cess: Math.round(t.cess * 100) / 100,
+          taxable: Math.round(t.taxable * 100) / 100,
+          b2bSuppliersCount: arr.length
+        };
+      }
+      window.gpB2bSummaryFromSellers = gpB2bSummaryFromSellers;
+      window.__gpExtractB2b = gpExtractB2bSellersFromData;
+
       // Sheet ka ek cell 50,000 characters ka hota hai. Pehle chup-chaap `arr.pop()` hota tha (suppliers gayab).
       // Ab: (1) invoice detail hata kar saare sellers + totals bhejte hain, (2) phir bhi na bane to sabse
       // kam value wale suppliers hata kar note likhte hain (UI par dikhta hai).
@@ -20314,6 +20338,9 @@ function buildEtsyPdfReport(opts) {
         let s2 = data.gstr2b?.summary || {};
         let ec = data.ecommerceTcs || {};
         let b2bSellers = gpExtractB2bSellersFromData(data);
+        if ((!data.gstr2b || !data.gstr2b.summary) && b2bSellers.length) {
+          s2 = gpB2bSummaryFromSellers(b2bSellers);   // phone mode: summary nahi aati
+        }
         let ecoList = gpExtractEcoList(data, "");
         let ecoPlat = (ec.rows || []).map(r => `${r.ecoName || r.ecoGstin} (${r.ecoGstin || ""}): ₹${r.grossTaxableAmount || 0}`).join("; ");
         // Partial fetch: jo section portal se nahi mila, uska purana (same period) data sheet me 0 se overwrite na ho
@@ -20639,6 +20666,8 @@ function buildEtsyPdfReport(opts) {
           const fp = (typeof gpGetSelectedFp === "function") ? gpGetSelectedFp() : "";
           const perLabel = (typeof gpGetSelectedMonthDisplay === "function") ? gpGetSelectedMonthDisplay() : "";
           window.CloudGSTNative.openPortal(String(c.portalId || "").trim(), String(pwRes.pw || "").trim(), String(c.gstin || ""), String(fp || ""), String(perLabel || ""));
+          // 📱 Phone mode: yaad rakho ki phone par is client ka portal login khula hai
+          gpPhoneLoginClient(String(c.gstin || c.portalId || "").trim());
         } catch (e) {
           gpToast("❌ App ne portal nahi khola: " + (e.message || e));
         }
@@ -21211,6 +21240,14 @@ function buildEtsyPdfReport(opts) {
         }
         const st = gpGetState(clientKey);
         st.pendingAction = actionMode || "FETCH";
+        if (gpPhoneModeNow()) {
+          // 📱 Phone mode: cloud captcha/login nahi — phone ki apni portal session use hoti hai
+          st.sessionId = "PHONE";
+          st.captchaBase64 = "";
+          st.note = "";
+          gpRenderSerialList();
+          return gpTriggerFetchInBackground(c, st);
+        }
         st.phase = "loading_cap";
         st.note = "";
         gpRenderSerialList();
@@ -21238,9 +21275,10 @@ function buildEtsyPdfReport(opts) {
         st.cooldownUntil = 0;
         const ctrl = new AbortController();
         st.abort = ctrl;
-        st.progressText = "Shuru ho raha hai…";
+        st.progressText = st.sessionId === "PHONE" ? "📱 Phone se 2B la rahe hain (cloud nahi, screen band rakh sakte hain)…" : "Shuru ho raha hai…";
         const _progSid = st.sessionId;
-        const _progPoll = setInterval(() => {
+        const _phoneMode = gpPhoneModeNow();
+        const _progPoll = _phoneMode ? null : setInterval(() => {
           if (st.phase !== "fetching" && st.phase !== "saving") return;
           gpCallBridge("/api/gst/fetch-status?sessionId=" + encodeURIComponent(_progSid), null, { timeoutMs: 8000 })
             .then(pr => {
@@ -21261,7 +21299,9 @@ function buildEtsyPdfReport(opts) {
         };
         const wantDrive = !!document.getElementById("gpAutoDriveChk")?.checked;
 
-        gpCallBridge("/api/gst/fetch-all", { sessionId: st.sessionId, fy, month, autoClose: true, options }, { signal: ctrl.signal, timeoutMs: 900000 })
+        (_phoneMode
+          ? gpPhoneFetch2b(fy, (typeof gpGetSelectedMonthDisplay === "function" ? gpGetSelectedMonthDisplay() : ""))
+          : gpCallBridge("/api/gst/fetch-all", { sessionId: st.sessionId, fy, month, autoClose: true, options }, { signal: ctrl.signal, timeoutMs: 900000 }))
           .then(async (data) => {
             st.liveRawData = data;
             st.phase = "saving";
@@ -21288,8 +21328,9 @@ function buildEtsyPdfReport(opts) {
               st.cooldownUntil = Date.now() + 90000;
               gpEnsureCooldownTicker();
               gpToast(`❌ ${c.clientName}: ${err.message} — 90s baad dobara try karein.`);
+              if (err.code === "login_required") gpPhoneLoginClient("");
             }
-            if (st.sessionId) gpCallBridge("/api/gst/logout", { sessionId: st.sessionId }).catch(() => {});
+            if (st.sessionId && st.sessionId !== "PHONE") gpCallBridge("/api/gst/logout", { sessionId: st.sessionId }).catch(() => {});
           })
           .finally(() => {
             try { clearInterval(_progPoll); } catch (_) {}
@@ -21767,6 +21808,113 @@ function buildEtsyPdfReport(opts) {
           try { window.CloudGSTNative.setBioLock(!on); } catch (_) {}
           setTimeout(paint, 400);
         });
+      })();
+
+      // ===== Data source: 📱 Phone (bina cloud) / ☁️ Cloud — header me switch =====
+      const GP_SRC_KEY = "gst_data_source_v1";
+      const GP_PHONE_CLIENT_KEY = "gst_phone_login_client_v1";
+      function gpPhoneAvailable() {
+        try { return !!(window.CloudGSTNative && CloudGSTNative.phoneFetch2b); } catch (_) { return false; }
+      }
+      function gpDataSource() {
+        try { const v = localStorage.getItem(GP_SRC_KEY); if (v === "cloud" || v === "phone") return v; } catch (_) {}
+        return gpPhoneAvailable() ? "phone" : "cloud";
+      }
+      function gpSetDataSource(v) {
+        const val = v === "cloud" ? "cloud" : "phone";
+        try { localStorage.setItem(GP_SRC_KEY, val); } catch (_) {}
+        if (window.__gpPaintSrcSwitch) window.__gpPaintSrcSwitch();
+        gpToast(val === "phone"
+          ? "📱 Phone mode: data seedha phone se (cloud nahi) — login chhupe me chalta hai"
+          : "☁️ Cloud mode: Railway bridge se data (phone band kar sakte hain)");
+      }
+      function gpPhoneModeNow() { return gpDataSource() === "phone" && gpPhoneAvailable(); }
+      function gpPhoneLoginClient(v) {
+        try {
+          if (v === undefined) return String(localStorage.getItem(GP_PHONE_CLIENT_KEY) || "");
+          if (v) localStorage.setItem(GP_PHONE_CLIENT_KEY, String(v));
+          else localStorage.removeItem(GP_PHONE_CLIENT_KEY);
+        } catch (_) { }
+        return "";
+      }
+      // debug/test hook (app ke andar bhi kaam aata hai)
+      window.__gpGetSrc = gpDataSource;
+      window.__gpSetSrc = gpSetDataSource;
+      window.__gpPhoneMode = gpPhoneModeNow;
+      window.__gpPhoneFetch = (fy, mon) => gpPhoneFetch2b(fy, mon);
+
+      const gpPhonePending = {};
+      window.gpPhoneFetchReady = function (id) {
+        const p = gpPhonePending[id];
+        if (!p || !window.CloudGSTNative) return;
+        try {
+          let out = "", off = 0, guard = 0;
+          while (guard++ < 80) {
+            const ch = String(window.CloudGSTNative.phoneFetchChunk(String(id), off, 300000) || "");
+            if (!ch) break;
+            out += ch;
+            off += ch.length;
+          }
+          delete gpPhonePending[id];
+          const data = out ? JSON.parse(out) : { ok: false, error: "Phone mode: jawab khali aaya." };
+          if (data && data.ok === false) {
+            const e = new Error(data.error || "Phone mode fail");
+            e.code = data.code || "";
+            p.reject(e);
+          } else {
+            p.resolve(data);
+          }
+        } catch (e) {
+          delete gpPhonePending[id];
+          p.reject(new Error("Phone mode ka jawab padh nahi paye: " + (e.message || e)));
+        }
+      };
+      function gpPhoneFetch2b(fy, mon) {
+        return new Promise((resolve, reject) => {
+          if (!gpPhoneAvailable()) return reject(new Error("Phone mode sirf Android app me chalta hai — ☁️ Cloud mode use karein."));
+          let id = "";
+          try { id = String(window.CloudGSTNative.phoneFetch2b(String(fy || ""), String(mon || "")) || ""); } catch (e) { id = ""; }
+          if (!id) return reject(new Error("Phone mode start nahi ho paya — app dobara khol kar try karein."));
+          gpPhonePending[id] = { resolve, reject };
+          setTimeout(() => {
+            if (gpPhonePending[id]) {
+              delete gpPhonePending[id];
+              reject(new Error("Phone mode: phone ne time par jawab nahi diya — ☁️ Cloud mode try karein."));
+            }
+          }, 200000);
+        });
+      }
+
+      // Header switch: 📱 Phone | ☁️ Cloud (sirf app me; browser me poora hidden)
+      (function gpInitSrcSwitch() {
+        const lockBtn = document.getElementById("lockAppBtn");
+        if (!lockBtn || document.getElementById("gpSrcSwitch")) return;
+        const wrap = document.createElement("div");
+        wrap.id = "gpSrcSwitch";
+        wrap.className = "inline-flex items-center rounded-xl overflow-hidden border border-slate-700 bg-slate-800 text-[11px] font-bold";
+        wrap.innerHTML = '<button type="button" data-src="phone" class="px-2.5 py-2">📱 Phone</button>'
+          + '<button type="button" data-src="cloud" class="px-2.5 py-2">☁️ Cloud</button>';
+        const anchorBtn = document.getElementById("gpNativeBioBtn") || lockBtn;
+        anchorBtn.insertAdjacentElement("afterend", wrap);
+        const paint = () => {
+          if (!gpPhoneAvailable()) { wrap.classList.add("hidden"); return; }
+          wrap.classList.remove("hidden");
+          const cur = gpDataSource();
+          wrap.querySelectorAll("button").forEach(b => {
+            const on = b.getAttribute("data-src") === cur;
+            b.className = "px-2.5 py-2 " + (on ? "bg-indigo-500 text-white" : "text-slate-300 hover:bg-slate-700");
+            b.title = b.getAttribute("data-src") === "phone"
+              ? "Phone mode: data seedha phone se fetch hota hai (cloud server ki zaroorat nahi)"
+              : "Cloud mode: Railway cloud server se fetch hota hai (phone band kar sakte hain)";
+          });
+        };
+        wrap.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+          if (b.getAttribute("data-src") === gpDataSource()) return;
+          gpSetDataSource(b.getAttribute("data-src"));
+        }));
+        window.__gpPaintSrcSwitch = paint;
+        paint();
+        setTimeout(paint, 600);
       })();
 
       // ===== APK: header me seedha 👆 Fingerprint button (option dhoondhna na pade) =====

@@ -61,7 +61,7 @@ import java.util.concurrent.Executor;
 public class MainActivity extends FragmentActivity {
 
     public static final String APP_URL = "https://appassets.androidplatform.net/assets/app/index.html";
-    public static final String APP_VERSION = "android-5.9.5";
+    public static final String APP_VERSION = "android-5.9.6";
 
     private static final int REQ_FILE = 1001;
     private static final int REQ_STORAGE = 1002;
@@ -75,6 +75,10 @@ public class MainActivity extends FragmentActivity {
     private ValueCallback<Uri[]> filePathCallback;
     private boolean appLoaded = false;
     private boolean bioUnlocked = false;
+    private PhoneFetch phoneFetch;
+    /** Phone-mode fetch ka poora JSON payload (JS chunks me kheenchta hai). */
+    private String phonePayload = "";
+    private String phonePayloadId = "";
     private SharedPreferences prefs;
 
     /** Storage permission ke baad pending save (sirf Android 7/8 ke liye). */
@@ -527,6 +531,9 @@ public class MainActivity extends FragmentActivity {
 
     @Override
     protected void onDestroy() {
+        try {
+            if (phoneFetch != null) phoneFetch.destroy();
+        } catch (Exception ignored) { }
         if (web != null) {
             web.destroy();
             web = null;
@@ -539,6 +546,32 @@ public class MainActivity extends FragmentActivity {
     }
 
     /** JS se bulane wala bridge: window.CloudGSTNative.* */
+    // ================= Phone mode: bina cloud, background (invisible) fetch =================
+
+    String startPhoneFetch(String fyLabel, String monLabel) {
+        if (phoneFetch == null) {
+            phoneFetch = new PhoneFetch(this, (id, payload) -> runOnUiThread(() -> {
+                phonePayload = payload == null ? "" : payload;
+                phonePayloadId = id;
+                if (web == null) return;
+                web.evaluateJavascript(
+                        "(function(){try{if(window.gpPhoneFetchReady)window.gpPhoneFetchReady("
+                                + org.json.JSONObject.quote(id) + ");}catch(e){}})()", null);
+            }));
+        }
+        String id = "pf" + System.currentTimeMillis();
+        phoneFetch.start(id, fyLabel, monLabel, rootView);
+        return id;
+    }
+
+    String phonePayloadChunk(String id, int offset, int len) {
+        if (id == null || !id.equals(phonePayloadId) || phonePayload == null) return "";
+        int L = Math.max(1, Math.min(len, 400000));
+        if (offset < 0 || offset >= phonePayload.length()) return "";
+        int end = Math.min(phonePayload.length(), offset + L);
+        return phonePayload.substring(offset, end);
+    }
+
     public static class NativeBridge {
         private final MainActivity act;
 
@@ -655,6 +688,31 @@ public class MainActivity extends FragmentActivity {
                 if (title != null && !title.isEmpty()) i.putExtra(Intent.EXTRA_SUBJECT, title);
                 act.startActivity(Intent.createChooser(i, title == null ? "Share" : title));
             });
+        }
+
+        /** Phone mode: phone par login session se GSTR-2B JSON (chhupe WebView me, screen par kuch nahi). */
+        @JavascriptInterface
+        public String phoneFetch2b(final String fyLabel, final String monLabel) {
+            try {
+                return act.startPhoneFetch(fyLabel, monLabel);
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        /** Phone mode result chunks (bade JSON ke liye). */
+        @JavascriptInterface
+        public String phoneFetchChunk(final String id, final int offset, final int len) {
+            try {
+                return act.phonePayloadChunk(id, offset, len);
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public boolean phoneFetchAvailable() {
+            return true;
         }
 
         @JavascriptInterface
