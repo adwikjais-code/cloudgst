@@ -51,6 +51,7 @@ public class PhoneLogin {
     private String password = "";
     private String captchaSrc = "";
     private int tries = 0;
+    private int clicks = 0;
     private int phase = 0;                 // 0 = idle, 1 = captcha dhoondh rahe, 2 = submit ke baad
     private boolean finished = false;
     private boolean otpMode = false;
@@ -116,6 +117,18 @@ public class PhoneLogin {
         }
     }
 
+    /** Login page pehchana nahi gaya -> ek baar visible login (captcha/OTP user dalega), phir background. */
+    private void deliverManualLogin(JSONObject d) {
+        String info = "";
+        if (d != null) {
+            info = " | page: " + d.optString("u", "") + " | inputs: " + d.optInt("inputs", -1)
+                    + " | imgs: " + d.optInt("imgs", -1) + (d.optString("b", "").isEmpty() ? "" : " | text: " + d.optString("b", ""));
+        }
+        deliver(err("manual_login",
+                "Phone login: portal ka login page apne aap nahi pehchana gaya" + info
+                        + " — ek baar login screen khol rahe hain (captcha/OTP aap dalenge), uske baad phone mode background me chalega."));
+    }
+
     private final Runnable timeoutRun = new Runnable() {
         @Override
         public void run() {
@@ -178,6 +191,18 @@ public class PhoneLogin {
                 try { d = new JSONObject(raw); } catch (Exception ignored) { }
                 String t = d == null ? "" : d.optString("t", "");
                 stage = "poll:" + (t.isEmpty() ? "wait" : t);
+                if ("CLICKLOGIN".equals(t)) {
+                    if (clicks < 2) { clicks++; stage = "click-login"; h.postDelayed(tickRun, 2500); }
+                    else if (tries >= 12) { deliverManualLogin(d); }
+                    else h.postDelayed(tickRun, 1800);
+                    return;
+                }
+                if (d != null && d.optBoolean("nocap", false)) {
+                    captchaSrc = "";
+                    deliver(err("captcha_missing", "Login page par captcha image nahi mila (form mila). ☁️ Cloud mode try karein."));
+                    return;
+                }
+                if ("WAIT".equals(t) && tries >= 12) { deliverManualLogin(d); return; }
                 if ("CAPTCHA".equals(t)) {
                     captchaSrc = d.optString("src", "");
                     grabCaptcha();
@@ -305,17 +330,34 @@ public class PhoneLogin {
 
     private String buildFindCaptchaScript() {
         return "(function(){try{"
-                + "var hasPw=!!document.querySelector('input[type=password]');"
-                + "var body=String(((document.body&&(document.body.innerText||document.body.textContent))||'')).replace(/\\s+/g,' ');"
-                + "if(!hasPw&&(/dashboard|logout|sign out/i.test(body))) return JSON.stringify({t:'IN'});"
-                + "if(!hasPw) return JSON.stringify({t:'WAIT',u:String(location.href||'')});"
+                + "function q(s){return !!document.querySelector(s);}"
+                + "function vis(e){try{return !!(e&&(e.offsetParent!==null||(e.getClientRects&&e.getClientRects().length)));}catch(x){return false;}}"
+                + "function txt(e){return String((e&&(e.innerText||e.textContent))||'').replace(/\\s+/g,' ').trim();}"
+                + "var body=txt(document.body||document.documentElement);"
+                + "var inputs=[].slice.call(document.querySelectorAll('input'));"
+                + "var pw=null,user=null,capField=null;"
+                + "for(var i=0;i<inputs.length;i++){var el=inputs[i];var sig=((el.type||'')+' '+(el.id||'')+' '+(el.name||'')+' '+(el.placeholder||'')).toLowerCase();"
+                + "if(!capField&&/captcha/.test(sig)) capField=el;"
+                + "else if(!pw&&((el.type||'')==='password'||/pass|pwd/.test(sig))) pw=el;"
+                + "else if(!user&&/user|login|gstin|id/.test(sig)&&(el.type||'text')!=='hidden') user=el;}"
                 + "var imgs=[].slice.call(document.querySelectorAll('img,canvas'));"
-                + "for(var i=0;i<imgs.length;i++){var im=imgs[i];"
-                + "if(im.tagName==='CANVAS'){try{return JSON.stringify({t:'CAPTCHA',src:im.toDataURL('image/png')});}catch(e){}continue;}"
-                + "var id=(im.id||'')+' '+(im.name||'')+' '+(im.className||'')+' '+(im.src||'');"
-                + "if(/captcha/i.test(id)&&im.src){return JSON.stringify({t:'CAPTCHA',src:String(im.src)});}}"
-                + "return JSON.stringify({t:'WAIT',u:String(location.href||'')});"
-                + "}catch(e){return JSON.stringify({t:'ERR',m:String(e&&e.message||e)});}})()";
+                + "var capSrc='';"
+                + "for(var j=0;j<imgs.length;j++){var im=imgs[j];"
+                + "if(im.tagName==='CANVAS'){try{capSrc=im.toDataURL('image/png');}catch(e){}if(capSrc)break;continue;}"
+                + "var id=((im.id||'')+' '+(im.name||'')+' '+(im.className||'')+' '+(im.src||'')+' '+(im.alt||'')).toLowerCase();"
+                + "if(/captcha/.test(id)&&im.src){capSrc=im.src;break;}}"
+                + "if(!capSrc&&capField){var box=capField.closest?capField.closest('div,td,li,section,form'):null;if(box){var bi=[].slice.call(box.querySelectorAll('img,canvas'));"
+                + "for(var k=0;k<bi.length;k++){var e2=bi[k];if(e2.tagName==='CANVAS'){try{capSrc=e2.toDataURL('image/png');}catch(e){}}else if(e2.src){capSrc=e2.src;}if(capSrc)break;}}}"
+                + "if(pw&&capSrc) return JSON.stringify({t:'CAPTCHA',src:capSrc});"
+                + "if(pw&&!capSrc) return JSON.stringify({t:'CAPTCHA',src:'',nocap:true});"
+                + "if(!pw&&/dashboard|logout|sign out|return dashboard/i.test(body)) return JSON.stringify({t:'IN'});"
+                // login page par ho par form na mile -> "LOGIN/PROCEED/CONTINUE" dabao
+                + "var btns=[].slice.call(document.querySelectorAll('button,a,input[type=button],input[type=submit]'));"
+                + "for(var m=0;m<btns.length;m++){var b=btns[m];if(!vis(b))continue;var bt=txt(b).toUpperCase();"
+                + "if(/^(LOGIN|LOG IN|SIGN IN|PROCEED|CONTINUE|CLICK HERE)/.test(bt)){try{b.click();}catch(e){}return JSON.stringify({t:'CLICKLOGIN'});}}"
+                + "return JSON.stringify({t:'WAIT',u:String(location.href||'').slice(0,120),inputs:inputs.length,imgs:imgs.length,"
+                + "pw:!!pw,user:!!user,cap:!!capSrc,b:body.slice(0,120)});"
+                + "}catch(e){return JSON.stringify({t:'ERR',m:String((e&&e.message)||e)});}})()";
     }
 
     private String buildAfterSubmitScript() {

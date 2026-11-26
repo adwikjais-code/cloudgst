@@ -21259,6 +21259,15 @@ function buildEtsyPdfReport(opts) {
             st.phase = st.captchaBase64 ? "captcha" : "error";
             if (!st.captchaBase64) st.note = "Phone login: captcha nahi mila";
           } catch (e) {
+            if (e && (e.code === "manual_login" || e.code === "captcha_missing")) {
+              // login page auto-pehchana nahi gaya -> ek baar seedha login screen (captcha/OTP aap dalenge)
+              st.phase = "idle";
+              st.note = "🔐 Ek baar login screen khul rahi hai — login ke baad phone mode background me chalega";
+              gpRenderSerialList(clientKey);
+              gpToast("🔐 " + (c.clientName || "Client") + ": ek baar login screen khol rahe hain (captcha/OTP aap dalenge) — uske baad sab background me");
+              setTimeout(() => { try { gpNativeOpenPortal(clientKey); } catch (_) {} }, 600);
+              return;
+            }
             st.phase = "error";
             st.note = e.message;
             gpErrLogAdd(clientKey, e.message);

@@ -13,7 +13,7 @@ permissions:
   issues: write
 
 env:
-  RELEASE_TAG: android-v5.9.10
+  RELEASE_TAG: android-v5.9.11
 
 jobs:
   build:
@@ -96,7 +96,7 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.9.10 — phone login: jawab polling (push miss fix) + step diagnostics)
+          ## CloudGST Android APK (v5.9.11 — phone login page detection (flexible) + manual-login fallback)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
@@ -121,5 +121,5 @@ jobs:
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
           gh release create "$RELEASE_TAG" "CloudGST.apk" \
-            --title "CloudGST Android v5.9.10 (APK)" \
+            --title "CloudGST Android v5.9.11 (APK)" \
             --notes-file notes.md
