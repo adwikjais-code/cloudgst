@@ -466,6 +466,21 @@ function isGstr2bNotGeneratedFast(text) {
   return !!text && GSTR2B_NOT_GENERATED_FAST_RE.test(String(text));
 }
 
+/**
+ * 2B ke page par "nahi bani" ka signal? (polling + button-missing dono jagah ek hi logic)
+ * Broad regex tabhi maano jab page par Error/Attention bhi ho — warna normal page ke disclaimer se galti ho sakti hai.
+ */
+function gstr2bPageSaysNotGenerated(text) {
+  if (!text) return false;
+  const t = String(text);
+  if (isGstr2bNotGeneratedFast(t)) return true;
+  return isGstr2bNotGenerated(t) && /error|attention/i.test(t);
+}
+
+function gstr2bPageSaysSessionExpired(text) {
+  return !!text && /session\s*(?:has\s*)?(?:expired|timed\s*out)|please\s+login\s+again|login\s+to\s+continue/i.test(String(text));
+}
+
 function partialOutcome(status, opts) {
   const asked = [], failed = [];
   const check = (key, label) => {
@@ -1365,7 +1380,7 @@ function startServer() {
 
         if (!(await downloadBtn.count())) {
           const noCardText = await page.locator("body").innerText().catch(() => "");
-          if (isGstr2bNotGenerated(noCardText)) {
+          if (gstr2bPageSaysNotGenerated(noCardText)) {
             setGstr2bNotGenerated(noCardText);
           } else {
             setStatus("gstr2b", "failed", "GSTR-2B card ya Download button nahi mila (2B abhi generate na hui ho to bhi aisa hota hai).");
@@ -1381,7 +1396,16 @@ function startServer() {
 
           const genJsonBtn = page.locator("button:has-text('GENERATE JSON'), a:has-text('GENERATE JSON'), button:has-text('JSON')").first();
           if (!(await genJsonBtn.count())) {
-            setStatus("gstr2b", "failed", "GSTR-2B GENERATE JSON button nahi mila.");
+            // Screenshot wala case: 2B bani hi nahi -> page par Error likha hota hai, GENERATE JSON button nahi hota.
+            const noGenText = await page.locator("body").innerText().catch(() => "");
+            dbg.steps.gstr2bNoGenText = String(noGenText || "").replace(/\s+/g, " ").slice(0, 400);
+            if (gstr2bPageSaysNotGenerated(noGenText)) {
+              setGstr2bNotGenerated(noGenText);
+            } else if (gstr2bPageSaysSessionExpired(noGenText)) {
+              setStatus("gstr2b", "failed", "Portal session expire ho gaya — dobara fetch karein.");
+            } else {
+              setStatus("gstr2b", "failed", "GSTR-2B GENERATE JSON button nahi mila.");
+            }
           } else {
             // Portal JSON file async banata hai: click ke baad 90 second tak har 3 second par check karte hain
             // (download event ya "Click here to download / File 1" link)
@@ -1401,8 +1425,8 @@ function startServer() {
                 // FAST-FAIL: portal khud bol de ki 2B bani hi nahi / session gaya -> 90s intezaar na karo
                 {
                   const pollText = await page.locator("body").innerText().catch(() => "");
-                  if (isGstr2bNotGeneratedFast(pollText)) { setGstr2bNotGenerated(pollText); break; }
-                  if (/session\s*(?:has\s*)?(?:expired|timed\s*out)|please\s+login\s+again/i.test(pollText)) {
+                  if (gstr2bPageSaysNotGenerated(pollText)) { setGstr2bNotGenerated(pollText); break; }
+                  if (gstr2bPageSaysSessionExpired(pollText)) {
                     setStatus("gstr2b", "failed", "Portal session expire ho gaya — dobara fetch karein.");
                     break;
                   }
@@ -1754,7 +1778,7 @@ module.exports = {
   summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE,
   // naye helpers bhi test ke liye bahar (browser ke bina testable)
   readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod,
-  isGstr2bNotGenerated, GSTR2B_NOT_GENERATED_RE, isGstr2bNotGeneratedFast, GSTR2B_NOT_GENERATED_FAST_RE, isTcsEmpty, TCS_EMPTY_RE, waitForBodyMatch,
+  isGstr2bNotGenerated, GSTR2B_NOT_GENERATED_RE, isGstr2bNotGeneratedFast, GSTR2B_NOT_GENERATED_FAST_RE, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, TCS_EMPTY_RE, waitForBodyMatch,
   openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
   classifyStuckPage, readSelectOptions, guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
