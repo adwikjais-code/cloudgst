@@ -1205,6 +1205,29 @@ function startServer() {
     for (const [id, s] of sessions.entries()) if (now - s.lastActive > SESSION_TTL_MS && !s.busy) closeSession(id);
   }, 60 * 1000);
 
+  // ===== Memory watchdog: RAM bharte hi purane session/Chromium chhod do (server girne se pehle) =====
+  const MEM_LIMIT_MB = Number(process.env.MEM_LIMIT_MB || 1200);
+  const MAX_SESSIONS = Number(process.env.MAX_SESSIONS || 6);
+  setInterval(async () => {
+    let rssMB = 0;
+    try { rssMB = Math.round(process.memoryUsage().rss / 1048576); } catch (_) {}
+    // Bahut zyada sessions -> sabse purane idle band karo
+    if (sessions.size > MAX_SESSIONS) {
+      const idle = [...sessions.entries()].filter(([, x]) => !x.busy).sort((a, b) => a[1].lastActive - b[1].lastActive);
+      while (sessions.size > MAX_SESSIONS && idle.length) {
+        const [id] = idle.shift();
+        await closeSession(id);
+      }
+      lastDebug = { message: `Session cap: ${sessions.size} sessions (max ${MAX_SESSIONS})`, at: new Date().toISOString() };
+    }
+    if (rssMB > MEM_LIMIT_MB) {
+      for (const [id] of sessions.entries()) { const x = sessions.get(id); if (x && !x.busy) await closeSession(id); }
+      try { if (sharedBrowser) { await sharedBrowser.close(); sharedBrowser = null; } } catch (_) {}
+      lastDebug = { message: `RAM ${rssMB}MB > ${MEM_LIMIT_MB}MB — sessions + Chromium band kiye (agla fetch naya Chromium banayega)`, at: new Date().toISOString() };
+      console.warn("[bridge] memory watchdog:", lastDebug.message);
+    }
+  }, 45 * 1000);
+
   function getSession(sessionId) {
     const s = sessions.get(sessionId);
     if (!s) return null;
@@ -1916,8 +1939,15 @@ function startServer() {
   app.use((req, res) => {
     res.status(404).json({ ok: false, error: `Endpoint nahi mila: ${req.method} ${req.path}` });
   });
+  const BROWSER_CRASH_RE = /target\s+(page|closed)|browser has been closed|browser was closed|has been closed|session closed|protocol error|crash/i;
   app.use((err, req, res, next) => {
     if (res.headersSent) return next(err);
+    if (err && BROWSER_CRASH_RE.test(String(err.message || ""))) {
+      lastBrowserCrashAt = new Date().toISOString();
+      lastDebug = { message: "Chromium crash: " + String(err.message || "").slice(0, 300), at: lastBrowserCrashAt };
+      try { if (sharedBrowser) { sharedBrowser.close().catch(() => {}); sharedBrowser = null; } } catch (_) {}
+      return res.status(503).json({ ok: false, code: "browser_crashed", error: "Server ka Chromium crash ho gaya (aksar RAM kam padne se). App dobara try karega — agar baar-baar ho to Railway me memory badhayein (1GB+)." });
+    }
     const status = err && err.status >= 400 && err.status < 500 ? err.status : 500;
     const msg = err && err.type === "entity.too.large"
       ? "Request body 25MB limit se bada hai."
