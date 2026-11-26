@@ -435,8 +435,35 @@ function buildB2bSellers(parsedList) {
  */
 const GSTR2B_NOT_GENERATED_RE = /could\s+not\s+be\s+generated|will\s+not\s+generate\s+GSTR-?\s?2B|no\s+records?\s+to\s+generate\s+GSTR-?\s?2B|GSTR-?\s?2B\s+(?:has\s+)?not\s+been\s+generated/i;
 
+const TCS_EMPTY_RE = /no\s+records?\s+(?:found|available|to\s+display)|no\s+data\s+(?:found|available)|no\s+TCS\s+credit|does\s+not\s+have\s+any\s+record/i;
+
+function isTcsEmpty(text) {
+  return !!text && TCS_EMPTY_RE.test(String(text));
+}
+
+/** Page par diya gaya text aane ka intezaar — jitni jaldi aa jaye utni jaldi wapas (max maxMs). */
+async function waitForBodyMatch(page, regex, maxMs, stepMs) {
+  const started = Date.now();
+  while (Date.now() - started < maxMs) {
+    const txt = await page.locator("body").innerText().catch(() => "");
+    if (txt && regex.test(txt)) return txt;
+    await page.waitForTimeout(stepMs || 700);
+  }
+  return null;
+}
+
 function isGstr2bNotGenerated(text) {
   return !!text && GSTR2B_NOT_GENERATED_RE.test(String(text));
+}
+
+/**
+ * Sirf wo lines jo 100% "2B bani hi nahi" bolti hain — polling ke dauraan turant rukne ke liye.
+ * (Baaki broad regex end me check hoti hai, taaki normal page ke disclaimer se galti na ho.)
+ */
+const GSTR2B_NOT_GENERATED_FAST_RE = /could\s+not\s+be\s+generated|no\s+records?\s+to\s+generate\s+GSTR-?\s?2B/i;
+
+function isGstr2bNotGeneratedFast(text) {
+  return !!text && GSTR2B_NOT_GENERATED_FAST_RE.test(String(text));
 }
 
 function partialOutcome(status, opts) {
@@ -1347,7 +1374,7 @@ function startServer() {
           setProgress(s, "gstr2b_click", "GSTR-2B DOWNLOAD dabaya ja raha hai…");
           await downloadBtn.click({ force: true });
           await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-          await page.waitForTimeout(4500);
+          await page.waitForTimeout(1500);
           dbg.steps.gstr2bPageUrl = page.url();
           dbg.steps.gstr2bButtons = await page.evaluate(() =>
             Array.from(document.querySelectorAll("button, a.btn, input[type='button']")).map(b => (b.innerText || b.value || "").trim()).filter(Boolean).slice(0, 15));
@@ -1371,6 +1398,15 @@ function startServer() {
                 polls++;
                 if (polls % 4 === 0) setProgress(s, "gstr2b_generate", `2B JSON generate ho rahi hai… ${Math.round((Date.now() - started) / 1000)}s`);
                 if (downloads.length) { download = downloads[0]; break; }
+                // FAST-FAIL: portal khud bol de ki 2B bani hi nahi / session gaya -> 90s intezaar na karo
+                {
+                  const pollText = await page.locator("body").innerText().catch(() => "");
+                  if (isGstr2bNotGeneratedFast(pollText)) { setGstr2bNotGenerated(pollText); break; }
+                  if (/session\s*(?:has\s*)?(?:expired|timed\s*out)|please\s+login\s+again/i.test(pollText)) {
+                    setStatus("gstr2b", "failed", "Portal session expire ho gaya — dobara fetch karein.");
+                    break;
+                  }
+                }
                 await dismissModals(page);
                 if (!linkClicked) {
                   const link = page.locator("a:has-text('Click here to download'), a:has-text('File 1')").first();
@@ -1484,7 +1520,7 @@ function startServer() {
         if (!fyRes.matched || !mRes.matched) throw new Error(`TCS page par FY/Month select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}).`);
         await page.locator("button:has-text('SEARCH'):visible").first().click({ timeout: 10000 });
         await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        await page.waitForTimeout(3500);
+        await waitForBodyMatch(page, /PREPARE\s+ONLINE|VIEW|no\s+records?|no\s+data/i, 3500, 700);
 
         let prep = page.locator("button:has-text('PREPARE ONLINE'):visible, a:has-text('PREPARE ONLINE'):visible").first();
         if (!(await prep.count())) {
@@ -1498,7 +1534,7 @@ function startServer() {
         }
         await prep.click({ timeout: 10000 });
         await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        await page.waitForTimeout(4500);
+        await waitForBodyMatch(page, /number\s+of\s+records|TCS\s+credit\s+received|no\s+records?|no\s+data/i, 4500, 700);
 
         let snap = await snapshotPage(page);
         mark("cardsPage", { buttons: snap.buttons });
@@ -1538,9 +1574,10 @@ function startServer() {
             attempts.push(c);
             if (!c) continue;
             await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-            await page.waitForTimeout(4000);
+            await waitForBodyMatch(page, /TCS\s+Credit\s+Received\s*-\s*Summary|number\s+of\s+records|no\s+records?|no\s+data/i, 4000, 700);
             snap = await snapshotPage(page);
             if (isSummary(snap)) break;
+            if (isTcsEmpty(snap.bodyText)) { dbg.steps.tcsEmptyFast = true; break; }
           }
           dbg.steps.tcsCardClickAttempts = attempts;
           mark("summaryPage", { buttons: snap.buttons });
@@ -1717,7 +1754,7 @@ module.exports = {
   summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE,
   // naye helpers bhi test ke liye bahar (browser ke bina testable)
   readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod,
-  isGstr2bNotGenerated, GSTR2B_NOT_GENERATED_RE,
+  isGstr2bNotGenerated, GSTR2B_NOT_GENERATED_RE, isGstr2bNotGeneratedFast, GSTR2B_NOT_GENERATED_FAST_RE, isTcsEmpty, TCS_EMPTY_RE, waitForBodyMatch,
   openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
   classifyStuckPage, readSelectOptions, guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
