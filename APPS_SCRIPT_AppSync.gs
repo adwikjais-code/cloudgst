@@ -30,7 +30,7 @@ function getTabCols(sheet) {
     portalPeriod: 0, portalNoticesCount: 0, portalNotices: 0,
     gstr2bIgst: 0, gstr2bCgst: 0, gstr2bSgst: 0, gstr2bCess: 0, gstr2bIneligible: 0, gstr2bSuppliers: 0,
     ecomGross: 0, ecomNet: 0, ecomTcs: 0, ecomPlatforms: 0, b2bSellersJson: 0, ecoListJson: 0,
-    gstr2bDriveLink: 0, portalUpdatedAt: 0, docCollected: 0, maxCol: 20
+    gstr2bDriveLink: 0, portalUpdatedAt: 0, docCollected: 0, gstr2bStatus: 0, maxCol: 20
   };
   if (!sheet) return cols;
   var lastC = Math.max(sheet.getLastColumn(), 23);
@@ -82,6 +82,7 @@ function getTabCols(sheet) {
     else if (!cols.gstr2bDriveLink && k === 'gstr2bdrivelink') { cols.gstr2bDriveLink = col1; recognized++; }
     else if (!cols.portalUpdatedAt && k === 'portalupdatedat') { cols.portalUpdatedAt = col1; recognized++; }
     else if (!cols.docCollected && k === 'doccollected') { cols.docCollected = col1; recognized++; }
+    else if (!cols.gstr2bStatus && k === 'gstr2bstatus') { cols.gstr2bStatus = col1; recognized++; }
   }
 
   if (recognized < 3) {
@@ -149,7 +150,8 @@ function ensurePortalColumns(sheet, cols) {
     ['ecoListJson', 'ECom_List_JSON'],
     ['gstr2bDriveLink', 'GSTR2B_Drive_Link'],
     ['portalUpdatedAt', 'Portal_Updated_At'],
-    ['docCollected', 'Doc_Collected']
+    ['docCollected', 'Doc_Collected'],
+    ['gstr2bStatus', 'GSTR2B_Status']
   ];
   var nextCol = Math.max(sheet.getLastColumn(), cols.maxCol || 0);
   for (var i = 0; i < defs.length; i++) {
@@ -1340,12 +1342,14 @@ function doGet(e) {
           var b2bArr = []; try { if (pB2bJ) b2bArr = JSON.parse(pB2bJ); } catch (_) {}
           var ecoArr = []; try { if (pEcoJ) ecoArr = JSON.parse(pEcoJ); } catch (_) {}
           var pDocC = cols.docCollected > 0 ? (rawValues[i][cols.docCollected - 1] === true || String(r[cols.docCollected - 1] || '').toUpperCase() === 'TRUE') : false;
+          var p2bSt = cols.gstr2bStatus > 0 ? (r[cols.gstr2bStatus - 1] || '').toString().trim().toUpperCase() : '';
           if (!pPer && !pUpd && !pIgst && !pCgst && !pSgst && !pEGrs && !pNotC && !pDrv) return null;
           return {
             period: pPer, noticesCount: pNotC, noticesSummary: pNotS,
             igst: pIgst, cgst: pCgst, sgst: pSgst, cess: pCess, ineligible: pInel, suppliers: pSupp,
             ecomGross: pEGrs, ecomNet: pENet, ecomTcs: pETcs, ecomPlatforms: pEPlt,
-            driveLink: pDrv, updatedAt: pUpd, b2bSellers: b2bArr, ecoList: ecoArr, docCollected: pDocC
+            driveLink: pDrv, updatedAt: pUpd, b2bSellers: b2bArr, ecoList: ecoArr, docCollected: pDocC,
+            gstr2bNotGenerated: p2bSt.indexOf('NOT') === 0
           };
         })()
       });
@@ -1496,6 +1500,7 @@ function handleSyncAction(ss, data) {
       if (targetCols.ecoListJson > 0) targetSheet.getRange(targetRow, targetCols.ecoListJson).setValue(String(data.ecoListJson || ''));
       targetSheet.getRange(targetRow, targetCols.gstr2bDriveLink).setValue(driveLink);
       targetSheet.getRange(targetRow, targetCols.portalUpdatedAt).setValue(nowStr);
+      if (targetCols.gstr2bStatus > 0) targetSheet.getRange(targetRow, targetCols.gstr2bStatus).setValue(String(data.gstr2bStatus || ''));
       if (targetCols.docCollected > 0 && data.docCollected !== undefined) {
         var pDocCell = targetSheet.getRange(targetRow, targetCols.docCollected);
         pDocCell.insertCheckboxes();
