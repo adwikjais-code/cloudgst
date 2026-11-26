@@ -71,31 +71,49 @@ public class PortalLoginActivity extends Activity {
         bar.setBackgroundColor(Color.parseColor("#0f172a"));
 
         TextView title = new TextView(this);
-        title.setText("GST Portal  •  ID/password bhare hue hain — sirf captcha dalein");
+        title.setText("GST Portal  •  captcha dalein, Login dabayein");
         title.setTextColor(Color.parseColor("#e2e8f0"));
         title.setTextSize(12f);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         bar.addView(title, lp);
 
-        // ---- GSTR-1 Prepare Online shortcut (login ke baad ek click) ----
-        Button gstr1 = new Button(this);
-        gstr1.setText("📄 GSTR-1");
-        gstr1.setTextColor(Color.parseColor("#052e1b"));
-        gstr1.setTextSize(11f);
-        gstr1.setAllCaps(false);
-        gstr1.setBackgroundColor(Color.parseColor("#22c55e"));
-        gstr1.setPadding(dp(10), 0, dp(10), 0);
-        gstr1.setOnClickListener(new View.OnClickListener() {
+        // ---- GSTR-1 / GSTR-3B Prepare Online shortcuts (login ke baad ek click) ----
+        Button g1 = new Button(this);
+        g1.setText("📄 GSTR-1");
+        g1.setTextColor(Color.parseColor("#052e1b"));
+        g1.setTextSize(10f);
+        g1.setAllCaps(false);
+        g1.setBackgroundColor(Color.parseColor("#22c55e"));
+        g1.setPadding(dp(8), 0, dp(8), 0);
+        g1.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                openGstr1Prepare();
+                openPrepare("GSTR-1");
             }
         });
-        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams lp1 = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        glp.rightMargin = dp(6);
-        bar.addView(gstr1, glp);
+        lp1.rightMargin = dp(4);
+        bar.addView(g1, lp1);
+
+        Button g3 = new Button(this);
+        g3.setText("📄 GSTR-3B");
+        g3.setTextColor(Color.parseColor("#052236"));
+        g3.setTextSize(10f);
+        g3.setAllCaps(false);
+        g3.setBackgroundColor(Color.parseColor("#38bdf8"));
+        g3.setPadding(dp(8), 0, dp(8), 0);
+        g3.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openPrepare("GSTR-3B");
+            }
+        });
+        LinearLayout.LayoutParams lp3 = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp3.rightMargin = dp(6);
+        bar.addView(g3, lp3);
 
         Button close = new Button(this);
         close.setText("✕");
@@ -193,10 +211,12 @@ public class PortalLoginActivity extends Activity {
         });
     }
 
-    // ================= GSTR-1 "Prepare Online" shortcut =================
+    // ================= GSTR-1 / GSTR-3B "Prepare Online" shortcut =================
 
-    /** Login ke baad: portal ke apne buttons dabakar us month ka GSTR-1 Prepare Online page kholta hai. */
-    private void openGstr1Prepare() {
+    private String prepTarget = "GSTR-1";
+
+    /** Login ke baad: portal ke apne buttons dabakar us month ka <type> Prepare Online page kholta hai. */
+    private void openPrepare(final String type) {
         if (web == null) return;
         String url = web.getUrl() == null ? "" : web.getUrl();
         if (url.contains("/login") || url.contains("services/login")) {
@@ -205,21 +225,24 @@ public class PortalLoginActivity extends Activity {
             return;
         }
         if (prepBusy) return;
+        prepTarget = (type == null || type.isEmpty()) ? "GSTR-1" : type;
         prepBusy = true;
         prepTries = 0;
-        Toast.makeText(this, "GSTR-1 Prepare Online khol rahe hain…", Toast.LENGTH_SHORT).show();
-        stepGstr1();
+        Toast.makeText(this, prepTarget + " Prepare Online khol rahe hain…", Toast.LENGTH_SHORT).show();
+        stepPrepare();
     }
 
-    private void stepGstr1() {
+    private void stepPrepare() {
         if (web == null) { prepBusy = false; return; }
-        web.evaluateJavascript(buildGstr1Script(), value -> {
+        final String type = prepTarget;
+        web.evaluateJavascript(buildPrepareScript(type), value -> {
             String v = value == null ? "" : value;
+            // evaluateJavascript result JSON-escaped aata hai -> seedha token dhoondho
             if (v.contains("DONE") && !v.contains("NONE")) {
                 prepBusy = false;
                 String lbl = periodLabel.isEmpty() ? "us month" : periodLabel;
                 Toast.makeText(PortalLoginActivity.this,
-                        "✅ GSTR-1 Prepare Online khul gaya — month " + lbl + " check karein",
+                        "✅ " + type + " Prepare Online khul gaya — month " + lbl + " check karein",
                         Toast.LENGTH_LONG).show();
                 return;
             }
@@ -228,29 +251,43 @@ public class PortalLoginActivity extends Activity {
                 handler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
-                        stepGstr1();
+                        stepPrepare();
                     }
                 }, 1600);
             } else {
                 prepBusy = false;
                 Toast.makeText(PortalLoginActivity.this,
-                        "⚠️ Portal ne GSTR-1 page khud nahi khola — dashboard par Returns → GSTR-1 dabayein",
+                        "⚠️ Portal ne " + type + " page khud nahi khola — dashboard par Returns → " + type + " dabayein",
                         Toast.LENGTH_LONG).show();
             }
         });
     }
 
+
     /**
-     * Portal ke DOM me text dhoondh kar uske button/link dabata hai (submit kuch nahi karta):
-     * dashboard -> GSTR-1 -> PREPARE ONLINE, aur prepare page par us month ka period select karta hai.
+     * Portal ke DOM me text dhoondh kar uske button/link dabata hai (kuch submit nahi karta):
+     * dashboard -> GSTR-1 / GSTR-3B -> PREPARE ONLINE, aur wahan us month ka period select karta hai.
+     * Return token: "DONE" | "CLICKED:PREPARE" | "CLICKED:TILE" | "NONE"
      */
-    private String buildGstr1Script() {
+    private String buildPrepareScript(String type) {
+        boolean is3b = type != null && type.toUpperCase().contains("3B");
         String mon = periodLabel == null ? "" : periodLabel.toUpperCase();
         int cut = mon.indexOf('(');           // "OCTOBER (2026-27)" -> "OCTOBER"
         if (cut > 0) mon = mon.substring(0, cut).trim();
-        String jsMon = JSONObject.quote(mon);
+        String monShort = mon.length() >= 3 ? mon.substring(0, 3) : mon;
+        String jsMonAlts = "[" + JSONObject.quote(mon) + "," + JSONObject.quote(monShort) + "]";
+
+        String reTile1 = is3b ? "^GSTR-?3B$" : "^GSTR-?1$";
+        String reTile2 = is3b ? "GSTR-?3B" : "GSTR-?1";
+        String reUrl   = is3b ? "(gstr-?3b|return3b)" : "gstr-?1";
+        String reDone  = is3b ? "SAVE GSTR-?3B|TAX ON OUTWARD|3\\.1 " : "SAVE GSTR-?1|B2B INVOICES|GSTR-?1 SUMMARY";
+
         return "(function(){try{"
-                + "var MON=" + jsMon + ";"
+                + "var MON_ALTS=" + jsMonAlts + ";"
+                + "var RE_TILE1=new RegExp(" + JSONObject.quote(reTile1) + ");"
+                + "var RE_TILE2=new RegExp(" + JSONObject.quote(reTile2) + ");"
+                + "var RE_URL=new RegExp(" + JSONObject.quote(reUrl) + ",'i');"
+                + "var RE_DONE=new RegExp(" + JSONObject.quote(reDone) + ",'i');"
                 + "function vis(el){try{return !!(el&&el.offsetParent!==null);}catch(e){return false;}}"
                 + "function txt(el){return ((el.innerText||el.textContent||'')+'').replace(/\\s+/g,' ').trim().toUpperCase();}"
                 + "function clickEl(el){var c=(el.closest?el.closest('a,button'):null);"
@@ -262,17 +299,53 @@ public class PortalLoginActivity extends Activity {
                 + "function find(re){return scan(re,'a,button')||scan(re,'span,div,li,td,h1,h2,h3,h4,p');}"
                 + "var href=(location.href||'').toLowerCase();"
                 + "var bodyTxt=txt(document.body||document.documentElement);"
-                + "if((/gstr-?1/.test(href)&&!/dashboard/.test(href))||/SAVE GSTR-?1/.test(bodyTxt)||/B2B INVOICES/.test(bodyTxt)){"
-                + "if(MON){var sels=[].slice.call(document.querySelectorAll('select'));"
-                + "for(var i=0;i<sels.length;i++){var s=sels[i];var ops=[].slice.call(s.options||[]);"
+                + "if((RE_URL.test(href)&&!/dashboard/.test(href))||RE_DONE.test(bodyTxt)){"
+                + "var sels=[].slice.call(document.querySelectorAll('select'));"
+                + "for(var i=0;i<sels.length;i++){var s=sels[i];var ops=[].slice.call(s.options||[]);var hit=-1;"
                 + "for(var j=0;j<ops.length;j++){var ot=((ops[j].text||'')+'').toUpperCase();"
-                + "if(ot.indexOf(MON)>=0){s.selectedIndex=j;s.dispatchEvent(new Event('change',{bubbles:true}));break;}}}}"
+                + "for(var a=0;a<MON_ALTS.length;a++){var m=MON_ALTS[a];"
+                + "if(m&&m.length>=3&&ot.indexOf(m)>=0){hit=j;break;}}if(hit>=0)break;}"
+                + "if(hit>=0){s.selectedIndex=hit;s.dispatchEvent(new Event('change',{bubbles:true}));}}"
                 + "return 'DONE';}"
                 + "var p=find(/PREPARE ONLINE/);if(p){clickEl(p);return 'CLICKED:PREPARE';}"
-                + "var g=find(/^GSTR-?1$/)||find(/GSTR-?1/);if(g){clickEl(g);return 'CLICKED:GSTR1';}"
+                + "var g=find(RE_TILE1)||find(RE_TILE2);if(g){clickEl(g);return 'CLICKED:TILE';}"
                 + "return 'NONE';"
                 + "}catch(e){return 'NONE';}})()";
     }
+
+    /** Login page ke fields dhoondh kar ID/password bharta hai; har 1.2s me 10 baar tak retry. */
+    private void fillLoginFields() {
+        if (web == null) return;
+        final String js = buildFillScript();
+        web.evaluateJavascript(js, value -> {
+            boolean ok = value != null && value.startsWith("true");
+            if (ok) {
+                injected = true;
+                Toast.makeText(PortalLoginActivity.this,
+                        "ID/password bhar diye — ab sirf captcha dalein", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (tries < 10) {
+                tries++;
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        fillLoginFields();
+                    }
+                }, 1200);
+            }
+        });
+    }
+
+    // ================= GSTR-1 "Prepare Online" shortcut =================
+
+    /** Login ke baad: portal ke apne buttons dabakar us month ka GSTR-1 Prepare Online page kholta hai. */
+
+
+    /**
+     * Portal ke DOM me text dhoondh kar uske button/link dabata hai (submit kuch nahi karta):
+     * dashboard -> GSTR-1 -> PREPARE ONLINE, aur prepare page par us month ka period select karta hai.
+     */
 
     /** Login page ke fields dhoondh kar ID/password bharta hai; har 1.2s me 10 baar tak retry. */
     private String buildFillScript() {
