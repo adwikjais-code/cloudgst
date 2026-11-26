@@ -37,6 +37,14 @@
   .paper{ background:#fff; margin:0 auto; max-width:794px; min-height:1050px; padding:56px 62px;
           box-shadow:0 6px 22px rgba(15,23,42,.16); border-radius:3px;
           font-family:"Noto Serif Devanagari","Mangal","Nirmala UI",serif; font-size:16px; line-height:2.05; white-space:pre-wrap; }
+  /* justify mode: dono kinare barabar (right edge seedhi) */
+  .paper.just{ white-space:normal; }
+  .paper.just p.par{ margin:0; text-align:justify; text-justify:inter-word; word-spacing:0.02em; }
+  .paper.just p.par.left{ text-align:left; }
+  .paper.just p.par.center{ text-align:center; }
+  .paper.just p.par.blank{ height:1em; }
+  .paper.just p.par.sign{ display:flex; justify-content:space-between; align-items:baseline; text-align:left; margin-top:.6em; }
+  .paper.just p.par.sign .gap{ flex:1 1 auto; }
   .paper .fill{ border-bottom:1px dotted #64748b; padding:0 3px; font-weight:600; }
   .paper .fill:empty::after{ content:"…………"; color:#94a3b8; font-weight:400; }
   .paper .gap{ display:inline-block; min-width:120px; }
@@ -53,7 +61,8 @@
     .paperbox{ padding:0; background:#fff; border-radius:0; }
     .paper{ box-shadow:none; border-radius:0; max-width:none; min-height:auto; padding:22mm 20mm; font-size:12.6pt; line-height:2.0; page-break-after:always; }
     .paper:last-child{ page-break-after:auto; }
-    .paper .fill{ border-bottoM:1px solid #000; font-weight:600; }
+    .paper .fill{ border-bottom:1px solid #000; font-weight:600; }
+    .paper.just p.par{ page-break-inside:avoid; }
   }
 </style>
 </head>
@@ -217,6 +226,10 @@
       <button class="btn g" id="btnPrint" type="button">🖨️ Print / PDF</button>
       <button class="btn s" id="btnCopy" type="button">📋 टेक्स्ट कॉपी</button>
       <button class="btn s" id="btnTxt" type="button">⬇️ .txt डाउनलोड</button>
+      <select id="alignSel" title="पेज का layout" style="padding:8px 10px;border-radius:10px;border:1px solid #cbd5e1;font-size:12.5px;font-weight:700;color:#334155;background:#fff">
+        <option value="just" selected>किनारे बराबर (justify)</option>
+        <option value="doc">जैसा लिखा है</option>
+      </select>
       <span class="badge" id="statBadge">A4 प्रीव्यू</span>
       <span class="badge" id="wordsBadge"></span>
     </div>
@@ -380,14 +393,51 @@
       property:$("nbProperty").value, person:$("nbPerson").value, personRel:$("nbPersonRel").value,
       personFather:$("nbPersonFather").value, date:$("nbDate").value, gender:$("nbGender").value, dev:$("nbDev").checked };
   }
-  function htmlPaper(text){
-    return esc(text).replace(/दिनांक[ :]+([०-९0-9\/]*)\s{3,}(शपथकर्ता|हस्ताक्षर:)/g,
-      (m,date,label) => 'दिनांक: ' + (date ? '<span class="fill">'+date+'</span>' : '………………') + '<span class="gap"></span>' + label);
+  // "just"  = kinare barabar (words tay hadd tak, aage automatic agli line me — page sundar lagta hai)
+  // "doc"   = jaisa doc me likha hai (manual line breaks)
+  function paperMode(){
+    const el = $("alignSel");
+    let m = el ? el.value : "just";
+    if (m !== "doc" && m !== "just") m = "just";
+    return m;
+  }
+  function htmlPaper(text, mode){
+    const m = mode || paperMode();
+    if (m === "doc") {
+      return esc(text).replace(/दिनांक[ :]+([०-९0-9\/]*)\s{3,}(शपथकर्ता|हस्ताक्षर:)/g,
+        (x,date,label) => 'दिनांक: ' + (date ? '<span class="fill">'+date+'</span>' : '………………') + '<span class="gap"></span>' + label);
+    }
+    // ---- justified: har paragraph ek block, browser khud wrap + justify karega ----
+    const out = [];
+    let buf = [];
+    const flush = () => { if (buf.length) { out.push('<p class="par">' + buf.join(' ') + '</p>'); buf = []; } };
+    const lines = String(text).split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      const line = raw.trim();
+      if (!line) { flush(); out.push('<p class="par blank">&nbsp;</p>'); continue; }
+      const sign = line.match(/^दिनांक[ :]*(.*?)\s*(शपथकर्ता|हस्ताक्षर:)$/);
+      if (sign) {
+        flush();
+        const d = sign[1].trim();
+        out.push('<p class="par sign">दिनांक: ' + (d ? '<span class="fill">' + esc(d) + '</span>' : '………………') +
+                 '<span class="gap"></span>' + esc(sign[2]) + '</p>');
+        continue;
+      }
+      if (/^\(सत्यापन \)$/.test(line)) { flush(); out.push('<p class="par center">' + esc(line) + '</p>'); continue; }
+      // header ki 2 line alag hi rahengi
+      if (line === 'समक्ष,' || line === 'असिस्टेंट कमिश्नर वस्तु एवं सेवा कर') { flush(); out.push('<p class="par left">' + esc(line) + '</p>'); continue; }
+      buf.push(esc(line));
+    }
+    flush();
+    return out.join("");
   }
   function rawText(){ return cur === "BR" ? brText(brVals()) : nbrText(nbVals()); }
   function render(){
     const txt = rawText();
-    $("paper").innerHTML = htmlPaper(txt);
+    const pm = paperMode();
+    $("paper").className = "paper" + (pm === "just" ? " just" : "");
+    $("paper").innerHTML = htmlPaper(txt, pm);
     const words = txt.trim().split(/\s+/).filter(Boolean).length;
     $("wordsBadge").textContent = words + " शब्द";
     save();
@@ -427,6 +477,7 @@
         $("nbPersonFather").value=n.personFather||""; $("nbDate").value=n.date||""; $("nbGender").value=n.gender||"f";
         if(n.gap !== undefined && n.gap !== ""){ $("nbGap").value=String(n.gap); }
         $("nbDev").checked = n.dev !== false; }
+      const al = localStorage.getItem("noc_align_v1"); if(al === "doc" || al === "just") $("alignSel").value = al;
       const tab = localStorage.getItem("noc_tab_v1"); if(tab === "NBR") switchTab("NBR", true);
     }catch(_){}
   }
@@ -483,6 +534,7 @@
   document.querySelectorAll("#fBR input, #fBR select, #fBR textarea, #fNBR input, #fNBR select, #fNBR textarea")
     .forEach(el => { el.addEventListener("input", render); el.addEventListener("change", render); });
   ["brRel", "brDepRel"].forEach(id => $(id).addEventListener("change", relRefresh));
+  $("alignSel").addEventListener("change", () => { try{ localStorage.setItem("noc_align_v1", $("alignSel").value); }catch(_){} render(); });
   $("brSameAddr").addEventListener("click", fillSameAddrBR);
   $("nbSameAddr").addEventListener("click", fillSameAddrNB);
   const NAT = (typeof window !== "undefined") ? window.NOCBridge : null;   // Android APK bridge
@@ -511,7 +563,7 @@
   load();
   render();
   // test hooks (harmless)
-  window.__noc = { brText, nbrText, brVals, nbVals, switchTab, render, rawText: () => rawText(), fillSameAddrBR, fillSameAddrNB, brAddr, nbAddr };
+  window.__noc = { brText, nbrText, brVals, nbVals, switchTab, render, rawText: () => rawText(), htmlPaper, paperMode, fillSameAddrBR, fillSameAddrNB, brAddr, nbAddr };
 })();
 </script>
 </body>
