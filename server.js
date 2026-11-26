@@ -1393,12 +1393,13 @@ function startServer() {
       warnings: []
     };
     const setGstr2bNotGenerated = (rawText, customMsg) => {
+      // Ye FAILURE nahi hai — portal ne is month 2B banai hi nahi. Sheet save hota rahe, error na aaye.
       result.status.gstr2b = {
-        state: "failed",
+        state: "not_generated",
         code: "gstr2b_not_generated",
-        message: customMsg || "GSTR-2B portal ne generate hi nahi ki (system ne generate nahi ki — koi record nahi / pichhli 3B pending / QRMP quarter month)."
+        message: customMsg || "GSTR-2B is month generate nahi hui (koi record nahi / pichhli 3B pending / QRMP quarter month)."
       };
-      result.warnings.push("[gstr2b] not generated");
+      result.warnings.push("[gstr2b] is month not generated");
       result.notGenerated2b = true;
       dbg.steps.gstr2bNotGenerated = true;
       dbg.steps.gstr2bNotGeneratedText = String(rawText || "").replace(/\s+/g, " ").slice(0, 400);
@@ -1543,8 +1544,8 @@ function startServer() {
       // --- STEP 2: E-COMMERCE TCS  (Services > Returns > TDS and TCS credit received > PREPARE ONLINE > TCS Credit received) ---
       // Sirf padhta hai — portal par ACCEPT / REJECT kabhi nahi dabata.
       // Agar 2B band hai to bhi E-Com se pehle Returns Dashboard kholna padta hai
-      if (opts.tcs && (!opts.gstr2b || !isReturnsDashboardUrl(page.url()))) {
-        // 2B step fail hua ho ya 2B ke download page par hain -> TCS ke liye dashboard dobara kholna zaroori hai
+      if (opts.tcs && !opts.gstr2b) {
+        // 2B chala hi nahi -> pehle returns dashboard kholna zaroori hai
         try {
           page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "tcs");
           s.page = page;
@@ -1593,14 +1594,8 @@ function startServer() {
         if (!fyRes.matched || !mRes.matched) throw new Error(`TCS page par FY/Month select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}).`);
         await page.locator("button:has-text('SEARCH'):visible").first().click({ timeout: 10000 });
         await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        // Button render hone ka intezaar — jaldi aa jaye to jaldi, warna max 12s (pehle fixed 3.5s tha,
-        // kabhi button der se aata tha to "PREPARE ONLINE nahi mila" wala jhoota error aa jata tha)
-        for (let i = 0; i < 12; i++) {
-          const ready = (await page.locator("button:has-text('PREPARE ONLINE'):visible, a:has-text('PREPARE ONLINE'):visible").count().catch(() => 0)) > 0
-            || (await page.locator("button:visible, a.btn:visible").filter({ hasText: /^\s*VIEW\b/i }).count().catch(() => 0)) > 0;
-          if (ready) break;
-          await page.waitForTimeout(1000);
-        }
+        // v1.21 wala proven wait: portal ka TCS page AJAX se bharta hai, jaldi check karne par button nahi milta
+        await page.waitForTimeout(3500);
 
         let prep = page.locator("button:has-text('PREPARE ONLINE'):visible, a:has-text('PREPARE ONLINE'):visible").first();
         if (!(await prep.count())) {
@@ -1614,7 +1609,7 @@ function startServer() {
         }
         await prep.click({ timeout: 10000 });
         await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        await waitForBodyMatch(page, /number\s+of\s+records|TCS\s+credit\s+received/i, 6000, 700);
+        await page.waitForTimeout(4500);
 
         let snap = await snapshotPage(page);
         mark("cardsPage", { buttons: snap.buttons });
@@ -1654,10 +1649,11 @@ function startServer() {
             attempts.push(c);
             if (!c) continue;
             await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-            await waitForBodyMatch(page, /TCS\s+Credit\s+Received\s*-\s*Summary|number\s+of\s+records/i, 4000, 700);
+            // Card par click ke baad summary AJAX se khulti hai — "number of records" cards page par bhi hota hai,
+            // isliye us par jaldi aage badhna galat tha (yahi "summary page khul nahi payi" ka reason bana).
+            await page.waitForTimeout(4000);
             snap = await snapshotPage(page);
             if (isSummary(snap)) break;
-            if (isTcsEmpty(snap.bodyText)) { dbg.steps.tcsEmptyFast = true; break; }
           }
           dbg.steps.tcsCardClickAttempts = attempts;
           mark("summaryPage", { buttons: snap.buttons });

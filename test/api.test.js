@@ -6,7 +6,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
-const { isGstr2bNotGenerated, isGstr2bNotGeneratedFast, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, waitForBodyMatch, isReturnsDashboardUrl } = require("../server.js");
+const { isGstr2bNotGenerated, isGstr2bNotGeneratedFast, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, waitForBodyMatch, isReturnsDashboardUrl, partialOutcome } = require("../server.js");
 
 const ROOT = path.join(__dirname, "..");
 const SECRET = "test-secret-123";
@@ -364,4 +364,24 @@ test("2B: normal offline-download page (GENERATE JSON buttons) par false", () =>
   const body = "Offline Download for GSTR-2B\nHelp\nFORM GSTR-2B has been generated on the basis of the information furnished by the suppliers\nGENERATE JSON FILE TO DOWNLOAD\nGENERATE EXCEL FILE TO DOWNLOAD";
   assert.equal(isGstr2bNotGenerated(body), false);
   assert.equal(gstr2bPageSaysNotGenerated(body), false);
+});
+
+/* ---------- 2B "not generated" error nahi hai ---------- */
+test("partialOutcome: gstr2b not_generated ko failure nahi ginta (sheet save hota rahe)", () => {
+  const st = {
+    gstr2b: { state: "not_generated", code: "gstr2b_not_generated", message: "is month generate nahi hui" },
+    tcs: { state: "ok", message: "1 ECO row mili." }
+  };
+  const out = partialOutcome(st, { gstr2b: true, tcs: true });
+  assert.equal(out.allFailed, false);
+  assert.equal(out.partial, null);
+  assert.deepEqual(out.failed, []);
+
+  // sirf 2B maanga aur generate nahi hui -> phir bhi ok
+  const only2b = partialOutcome({ gstr2b: st.gstr2b }, { gstr2b: true });
+  assert.equal(only2b.allFailed, false);
+
+  // asli failure (navigation/portal issue) ab bhi failure rahe
+  const realFail = partialOutcome({ gstr2b: { state: "failed", message: "portal error" } }, { gstr2b: true });
+  assert.equal(realFail.allFailed, true);
 });
