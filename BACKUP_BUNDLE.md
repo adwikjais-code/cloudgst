@@ -24,3 +24,10 @@ Andar (saara code **wahi** hai jo aaj chal raha hai — kuchh badla nahi):
 - `bridge/server.js` → `node --check` **OK**, `package.json` = 1.29.1, `railway.json` valid
 
 ⚠️ Ye zip **private** rakhein (keystore + secrets ke placeholders isme hain).
+
+## Update — NOC Maker (26-Nov, bundle **v2**)
+
+- Naya file: **`web/noc_generator.html`** (BR NOC + NBR NOC format maker, live preview) — repo me `noc_generator.html`.
+- Naya zip: `CloudGST_Complete_BACKUP_2026-11-26b.zip` — **954,538 B**, md5 `711288674556d17142464f76ecfd786d`, **95 files**, `checksums.txt` re-generated.
+- Standalone copy: Drive file id **`1qrvRLq9vf-MOA735j29OSqZSBZnXQ9q-`** (`NOC_Maker_BR_NBR.html`) — sirf ye ek file bhi alag se khul jaati hai (koi internet/server nahi chahiye).
+- jsdom test: **28/28 PASS** (BR/NBR ki har line word-exact, देवनागरी अंक, live preview, copy/print, save/restore).
