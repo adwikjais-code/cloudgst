@@ -13,7 +13,7 @@ permissions:
   issues: write
 
 env:
-  RELEASE_TAG: android-v5.9.0
+  RELEASE_TAG: android-v5.9.1
 
 jobs:
   build:
@@ -84,7 +84,7 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.9.0 — Touch ID lock + swipe back + PDF logo)
+          ## CloudGST Android APK (v5.9.1 — dropdown fix + PDF attach hokar share)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
@@ -109,5 +109,5 @@ jobs:
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
           gh release create "$RELEASE_TAG" "CloudGST.apk" \
-            --title "CloudGST Android v5.9.0 (APK)" \
+            --title "CloudGST Android v5.9.1 (APK)" \
             --notes-file notes.md

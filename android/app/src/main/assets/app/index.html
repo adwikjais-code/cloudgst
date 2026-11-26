@@ -9895,7 +9895,28 @@ function buildEtsyPdfReport(opts) {
       const menu = document.getElementById("addClientMenu");
       if (!wrap || !btn || !menu) return;
       const closeMenu = () => { menu.classList.add("hidden"); btn.setAttribute("aria-expanded", "false"); };
-      const openMenu = () => { menu.classList.remove("hidden"); btn.setAttribute("aria-expanded", "true"); };
+      // Mobile (chhoti screen) par dropdown absolute right-0 se screen ke bahar chala jata tha
+      // -> phone par fixed panel, chaudi aur screen ke andar
+      const isNarrowScreen = () => {
+        try { return window.matchMedia("(max-width: 768px)").matches; } catch (_) { return window.innerWidth <= 768; }
+      };
+      const placeMenu = () => {
+        if (!isNarrowScreen()) {
+          menu.style.position = ""; menu.style.left = ""; menu.style.right = "";
+          menu.style.width = ""; menu.style.top = ""; menu.style.maxHeight = ""; menu.style.zIndex = "";
+          return;
+        }
+        const r = btn.getBoundingClientRect();
+        menu.style.position = "fixed";
+        menu.style.left = "10px";
+        menu.style.right = "10px";
+        menu.style.width = "auto";
+        menu.style.top = Math.round(r.bottom + 8) + "px";
+        menu.style.maxHeight = Math.max(200, Math.round(window.innerHeight - r.bottom - 24)) + "px";
+        menu.style.overflowY = "auto";
+        menu.style.zIndex = "80";
+      };
+      const openMenu = () => { placeMenu(); menu.classList.remove("hidden"); btn.setAttribute("aria-expanded", "true"); };
       btn.addEventListener("click", ev => {
         ev.stopPropagation();
         if (menu.classList.contains("hidden")) openMenu(); else closeMenu();
@@ -9903,6 +9924,8 @@ function buildEtsyPdfReport(opts) {
       document.addEventListener("click", ev => { if (!wrap.contains(ev.target)) closeMenu(); });
       document.addEventListener("keydown", ev => { if (ev.key === "Escape") closeMenu(); });
       wrap.querySelectorAll("[data-add-opt]").forEach(el => el.addEventListener("click", () => setTimeout(closeMenu, 80)));
+      window.addEventListener("scroll", () => { if (!menu.classList.contains("hidden")) closeMenu(); }, { passive: true });
+      window.addEventListener("resize", () => { if (!menu.classList.contains("hidden")) placeMenu(); });
     })();
 
     /* ===== ☁️ Drive "GST Certificates" folder scan → preview → ek click me add ===== */
@@ -11849,6 +11872,28 @@ function buildEtsyPdfReport(opts) {
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     }
+    function blobToBase64(blob) {
+      return new Promise((resolve, reject) => {
+        try {
+          const fr = new FileReader();
+          fr.onload = () => { const str = String(fr.result || ""); resolve(str.slice(str.indexOf(",") + 1)); };
+          fr.onerror = () => reject(fr.error || new Error("file read fail"));
+          fr.readAsDataURL(blob);
+        } catch (e) { reject(e); }
+      });
+    }
+    // Android APK me native share sheet -> WhatsApp chunne par PDF FILE ATTACH hokar jati hai
+    // (WebView me navigator.share files support nahi karta, isliye pehle wahan sirf link/text jata tha)
+    async function shareFileNative(blob, fileName, text) {
+      try {
+        if (!window.CloudGSTNative || !window.CloudGSTNative.shareBase64) return false;
+        const b64 = await blobToBase64(blob);
+        window.CloudGSTNative.shareBase64(fileName, b64, text || "");
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
     function normalizeWaNumber(m) {
       let d = String(m || "").replace(/\D/g, "");
       if (!d) return "";
@@ -11945,6 +11990,10 @@ function buildEtsyPdfReport(opts) {
       const num = normalizeWaNumber(state.mobile);
       const msg = state.whatsappMessage || `Namaste ${state.clientName} ji, ${JNA_BRAND.name} ki taraf se aapka Etsy Sales & GST statement (PDF) bhej rahe hain. Kripya check karein.`;
       try {
+        if (await shareFileNative(state.blob, state.fileName, msg)) {
+          showToast("📤 Share sheet khula — WhatsApp chunein, PDF attach hokar jayegi");
+          return;
+        }
         const file = new File([state.blob], state.fileName, { type: "application/pdf" });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
           await navigator.share({ files: [file] });

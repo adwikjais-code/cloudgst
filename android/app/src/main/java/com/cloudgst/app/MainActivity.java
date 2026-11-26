@@ -61,7 +61,7 @@ import java.util.concurrent.Executor;
 public class MainActivity extends FragmentActivity {
 
     public static final String APP_URL = "https://appassets.androidplatform.net/assets/app/index.html";
-    public static final String APP_VERSION = "android-5.9.0";
+    public static final String APP_VERSION = "android-5.9.1";
 
     private static final int REQ_FILE = 1001;
     private static final int REQ_STORAGE = 1002;
@@ -574,9 +574,9 @@ public class MainActivity extends FragmentActivity {
             act.saveBase64Internal(name, b64, true);
         }
 
-        /** File bana kar seedha WhatsApp/Gmail me bhejne ke liye share sheet. */
+        /** File bana kar seedha WhatsApp/Gmail me bhejne ke liye share sheet (PDF attach hokar jati hai). */
         @JavascriptInterface
-        public void shareBase64(final String name, final String b64) {
+        public void shareBase64(final String name, final String b64, final String text) {
             if (b64 == null) return;
             final String fileName = act.safeName(name);
             try {
@@ -594,6 +594,7 @@ public class MainActivity extends FragmentActivity {
                         Intent i = new Intent(Intent.ACTION_SEND);
                         i.setType(act.guessMime(fileName));
                         i.putExtra(Intent.EXTRA_STREAM, uri);
+                        if (text != null && !text.isEmpty()) i.putExtra(Intent.EXTRA_TEXT, text);
                         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                         act.startActivity(Intent.createChooser(i, "Share"));
                     } catch (Exception e) {
