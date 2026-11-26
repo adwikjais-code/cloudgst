@@ -1,5 +1,63 @@
-/* GST Cloud Bridge — v1.11.0 (new app v4: b2bSellers) / v1.10.0 (v1.9.6 + ZIP 2B, options/autoClose, keepOthers, shared Chromium, fail-par-error)
+/* GST Cloud Bridge — v1.20.0 (live fetch progress) / v1.19.0 (login: portal downtime par khud retry) / v1.18.0 (login page robust) / v1.17.0 (period dropdown wait/iframe fix) / v1.16.0 (period select fix) / v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
  * Base: v1.9.6
+ * v1.20.0 (app v5_6 ke saath): GET /api/gst/fetch-status -> chal rahe fetch ka step (session.progress).
+ *  App har 5s par poochh kar "2B generate ho rahi hai… 42s" dikhata hai, isliye user beech me
+ *  Re-Fetch nahi dabata (jo portal ke WAF ko block karata tha).
+ * v1.19.0 fixes (portal downtime / WAF ke baad login page khulta hi nahi tha):
+ *  - Login page na khule aur wajah "portal_down"/"blank_page" ho to 45s ruk kar ek teesri koshish (auto-heal).
+ *  - Baaki wajahon (access denied, already logged in, password change) par turant saaf error — bewajah lamba wait nahi.
+ * v1.18.0 fixes ("page.waitForSelector: Timeout 30000ms exceeded ... locator('#username') to be visible"):
+ *  - Login page kholne ke 2 koshish (pehle 30s, phir cache-buster ke saath 20s) + har field ke alternate
+ *    selectors (id badal jaye to bhi chale) — pehle sirf #username ka 30s wait tha.
+ *  - Login page na khule to portal ne kya dikhaya wo classify hota hai (already_logged_in / password_change /
+ *    portal_down / blank_page / access_denied) aur error me saaf wajah + kya karein aata hai.
+ *  - submit-login bhi wahi selectors use karta hai (session me yaad rehte hain).
+ * v1.17.0 fixes ("FY:true, Month:false — Dropdowns mile -> select0: 2019-20/2020-21/..."):
+ *  - FY set hone ke baad Month/Quarter dropdown ka 12-15s tak intezaar (waitForPeriodSelect) — pehle
+ *    sirf 1.2s dekha jata tha, isliye der se render hone wale dashboard par month "gayab" milta tha.
+ *  - Period dropdown na dikhe to page reload ka intezaar + aage badhne wale buttons (GET DETAILS / PROCEED /
+ *    CONTINUE / SUBMIT / SEARCH) try karke dobara dekhte hain (revealPeriodDropdown).
+ *  - Naye portal par Returns Dashboard andar ke iframe me ho sakta hai -> findPeriodFrame se wahan ke
+ *    selects bhi padhte/select karte hain (main page par sirf FY milta tha).
+ *  - Month options ab numeric bhi pehchane jate hain ("10", "10/2026"); matching pehle exact phir substring
+ *    (warna "10" "2010-11" me match ho jata).
+ *  - Fail par error me page title/URL + har dropdown ke POORE options (+ frames) aate hain, aur QRMP
+ *    (sirf Quarter) case ki alag wajah likhi jati hai.
+ * v1.16.0 fixes ("Portal par period select nahi ho paya (FY:true, Quarter:false, Month:false)"):
+ *  - Portal ke FY/Quarter/Month <select> ab naam/options se PEHCHANE jate hain (readSelectOptions +
+ *    guessSelectIndex) — pehle sirf text se dhundha jata tha, isliye galti se doosra dropdown select ho jata tha.
+ *  - Quarter ke label variants ("Quarter 3" / "Q3" / "Oct - Dec") aur month ke year-wale labels
+ *    ("Oct-2026") bhi match hote hain; bare "Oct" nahi (warna quarter ke "Oct - Dec" se match ho jata tha).
+ *  - Options AJAX se der se aate hain -> 600ms polling (FY 9s, quarter 6s, month 9s) + poora period 2 baar.
+ *  - Quarter optional: dropdown hi na ho to bhi month se period pakka hota hai (pehle quarter na milne par
+ *    fetch rok diya jata tha). FY + Month match hona ab zaroori shart hai.
+ *  - Fail par error me asli dropdown options aate hain ("Dropdowns mile -> fy: ... | mon: ...").
+ * v1.15.0 fixes (production me mila: /services/error/accessdenied):
+ *  - Fail page ko classify karta hai: access_denied / concurrent_session / gstin_inactive / session_expired / unknown
+ *  - Access Denied (ya "already logged in") par cooldown + Auth Dashboard se fresh click wala retry,
+ *    phir bhi na chale to user ke liye saaf wajah + kya karein (logout / 5-10 min baad / GSTIN status check)
+ * v1.14.0 fixes ("page.waitForSelector: Timeout 25000ms" / "'TDS and TCS credit received' link nahi mila" wala case):
+ *  - Returns Dashboard na khule to ek retry: seedha return.gst.gov.in/returns/auth/dashboard kholta hai
+ *  - Click se naya tab (popup) khule to us page ko adopt karta hai (pehle purane tab par atka reh jata tha)
+ *  - Dropdown ka wait 25s -> 40s (portal slow ho to), modals zyada tarah se dismiss (Proceed/Continue/Esc)
+ *  - Fail hone par error me ASLI page ka URL/title/visible buttons aate hain + debug me `*_stuck` snapshot
+ *  - TCS menu link na mile to page ke TDS/TCS/returns links debug me (`tcsLinks`) — agla fix aasan
+ * v1.13.0 fixes (Drive ke app v5.4 — gst_client_tracker.html — ke contract ke hisaab se):
+ *  - b2bSellers me ab har seller ke saath `invoices[]` bhi jata hai (num/dt/val/txval/igst/cgst/sgst/cess/
+ *    rate/itcavl/rev) + `supfildt` + `cess`. App ka B2B modal isi shape par chalta hai; `invoices` na hone se
+ *    wo apna fallback parser chalata tha jo 2B ki iamt/camt/samt keys nahi padhta (modal + sheet me tax 0).
+ *    ZIP 2B par bhi ab invoice-level detail milti hai.
+ *  - `partial` contract: kuch section fail + kuch ok -> ok:true + partial{gstr2b,tcs,notices,text}, taaki app
+ *    jo mila wo save kare aur fail section ka purana data rakhe. Sab maange gaye section fail -> ok:false.
+ * v1.12.0 fixes (npm test se pakde gaye):
+ *  - GSTR-2B B2B sellers: 2B JSON me items `itms[].itm_det{txval,iamt,camt,samt}` me hote hain — pehle
+ *    `items[].igst/cgst/sgst` padha ja raha tha, isliye har supplier ka taxable/tax 0 aata tha
+ *  - Galat month (0/13/abc) par pehle chupchaap "October"/"Quarter 4" select hota tha (galat period ka data) —
+ *    ab 400 error, aur dropdown khaali text par match nahi karta
+ *  - Notices: 4-cell wali koi bhi table (late fee/footer) notice ban jati thi — ab date/reference wali row hi notice hai;
+ *    "31-Oct-2026" jaisi date par bhi layout sahi padhta hai
+ *  - Unknown route / bad JSON body par JSON error (express ka HTML nahi); submit-otp par busy-guard
+ *  - Test: `npm test` (pure helpers + HTTP endpoints, browser ke bina)
  * Fixes over v1.8.0:
  *  - E-Com TCS: columns ab table header se pehchane jate hain (pehle GSTIN ka "07" / serial no. gross ban jata tha)
  *  - Har section ka status (ok / empty / uncertain / failed) screen tak jata hai — fail hone par "Koi notice nahi" nahi dikhega
@@ -19,20 +77,39 @@ const VERSION = (() => { try { return require("./package.json").version; } catch
 const GSTIN_RE = /^[0-9]{2}[A-Z0-9]{13}$/i;
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
-function getMonthName(mm) { return MONTH_NAMES[parseInt(mm, 10) - 1] || "October"; }
+// Galat month (0, 13...) par khaali string — pehle chupchaap "October"/"Quarter 4" ban jata tha
+// (us se client ka data galat period ka fetch ho jata tha).
+function getMonthName(mm) {
+  const m = parseInt(mm, 10);
+  return m >= 1 && m <= 12 ? MONTH_NAMES[m - 1] : "";
+}
 function getQuarterForMonth(mm) {
   const m = parseInt(mm, 10);
   if (m >= 4 && m <= 6) return "Quarter 1";
   if (m >= 7 && m <= 9) return "Quarter 2";
   if (m >= 10 && m <= 12) return "Quarter 3";
-  return "Quarter 4";
+  if (m >= 1 && m <= 3) return "Quarter 4";
+  return "";
 }
 // fy "2026-27", mm "10" -> "102026" ; mm "02" -> "022027"
 function periodFor(fy, mm) {
   const start = parseInt(String(fy).slice(0, 4), 10);
   const m = parseInt(mm, 10);
-  if (!start || !m) return "";
+  if (!start || !(m >= 1 && m <= 12)) return "";
   return String(m).padStart(2, "0") + (m >= 4 ? start : start + 1);
+}
+
+// Request se aane wala fy/month ek jagah validate hota hai (fetch-all + upload-gstr1 dono ke liye)
+function normalizePeriod(fy, month) {
+  const fyIn = fy == null || String(fy).trim() === "" ? "2026-27" : String(fy).trim();
+  const mRaw = month == null || String(month).trim() === "" ? "10" : String(month).trim();
+  if (!/^\d{4}-\d{2,4}$/.test(fyIn)) return { ok: false, error: `FY "${fyIn}" galat format me hai (sahi example: 2026-27).` };
+  const m = parseInt(mRaw, 10);
+  if (!(m >= 1 && m <= 12) || String(m) !== mRaw.replace(/^0+(?=\d)/, "")) {
+    return { ok: false, error: `Month "${mRaw}" galat hai — 1 se 12 ke beech ka number dein (jaise 10).` };
+  }
+  const mm = String(m).padStart(2, "0");
+  return { ok: true, fy: fyIn, month: mm, period: periodFor(fyIn, mm) };
 }
 
 // Strict amount: "1,25,000.00", "₹ 500", "(250.50)", "-10" -> number ; baaki sab NaN (GSTIN "07AAAC.." ab 7 nahi banega)
@@ -157,25 +234,36 @@ function parseTcsRecordCount(text) {
   return m ? parseInt(m[1], 10) : null;
 }
 
+const NOTICE_DATE_RE = /^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/;
+const NOTICE_DATE2_RE = /^\d{1,2}[-\s,]+[A-Za-z]{3,9}[-\s,]+\d{2,4}$/; // "31-Oct-2026", "31 Oct, 2026"
+const isNoticeDate = v => { const s = String(v || "").trim(); return NOTICE_DATE_RE.test(s) || NOTICE_DATE2_RE.test(s); };
+// Reference No / ARN jaisa kuch (kam se kam 8 char, usme digit bhi ho, sirf amount nahi)
+const isNoticeRef = v => {
+  const s = String(v || "").trim();
+  return s.length >= 8 && /\d/.test(s) && /[A-Za-z]/.test(s) && !/^[\d,.\s()-]+$/.test(s);
+};
+
 function parseNoticeTables(tables) {
   const out = [];
-  const DATE_RE = /^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/;
   for (const tbl of tables || []) {
     const labels = buildColumnLabels(tbl.head);
     for (const tds of tbl.body || []) {
-      if (tds.length >= 4 && !tds.join(" ").toLowerCase().includes("no records")) {
-        // Portal ka dekha hua layout: Ref No | Type | Description | Date | Due/Response | View
-        const portalLayout = tds.length >= 5 && DATE_RE.test(String(tds[3]).trim());
-        out.push(portalLayout ? {
-          refNo: tds[0] || "", type: tds[1] || "", description: tds[2] || "", issuedBy: "",
-          issueDate: tds[3] || "", dueDate: /^view$/i.test(String(tds[4]).trim()) ? "" : (tds[4] || ""), amount: "",
-          rawCells: tds, headers: labels
-        } : {
-          refNo: tds[0] || "", issuedBy: tds[1] || "", type: tds[2] || "", description: tds[3] || "",
-          issueDate: tds[4] || "", dueDate: tds[5] || "", amount: tds[6] || "",
-          rawCells: tds, headers: labels
-        });
-      }
+      // Notices page ki table hi nahi hoti — 4-cell wali koi bhi doosri table (late fee, footer,
+      // totals) notice ban jati thi. Isliye row me date ya reference-jaisa kuch hona zaroori hai.
+      if (tds.length < 4 || tds.join(" ").toLowerCase().includes("no records")) continue;
+      if (!tds.some(isNoticeDate) && !tds.some(isNoticeRef)) continue;
+      // Portal ka dekha hua layout: Ref No | Type | Description | Date | Due/Response | View
+      // (date "31/10/2026" ya "31-Oct-2026" — dono format par layout yahi rehta hai)
+      const portalLayout = tds.length >= 5 && isNoticeDate(tds[3]);
+      out.push(portalLayout ? {
+        refNo: tds[0] || "", type: tds[1] || "", description: tds[2] || "", issuedBy: "",
+        issueDate: tds[3] || "", dueDate: /^view$/i.test(String(tds[4]).trim()) ? "" : (tds[4] || ""), amount: "",
+        rawCells: tds, headers: labels
+      } : {
+        refNo: tds[0] || "", issuedBy: tds[1] || "", type: tds[2] || "", description: tds[3] || "",
+        issueDate: tds[4] || "", dueDate: tds[5] || "", amount: tds[6] || "",
+        rawCells: tds, headers: labels
+      });
     }
   }
   return out;
@@ -263,35 +351,603 @@ function readJsonFilesFromBuffer(buf) {
   return { isZip: true, files };
 }
 
-/* ---- GSTR-2B B2B sellers list (naya app ka "B2B Sellers" modal isi se banta hai) ---- */
+/* ---- GSTR-2B B2B sellers list (app ka "B2B Sellers / Invoices" modal isi se banta hai) ----
+ * 2B JSON me invoice items `inv.itms[].itm_det{txval,iamt,camt,samt,csamt}` me hote hain —
+ * `items[].igst/cgst/sgst` (GSTR-1 style) 2B me nahi hota.
+ * App har seller ke saath `invoices[]` expect karta hai (warna wo apna fallback parser chalata hai);
+ * isliye yahan invoice-level detail bhi bhejte hain, app ke field names ke saath:
+ *   num, dt, val, txval, igst, cgst, sgst, cess, rate, itcavl, rev
+ */
 function buildB2bSellers(parsedList) {
   const map = new Map();
-  for (const parsed of parsedList) {
+  const num = v => { const n = Number(v); return isFinite(n) ? n : 0; };
+  const r2 = n => Math.round(Number(n || 0) * 100) / 100;
+  // 2B keys (iamt/camt/samt/csamt) pehle, phir GSTR-1 style keys (igst/cgst/sgst/cess)
+  const pick = (o, a, b) => (o && o[a] !== undefined && o[a] !== null && o[a] !== "" ? o[a] : (o ? o[b] : undefined));
+  for (const parsed of parsedList || []) {
     const b2b = Array.isArray(parsed?.data?.docdata?.b2b) ? parsed.data.docdata.b2b : [];
     for (const sup of b2b) {
       const invs = Array.isArray(sup.inv) ? sup.inv : [];
-      let taxable = 0, igst = 0, cgst = 0, sgst = 0;
-      for (const inv of invs) {
-        const items = Array.isArray(inv.items) ? inv.items : [];
-        if (items.length) {
-          for (const it of items) {
-            taxable += Number(it.txval || 0); igst += Number(it.igst || 0); cgst += Number(it.cgst || 0); sgst += Number(it.sgst || 0);
-          }
-        } else {
-          taxable += Number(inv.txval || 0); igst += Number(inv.igst || 0); cgst += Number(inv.cgst || 0); sgst += Number(inv.sgst || 0);
-        }
-      }
       const gstin = String(sup.ctin || "").trim().toUpperCase();
       const key = gstin || String(sup.trdnm || "Supplier");
-      const cur = map.get(key) || { name: String(sup.trdnm || sup.ctin || "Supplier").trim(), gstin, invCount: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0 };
-      cur.invCount += invs.length; cur.taxable += taxable; cur.igst += igst; cur.cgst += cgst; cur.sgst += sgst;
+      const cur = map.get(key) || {
+        name: String(sup.trdnm || sup.ctin || "Supplier").trim(), gstin, supfildt: "",
+        invCount: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0, cess: 0, invoices: []
+      };
+      if (!cur.supfildt && sup.supfildt) cur.supfildt = String(sup.supfildt).trim();
+      for (const inv of invs) {
+        const items = Array.isArray(inv.itms) ? inv.itms : (Array.isArray(inv.items) ? inv.items : []);
+        let tx = 0, ig = 0, cg = 0, sg = 0, cs = 0;
+        const rates = new Set();
+        if (items.length) {
+          for (const it of items) {
+            const d = it.itm_det || it.itm || it || {};
+            tx += num(d.txval);
+            ig += num(pick(d, "iamt", "igst"));
+            cg += num(pick(d, "camt", "cgst"));
+            sg += num(pick(d, "samt", "sgst"));
+            cs += num(pick(d, "csamt", "cess"));
+            if (d.rt !== undefined && d.rt !== null && d.rt !== "") rates.add(String(d.rt) + "%");
+          }
+        } else {
+          // Items hi nahi hain (kabhi 2B me sirf invoice level values hoti hain).
+          // txval na ho to invoice value (val) — wo tax ke saath hota hai, isliye sirf last resort.
+          tx = num(pick(inv, "txval", "val"));
+          ig = num(pick(inv, "iamt", "igst"));
+          cg = num(pick(inv, "camt", "cgst"));
+          sg = num(pick(inv, "samt", "sgst"));
+          cs = num(pick(inv, "csamt", "cess"));
+          if (inv.rt !== undefined && inv.rt !== null && inv.rt !== "") rates.add(String(inv.rt) + "%");
+        }
+        cur.invoices.push({
+          num: String(inv.inum || inv.invnum || "").trim(),
+          dt: String(pick(inv, "idt", "dt") || inv.inv_dt || "").trim(),
+          val: r2(inv.val !== undefined && inv.val !== null && inv.val !== "" ? inv.val : (tx + ig + cg + sg + cs)),
+          txval: r2(tx), igst: r2(ig), cgst: r2(cg), sgst: r2(sg), cess: r2(cs),
+          rate: Array.from(rates).join("/"),
+          itcavl: String(inv.itcavl || "Y").trim().toUpperCase(),
+          rev: String(pick(inv, "rev", "rchrg") || "N").trim().toUpperCase()
+        });
+        cur.invCount += 1;
+        cur.taxable += tx; cur.igst += ig; cur.cgst += cg; cur.sgst += sg; cur.cess += cs;
+      }
       map.set(key, cur);
     }
   }
   return Array.from(map.values()).map(x => ({
-    name: x.name, gstin: x.gstin, invCount: x.invCount,
-    taxable: Math.round(x.taxable), igst: Math.round(x.igst), cgst: Math.round(x.cgst), sgst: Math.round(x.sgst)
+    name: x.name, gstin: x.gstin, supfildt: x.supfildt, invCount: x.invCount,
+    taxable: r2(x.taxable), igst: r2(x.igst), cgst: r2(x.cgst), sgst: r2(x.sgst), cess: r2(x.cess),
+    invoices: x.invoices
   }));
+}
+
+/* ---- Section outcome (app ke `partial` contract ke liye) ----
+ * App ek hi request me 2B + TCS maangta hai. Pehle bridge kisi ek section ke fail hone par
+ * poora response ok:false kar deta tha -> app kuch bhi save nahi karta tha (jo mila wo bhi loss).
+ * Ab: sab maange gaye section fail -> ok:false (kuch save na ho);
+ *     kuch fail + kuch ok    -> ok:true + partial{...}, app sirf fail section ka purana data rakhta hai.
+ */
+/**
+ * GST portal GSTR-2B apne aap generate na ho to ye page dikhata hai:
+ *   "Error! GSTR-2B could not be generated by the System..."
+ *   "System will not generate GSTR 2B ... no records ... last 3B not filed ... QRMP"
+ * Us case me fetch fail nahi — 2B hi nahi bani. App isse "not generated" dikhata hai.
+ */
+const GSTR2B_NOT_GENERATED_RE = /could\s+not\s+be\s+generated|will\s+not\s+generate\s+GSTR-?\s?2B|no\s+records?\s+to\s+generate\s+GSTR-?\s?2B|GSTR-?\s?2B\s+(?:has\s+)?not\s+been\s+generated/i;
+
+function isGstr2bNotGenerated(text) {
+  return !!text && GSTR2B_NOT_GENERATED_RE.test(String(text));
+}
+
+function partialOutcome(status, opts) {
+  const asked = [], failed = [];
+  const check = (key, label) => {
+    asked.push(label);
+    const st = status && status[key];
+    if (st && st.state === "failed") failed.push(label + ": " + (st.message || "fetch nahi hua"));
+  };
+  if (opts && opts.gstr2b) check("gstr2b", "GSTR-2B");
+  if (opts && opts.tcs) check("tcs", "E-Com TCS");
+  if (opts && opts.notices) check("notices", "Notices");
+  const allFailed = failed.length > 0 && failed.length >= asked.length;
+  const partial = failed.length && !allFailed ? {
+    gstr2b: !!(opts && opts.gstr2b) && status?.gstr2b?.state === "failed",
+    tcs: !!(opts && opts.tcs) && status?.tcs?.state === "failed",
+    notices: !!(opts && opts.notices) && status?.notices?.state === "failed",
+    text: "Adhoora fetch — " + failed.join(" | ")
+  } : null;
+  return { asked, failed, allFailed, partial };
+}
+
+/* ======================= PORTAL (Playwright) HELPERS — browser ke bina testable ======================= */
+const RETURNS_DASHBOARD_URL = "https://return.gst.gov.in/returns/auth/dashboard";
+const GST_AUTH_DASHBOARD_URL = "https://services.gst.gov.in/services/auth/dashboard";
+
+async function dismissModals(page) {
+  const selectors = [
+    "button:has-text('Remind me later')", "button:has-text('CLOSE')", "button:has-text('OK')", ".modal .close",
+    "button:has-text('Proceed')", "button:has-text('Continue')", "button:has-text('I Agree')"
+  ];
+  for (const sel of selectors) {
+    const btn = page.locator(sel).first();
+    if (await btn.isVisible().catch(() => false)) {
+      await btn.click().catch(() => {});
+      await page.waitForTimeout(350);
+    }
+  }
+  // Kuch modals sirf Esc se band hote hain
+  try { if (page.keyboard) await page.keyboard.press("Escape"); } catch (_) {}
+}
+
+// Dropdown ke options page par der se aate hain (Angular/AJAX) — isliye polling wala select.
+// `also` = alternative labels (Quarter "Q3"/"Oct - Dec", month "Oct-2026"), `selectIndex` = sirf usi select me.
+async function selectDropdownByText(page, targetText, opts) {
+  const o = opts || {};
+  const texts = [targetText, ...(Array.isArray(o.also) ? o.also : [])]
+    .map(t => String(t == null ? "" : t).trim().toLowerCase()).filter(Boolean);
+  // Khaali text par har option match ho jata tha ("" sab me includes hai) -> galat period select
+  if (!texts.length) return { matched: false, reason: "empty" };
+  const index = Number.isInteger(o.selectIndex) ? o.selectIndex : -1;
+  const timeoutMs = Number(o.timeoutMs) || 0;
+  const maxTries = timeoutMs ? Math.max(1, Math.ceil(timeoutMs / 600)) : 1;
+  let last = { matched: false };
+  for (let i = 1; i <= maxTries; i++) {
+    last = await page.evaluate((args) => {
+      const selects = Array.from(document.querySelectorAll("select"));
+      const pool = args.index >= 0 ? selects.filter((_, idx) => idx === args.index) : selects;
+      const norm = t => String(t == null ? "" : t).trim().toLowerCase();
+      // Pehle poora match (warna "10" jaise numeric month "2010-11" me bhi match ho jata), phir substring
+      for (const exact of [true, false]) {
+        for (const sel of pool) {
+          const list = Array.from(sel.options);
+          for (const want of args.texts) {
+            const opt = list.find(x => (exact ? norm(x.text) === want : norm(x.text).includes(want)));
+            if (opt) {
+              sel.value = opt.value;
+              sel.dispatchEvent(new Event("change", { bubbles: true }));
+              return { matched: true, name: sel.name || sel.id || "", option: (opt.text || "").trim(), tryNo: args.tryNo };
+            }
+          }
+        }
+      }
+      return { matched: false, tryNo: args.tryNo, seen: pool.map(x => Array.from(x.options).map(y => (y.text || "").trim()).slice(0, 6)) };
+    }, { texts, index, tryNo: i });
+    if (last.matched) return last;
+    if (i < maxTries) await page.waitForTimeout(600);
+  }
+  return last;
+}
+
+// Kisi option ka label month lagta hai? ("October", "Oct-2026", "10", "10/2026")
+function isMonthOption(o) {
+  const s = String(o == null ? "" : o).trim();
+  if (!s) return false;
+  if (/^\d{1,2}$/.test(s)) return Number(s) >= 1 && Number(s) <= 12;
+  const dmy = s.match(/^(\d{1,2})\s*[-\/.]\s*(\d{4})$/);
+  if (dmy) return Number(dmy[1]) >= 1 && Number(dmy[1]) <= 12;
+  const low = s.toLowerCase();
+  return MONTH_NAMES.some(n => low.startsWith(n.slice(0, 3).toLowerCase()));
+}
+
+// Quarter ka label? ("Quarter 3", "Q3", "Oct - Dec", "OctDec")
+function isQuarterOption(o) {
+  return /quart|\bqtr\b|\bq[1-4]\b|apr\s*-\s*jun|jul\s*-\s*sep|oct\s*-\s*dec|jan\s*-\s*mar|aprjun|julsep|octdec|janmar/i
+    .test(String(o == null ? "" : o));
+}
+
+// Page par period chunne wala dropdown (Month ya Quarter) aa gaya?
+function hasPeriodSelect(dump) {
+  const rows = Array.isArray(dump) ? dump : [];
+  return rows.some(r => (r.options || []).filter(isMonthOption).length >= 3)
+    || rows.some(r => (r.options || []).filter(isQuarterOption).length >= 2);
+}
+
+// FY badalne ke baad portal Month/Quarter dropdown AJAX se der se render karta hai (kabhi page reload
+// ke baad) — production me 1.2s wait me sirf FY wala select mila tha, month gayab tha.
+async function waitForPeriodSelect(page, timeoutMs) {
+  const limit = Number(timeoutMs) || 0;
+  const started = Date.now();
+  let dump = [];
+  let tries = 0;
+  while (tries++ < 200) {
+    dump = await readSelectOptions(page);
+    if (hasPeriodSelect(dump)) return { ok: true, dump, tries };
+    if (Date.now() - started >= limit) break;
+    await page.waitForTimeout(700);
+  }
+  return { ok: false, dump, tries };
+}
+
+// Period dropdown na dikhe to portal ke "aage badhne" wale buttons (PROCEED/GET DETAILS/SEARCH...) try
+// karte hain — kai layouts par month list inhi ke click se load hoti hai.
+async function revealPeriodDropdown(page) {
+  const names = ["GET DETAILS", "PROCEED", "CONTINUE", "SUBMIT", "SEARCH"];
+  const clicked = [];
+  for (const name of names) {
+    const btn = page.locator(`button:has-text('${name}'), a:has-text('${name}'), input[value='${name}']`).first();
+    if (!(await btn.count().catch(() => 0))) continue;
+    if (!(await btn.isVisible().catch(() => false))) continue;
+    await btn.click({ force: true, timeout: 8000 }).catch(() => {});
+    clicked.push(name);
+    await page.waitForTimeout(2500);
+    if (clicked.length >= 2) break;
+  }
+  return { clicked };
+}
+
+// Naye portal par kabhi Returns Dashboard andar ke iframe me hota hai — wahan ke selects alag hote hain.
+// Main page par period dropdown na mile to child frames me dhundhte hain (wo frame hi select karne ke kaam aata hai).
+async function findPeriodFrame(page) {
+  let frames = [];
+  try { frames = typeof page.frames === "function" ? (page.frames() || []) : []; } catch (_) { return null; }
+  const main = page.mainFrame && typeof page.mainFrame === "function" ? page.mainFrame() : null;
+  for (let i = 0; i < frames.length && i < 8; i++) {
+    const f = frames[i];
+    if (!f || (main && f === main)) continue;
+    if (typeof f.evaluate !== "function") continue;
+    const dump = await readSelectOptions(f).catch(() => []);
+    if (hasPeriodSelect(dump)) return { frame: f, index: i, url: (typeof f.url === "function" ? f.url() : "") || "", dump };
+  }
+  return null;
+}
+
+// Page ke saare select + unke options (kaun sa FY/Quarter/Month hai, ye pata karne ke liye)
+async function readSelectOptions(page) {
+  const dump = await page.evaluate(() => Array.from(document.querySelectorAll("select")).map((s, i) => ({
+    i, name: String(s.name || s.id || "").slice(0, 40),
+    options: Array.from(s.options).map(o => String(o.text || "").trim()).filter(Boolean).slice(0, 15)
+  }))).catch(() => []);
+  return Array.isArray(dump) ? dump : [];
+}
+
+// Kaun sa <select> FY / Quarter / Month hai — naam se, aur naam na ho to options dekh kar
+function guessSelectIndex(dump, kind) {
+  const rows = Array.isArray(dump) ? dump : [];
+  const nameRe = kind === "fy" ? /fy|financ|year/i : kind === "quarter" ? /quart|qtr/i : /mon|period|month/i;
+  const byName = rows.findIndex(r => nameRe.test(String((r && r.name) || "")));
+  if (byName >= 0) return byName;
+  if (kind === "fy") return rows.findIndex(r => (r.options || []).some(o => /^\d{4}-\d{2,4}$/.test(String(o))));
+  if (kind === "quarter") return rows.findIndex(r => (r.options || []).filter(isQuarterOption).length >= 2);
+  return rows.findIndex(r => (r.options || []).filter(isMonthOption).length >= 3);
+}
+
+// Portal par quarter ke label jagah-jagah alag hote hain: "Quarter 3", "Q3", "Oct - Dec"
+function quarterAliases(mm) {
+  const m = parseInt(mm, 10);
+  const q = m >= 4 && m <= 6 ? 1 : m >= 7 && m <= 9 ? 2 : (m >= 10 && m <= 12 ? 3 : 4);
+  const span = { 1: "Apr - Jun", 2: "Jul - Sep", 3: "Oct - Dec", 4: "Jan - Mar" }[q];
+  return ["Quarter " + q, "Quarter-" + q, "Qtr " + q, "Q" + q, span, span.replace(/ /g, "")];
+}
+
+// Month ke alternatives — sirf year wale (bare "Oct" quarter ke "Oct - Dec" se match ho jata hai)
+function monthAliases(mm, fy) {
+  const m = parseInt(mm, 10);
+  if (!(m >= 1 && m <= 12)) return [];
+  const start = parseInt(String(fy || "").slice(0, 4), 10) || 0;
+  const year = start ? (m >= 4 ? start : start + 1) : 0;
+  const name = MONTH_NAMES[m - 1];
+  const short = name.slice(0, 3);
+  const pad = String(m).padStart(2, "0");
+  const out = [name];
+  if (year) out.push(`${short}-${year}`, `${short} ${year}`, `${short}/${year}`, `${pad}-${year}`, `${pad}/${year}`);
+  // Sirf-numeric month list ("01".."12") — exact match wali pass me hi lagta hai
+  out.push(String(m), pad);
+  return out;
+}
+
+/* Portal ne kaun sa "block" page dikhaya — ye pata hona zaroori hai, warna retry andha hota hai.
+ * (Production me dekha: https://services.gst.gov.in/services/error/accessdenied) */
+function classifyStuckPage(snap) {
+  const url = String((snap && snap.url) || "");
+  const title = String((snap && snap.title) || "");
+  const text = String((snap && snap.text) || "");
+  const all = url + " " + title + " " + text;
+  if (/access\s*denied|accessdenied/i.test(all)) {
+    return {
+      kind: "access_denied",
+      hint: "Portal ne Access Denied diya. Aksar wajah: (1) yahi GSTIN kisi doosre device/browser par pehle se login hai, " +
+        "(2) bahut jaldi-jaldi logins (portal ka WAF/rate limit), (3) GSTIN cancelled/suspended hai, ya (4) multi-GSTIN login me GSTIN select nahi hua. " +
+        "Portal par purana session logout karke (ya 5-10 min baad) dobara Fetch karein."
+    };
+  }
+  if (/already\s*logged\s*in|logged\s*in\s*from|another\s+(device|session|browser|system)/i.test(all)) {
+    return {
+      kind: "concurrent_session",
+      hint: "Is GSTIN ka session portal par pehle se khula hai (doosra device/browser). Portal par 'Logout' karke ya 10 min baad dobara Fetch karein."
+    };
+  }
+  if (/\bcancel+ed\b|suspended|inactive\s+gstin|not\s+active/i.test(all)) {
+    return { kind: "gstin_inactive", hint: "Client ka GSTIN portal par cancelled/suspended lagta hai — portal par status check karein." };
+  }
+  if (/session\s*(is\s*)?(expired|timed?\s*out)|please\s+login|login\s+again|invalid\s+session/i.test(all)) {
+    return { kind: "session_expired", hint: "Portal session expire ho gaya — dobara Fetch (naya captcha+OTP) karein." };
+  }
+  return { kind: "unknown", hint: "Portal ne apni normal Returns Dashboard nahi dikhai. /debug ke stuck snapshot (page text) se wajah pata chalegi." };
+}
+
+// Portal ke login page ke fields — id kabhi badal jate hain, isliye har field ke kai selector.
+// (Production: "waiting for locator('#username') to be visible" timeout — page hi login page nahi tha.)
+const LOGIN_USER_SELECTORS = ["#username", "input[name='username']", "input[id*='user' i][type='text']", "input[placeholder*='username' i]"];
+const LOGIN_PASS_SELECTORS = ["#user_pass", "input[type='password']", "input[name='password']"];
+const LOGIN_CAPTCHA_SELECTORS = ["#captcha", "input[name='captcha']", "input[id*='captcha' i]"];
+const LOGIN_SUBMIT_SELECTORS = ["button[type='submit']", "button:has-text('LOGIN')", "#loginBtn", "input[type='submit']"];
+
+// Pehla selector jo page par dikh raha hai (na mile to null)
+async function firstVisibleSelector(page, selectors) {
+  for (const sel of Array.isArray(selectors) ? selectors : []) {
+    try {
+      const loc = page.locator(sel);
+      const first = loc && typeof loc.first === "function" ? loc.first() : null;
+      if (!first) continue;
+      if (((await first.count().catch(() => 0)) || 0) === 0) continue;
+      if (await first.isVisible().catch(() => false)) return sel;
+    } catch (_) {}
+  }
+  return null;
+}
+
+// Login form ka intezaar — username/password dono dhundhta hai (polling, kyunki portal slow ho sakta hai)
+async function waitForLoginForm(page, timeoutMs) {
+  const limit = Number(timeoutMs) || 0;
+  const started = Date.now();
+  let tries = 0;
+  while (tries++ < 200) {
+    const userSel = await firstVisibleSelector(page, LOGIN_USER_SELECTORS);
+    if (userSel) {
+      const passSel = await firstVisibleSelector(page, LOGIN_PASS_SELECTORS);
+      return { ok: true, userSel, passSel };
+    }
+    if (Date.now() - started >= limit) break;
+    await page.waitForTimeout(800);
+  }
+  return { ok: false };
+}
+
+// In wajahon par login page khud theek ho sakta hai (portal downtime/WAF) -> thoda ruk kar ek aur koshish
+const LOGIN_RETRY_KINDS = ["portal_down", "blank_page"];
+
+// Login page ki jagah portal ne kya dikhaya — user ko exact wajah batane ke liye
+function classifyLoginPage(snap) {
+  const base = classifyStuckPage(snap);
+  if (base.kind !== "unknown") return base;
+  const url = String((snap && snap.url) || "");
+  const title = String((snap && snap.title) || "");
+  const text = String((snap && snap.text) || "");
+  const all = url + " " + title + " " + text;
+  if (/\/auth\/dashboard|\/returns\/auth\//i.test(url) || /returns\s+dashboard/i.test(all)) {
+    return {
+      kind: "already_logged_in",
+      hint: "Portal is browser ko pehle se logged in maan raha hai (login page ki jagah dashboard dikha) — us client ka purana session logout karein ya 10 min ruk kar dobara Fetch karein."
+    };
+  }
+  if (/change\s+password|password\s+(expired|expiry)|reset\s+password/i.test(all)) {
+    return { kind: "password_change", hint: "Portal password change/expiry ka page dikha raha hai — portal par manually login karke password set karein, phir Fetch karein." };
+  }
+  if (/maintenance|under\s+maintenance|service\s+unavailable|try\s+again\s+later|502|503/i.test(all)) {
+    return { kind: "portal_down", hint: "Portal maintenance/overload par lagta hai — 10-15 min baad dobara Fetch karein." };
+  }
+  if (!text.trim()) {
+    return { kind: "blank_page", hint: "Portal ne khaali page diya (network/WAF block) — internet check karke 2-3 min baad dobara Fetch karein." };
+  }
+  return base;
+}
+
+async function waitForDashboardSelects(page, timeoutMs) {
+  try { await page.waitForSelector("select", { timeout: timeoutMs }); return true; } catch (_) { return false; }
+}
+
+// Fail hone par "page par kya dikh raha hai" — error message + /debug dono me jata hai
+async function pageSnapshotBrief(page) {
+  const info = await page.evaluate(() => {
+    const clean = t => String(t || "").replace(/\s+/g, " ").trim();
+    const vis = el => el.offsetParent !== null;
+    return {
+      url: location.href, title: document.title,
+      selects: document.querySelectorAll("select").length,
+      visibleSelects: Array.from(document.querySelectorAll("select")).filter(vis).length,
+      text: clean(document.body.innerText).slice(0, 500),
+      buttons: Array.from(document.querySelectorAll("button, a.btn, a[role='button']")).filter(vis).map(b => clean(b.innerText)).filter(Boolean).slice(0, 12)
+    };
+  }).catch(e => ({ error: String((e && e.message) || e) }));
+  return info || {};
+}
+
+// Click se naya tab khula ho to us page ko apna lein (warna hum purane tab par atke rehte hain)
+async function adoptNewPopupPage(context, currentPage, pagesBefore) {
+  if (!context || typeof context.pages !== "function") return currentPage;
+  let pages = [];
+  try { pages = context.pages() || []; } catch (_) { return currentPage; }
+  if (pages.length <= pagesBefore) return currentPage;
+  const np = pages[pages.length - 1];
+  try { await np.waitForLoadState("domcontentloaded", { timeout: 15000 }); } catch (_) {}
+  return np;
+}
+
+/* Returns Dashboard kholna + FY/Quarter/Month select karna.
+ * Fail hone par ek retry (seedha return.gst.gov.in URL), aur phir bhi fail ho to ASLI page ka
+ * diagnostic error deta hai (pehle sirf "waitForSelector Timeout 25000ms" aata tha — pata hi nahi
+ * chalta tha ki portal ne kaun sa page dikhaya tha).
+ * Returns: page (popup adopt hua ho to naya page) — caller ko isi page se aage kaam karna chahiye.
+ */
+async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
+  const t = tag || "ret";
+  const step = (k, v) => { if (dbg && dbg.steps) dbg.steps[t + "_" + k] = v; };
+  const context = typeof page.context === "function" ? page.context() : null;
+  const pagesBefore = context && typeof context.pages === "function" ? (context.pages() || []).length : 0;
+  const startedOn = page;
+
+  await dismissModals(page);
+  if (!String(page.url() || "").includes("/returns/auth/dashboard")) {
+    const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
+    if (await retBtn.isVisible().catch(() => false)) {
+      await retBtn.click({ force: true }).catch(() => {});
+      await page.waitForTimeout(4500);
+    } else {
+      // Koi cheez (e.g. modal) click rok rahi ho to page par link dhundh kar click karte hain
+      await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll("a"));
+        const retLink = links.find(a => /returns dashboard/i.test(a.textContent || "") || (a.getAttribute("href") || "").includes("/returns/auth/dashboard"));
+        if (retLink) retLink.click();
+      }).catch(() => {});
+      await page.waitForTimeout(4500);
+    }
+    page = await adoptNewPopupPage(context, page, pagesBefore);
+  }
+  await dismissModals(page);
+  if (page !== startedOn) step("adoptedPopup", page.url());
+  step("urlBeforeSelect", page.url());
+
+  let ok = await waitForDashboardSelects(page, 40000);
+  let stuck = null;
+  if (!ok) {
+    // Retry 1: kabhi menu click navigate nahi karta; WAF/portal slow hone par 40s bhi kam pad jate hain
+    const snap1 = await pageSnapshotBrief(page);
+    step("selectTimeoutAt", Object.assign({ url: page.url(), kind: classifyStuckPage(snap1).kind }, snap1));
+    await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
+    await page.waitForTimeout(3000);
+    await dismissModals(page);
+    page = await adoptNewPopupPage(context, page, pagesBefore);
+    ok = await waitForDashboardSelects(page, 25000);
+    if (!ok) stuck = await pageSnapshotBrief(page);
+  }
+  if (!ok) {
+    const cls = classifyStuckPage(stuck);
+    step("stuck", Object.assign({ kind: cls.kind }, stuck));
+
+    // Retry 2 (sirf Access Denied / concurrent session par): portal ko thoda "cool down" do, phir
+    // Auth Dashboard se fresh click — direct URL goto se portal ka WAF aksar naraz hota hai.
+    if (cls.kind === "access_denied" || cls.kind === "concurrent_session") {
+      await page.waitForTimeout(cls.kind === "concurrent_session" ? 4000 : 8000);
+      await page.goto(GST_AUTH_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
+      await page.waitForTimeout(3000);
+      await dismissModals(page);
+      page = await adoptNewPopupPage(context, page, pagesBefore);
+      const retryBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
+      if (await retryBtn.isVisible().catch(() => false)) {
+        await retryBtn.click({ force: true }).catch(() => {});
+        await page.waitForTimeout(5000);
+        page = await adoptNewPopupPage(context, page, pagesBefore);
+      }
+      ok = await waitForDashboardSelects(page, 30000);
+      if (ok) step("dashboardAfterBlockRetry", page.url());
+      else stuck = await pageSnapshotBrief(page);
+    }
+    if (!ok) {
+      const cls2 = classifyStuckPage(stuck);
+      step("stuck2", Object.assign({ kind: cls2.kind }, stuck));
+      const where = (stuck && stuck.url) || page.url() || "?";
+      const hint2 = (stuck && stuck.title) ? " (" + stuck.title + ")" : "";
+      const finalHint = cls2.hint || cls.hint;
+      throw new Error(`Returns Dashboard access nahi mila${hint2}. Aakhri page: ${where}. ${finalHint} [${t}_stuck dekhein]`);
+    }
+  }
+
+  // Har dropdown ko pehchan kar select karna (options der se aate hain, isliye polling) + ek retry
+  let periodHost = null; // period selection kahan hui (main page ya andar ka iframe)
+  const periodAttempt = async (attempt) => {
+    let dump = await readSelectOptions(page);
+    if (attempt === 1) step("selects", dump);
+    let fyRes = await selectDropdownByText(page, fy, { selectIndex: guessSelectIndex(dump, "fy"), timeoutMs: 9000 });
+    await page.waitForTimeout(1200);
+
+    // FY set hone ke baad Month/Quarter dropdown der se aata hai (AJAX, ya poore page reload ke baad).
+    // Production me yahan sirf FY wala select mila tha (select0: 2019-20/2020-21/...) -> month gayab.
+    let wait = await waitForPeriodSelect(page, attempt === 1 ? 12000 : 15000);
+    if (!wait.ok) {
+      const snap = await pageSnapshotBrief(page);
+      step("periodWait" + attempt, { ok: false, dump: wait.dump, url: snap.url || page.url(), title: snap.title, buttons: (snap.buttons || []).slice(0, 12) });
+      // Page reload ho gaya ho (selects gayab) to dashboard dobara wait, phir aage badhne wale button try
+      if (!(await waitForDashboardSelects(page, 20000))) { /* phir bhi try karte hain */ }
+      const revealed = await revealPeriodDropdown(page);
+      step("periodReveal" + attempt, revealed);
+      if (revealed.clicked.length) wait = await waitForPeriodSelect(page, 8000);
+    }
+    dump = (wait.dump && wait.dump.length) ? wait.dump : await readSelectOptions(page);
+
+    // Portal ne period dropdown andar ke iframe me rakha ho to wahi frame use karte hain
+    let host = page;
+    if (!hasPeriodSelect(dump)) {
+      const inFrame = await findPeriodFrame(page);
+      if (inFrame) {
+        step("periodFrame" + attempt, { index: inFrame.index, url: inFrame.url, dump: inFrame.dump });
+        host = inFrame.frame;
+        dump = inFrame.dump;
+        periodHost = host;
+        // Poore dropdowns frame me ho sakte hain -> FY wahan dobara set karte hain
+        if (guessSelectIndex(dump, "fy") >= 0) {
+          const fyInFrame = await selectDropdownByText(host, fy, { selectIndex: guessSelectIndex(dump, "fy"), timeoutMs: 6000 });
+          if (fyInFrame.matched) fyRes = fyInFrame;
+          await page.waitForTimeout(1000);
+          dump = await readSelectOptions(host);
+        }
+      }
+    }
+    step("periodSelects" + attempt, dump);
+
+    const qIdx = guessSelectIndex(dump, "quarter");
+    // Quarter optional: kuch dashboard par hota hi nahi, kuch par label "Q3"/"Oct - Dec" hota hai
+    const qRes = qIdx >= 0
+      ? await selectDropdownByText(host, getQuarterForMonth(monthNum), { also: quarterAliases(monthNum), selectIndex: qIdx, timeoutMs: 6000 })
+      : { matched: false, reason: "no-quarter-select" };
+    await page.waitForTimeout(1200);
+
+    dump = await readSelectOptions(host);
+    const mIdx = guessSelectIndex(dump, "month");
+    const mRes = mIdx >= 0
+      ? await selectDropdownByText(host, getMonthName(monthNum), { also: monthAliases(monthNum, fy), selectIndex: mIdx, timeoutMs: 9000 })
+      : { matched: false, reason: "no-month-select" };
+    await page.waitForTimeout(800);
+    return { fyRes, qRes, mRes, dump };
+  };
+
+  let per = await periodAttempt(1);
+  if (!per.fyRes.matched || !per.mRes.matched) {
+    // Doosri koshish — password change/redirect ke baad portal ka dashboard der se bharta hai
+    await page.waitForTimeout(2500);
+    await dismissModals(page).catch(() => {});
+    per = await periodAttempt(2);
+  }
+  const { fyRes, qRes, mRes } = per;
+
+  // Month hi asli period hai — FY + Month match hona zaroori. Quarter ka label fix nahi hota, isliye
+  // wo na mile to bhi chalta hai (month list se period pakka ho jata hai).
+  if (!fyRes.matched || !mRes.matched) {
+    const dump = per.dump || [];
+    const snap = await pageSnapshotBrief(page);
+    let framesDebug = [];
+    try {
+      const frames = typeof page.frames === "function" ? (page.frames() || []) : [];
+      framesDebug = frames.slice(0, 6).map((f, i) => ({ i, url: (typeof f.url === "function" ? f.url() : "") }));
+    } catch (_) {}
+    step("periodSelectFail", { fyRes, qRes, mRes, url: snap.url || page.url(), title: snap.title, buttons: (snap.buttons || []).slice(0, 12), selects: dump, frames: framesDebug });
+    const summary = dump.slice(0, 4).map(d => `${d.name || "select" + d.i}: ${(d.options || []).join("/")}`).join(" | ").slice(0, 400);
+    const where = (snap.title ? snap.title + " — " : "") + (snap.url || page.url() || "?");
+    const quarterOnly = mRes.reason === "no-month-select" && qRes.matched;
+    const hint = quarterOnly
+      ? "Is client ka dashboard month ki jagah sirf Quarter dikha raha hai (QRMP/quarterly account) — " +
+        "2B month-wise chahiye, isliye galat data se bachne ke liye fetch roka gaya."
+      : "Returns Dashboard par \"Financial Year\" ke saath \"Return Filing Period\" (Month) bhi dikhna chahiye — " +
+        "portal par is client ka dashboard manually kholein.";
+    throw new Error(`Portal par period select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}). ` +
+      `Page: ${where}. Dropdowns mile -> ${summary || "koi select nahi mila"}. ${hint} [${t}_selects / ${t}_periodSelectFail dekhein]`);
+  }
+  if (!qRes.matched) step("quarterSkipped", qRes);
+
+  const searchHost = periodHost || page;
+  const searchBtn = searchHost.locator("button:has-text('SEARCH'), button[type='submit']").first();
+  if (await searchBtn.count().catch(() => 0)) {
+    await searchBtn.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(4000);
+  } else if (searchHost !== page) {
+    const mainSearch = page.locator("button:has-text('SEARCH'), button[type='submit']").first();
+    if (await mainSearch.count().catch(() => 0)) {
+      await mainSearch.click({ force: true }).catch(() => {});
+      await page.waitForTimeout(4000);
+    }
+  }
+  step("dashboard", { url: page.url(), fyRes, qRes, mRes });
+
+  return page;
 }
 
 /* ======================= SERVER ======================= */
@@ -379,12 +1035,25 @@ function startServer() {
     return s;
   }
 
+  // App me live progress dikhane ke liye ("2B download ho raha hai…") — GET /api/gst/fetch-status
+  const setProgress = (sess, key, message) => {
+    if (!sess) return;
+    sess.progress = { key, message, at: Date.now() };
+  };
+
   app.get("/health", (req, res) => {
     res.json({ ok: true, service: "gst-cloud-bridge", version: VERSION, secretConfigured: !!API_SECRET, activeSessions: sessions.size, timestamp: new Date().toISOString() });
   });
   // Save & Test ke liye: secret sahi hai ya nahi, ye wahi batata hai
   app.get("/api/gst/ping", (req, res) => res.json({ ok: true, version: VERSION }));
   app.get("/debug", (req, res) => res.type("text/plain").send(JSON.stringify(lastDebug, null, 2)));
+
+  // Chal rahe fetch ka step (app har 5s par poochhta hai) — session chala gaya to 404
+  app.get("/api/gst/fetch-status", (req, res) => {
+    const s = sessions.get(String((req.query && req.query.sessionId) || ""));
+    if (!s) return res.status(404).json({ ok: false, error: "Session nahi mila (khatam ho gaya)." });
+    res.json({ ok: true, busy: !!s.busy, progress: s.progress || null });
+  });
 
   app.post("/api/gst/init-login", async (req, res) => {
     let browser, context;
@@ -408,11 +1077,39 @@ function startServer() {
       const page = await context.newPage();
       page.setDefaultTimeout(35000);
 
-      await page.goto("https://services.gst.gov.in/services/login", { waitUntil: "domcontentloaded" });
-      await page.waitForSelector("#username", { timeout: 30000 });
-      await page.click("#username");
-      await page.locator("#username").pressSequentially(String(req.body?.username || "gstuser"), { delay: 60 });
-      await page.click("#user_pass");
+      // Login page kholna: portal kabhi dashboard/access-denied/blank page de deta hai (purana session, WAF,
+      // slow load). Pehle 30s, phir cache-buster ke saath dobara 20s — phir bhi na khule to saaf wajah.
+      const loginUrl = "https://services.gst.gov.in/services/login";
+      let loginInfo = { ok: false };
+      let loginSnap = null;
+      for (let attempt = 1; attempt <= 3 && !loginInfo.ok; attempt++) {
+        // Portal downtime/WAF aksar 1-2 min me khud theek ho jata hai -> teesri koshish se pehle 45s rukte hain
+        if (attempt === 3) {
+          if (!LOGIN_RETRY_KINDS.includes(classifyLoginPage(loginSnap).kind)) break;
+          await page.waitForTimeout(45000);
+        }
+        const url = attempt === 1 ? loginUrl : loginUrl + "?_=" + Date.now();
+        await page.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});
+        await dismissModals(page).catch(() => {});
+        loginInfo = await waitForLoginForm(page, attempt === 1 ? 30000 : 20000);
+        if (!loginInfo.ok) {
+          loginSnap = await pageSnapshotBrief(page);
+          if (attempt < 3) await page.waitForTimeout(2500);
+        }
+      }
+      if (!loginInfo.ok) {
+        const cls = classifyLoginPage(loginSnap);
+        lastDebug = {
+          step: "init-login", timestamp: new Date().toISOString(), version: VERSION, kind: cls.kind, snapshot: loginSnap
+        };
+        const where = ((loginSnap && loginSnap.title) ? loginSnap.title + " — " : "") + ((loginSnap && loginSnap.url) || "?");
+        throw new Error(`GST Portal ka login page nahi khula (username field nahi mila). Aakhri page: ${where}. ${cls.hint} [init-login_stuck dekhein]`);
+      }
+      const userSel = loginInfo.userSel;
+      const passSel = loginInfo.passSel || LOGIN_PASS_SELECTORS[0];
+      await page.click(userSel).catch(() => {});
+      await page.locator(userSel).pressSequentially(String(req.body?.username || "gstuser"), { delay: 60 });
+      await page.click(passSel).catch(() => {});
       await page.waitForTimeout(800);
 
       const captchaSelector = "#imgCaptcha, img[src*='captcha' i], img[id*='captcha' i]";
@@ -426,7 +1123,13 @@ function startServer() {
       if (!captchaEl) throw new Error("GST Portal CAPTCHA image load nahi ho payi.");
       const captchaBuffer = await captchaEl.screenshot({ type: "png" });
       const sessionId = crypto.randomUUID();
-      sessions.set(sessionId, { browser, context, page, loggedIn: false, busy: false, lastActive: Date.now() });
+      const loginSelectors = {
+        user: userSel,
+        pass: passSel,
+        captcha: await firstVisibleSelector(page, LOGIN_CAPTCHA_SELECTORS),
+        submit: await firstVisibleSelector(page, LOGIN_SUBMIT_SELECTORS)
+      };
+      sessions.set(sessionId, { browser, context, page, loggedIn: false, busy: false, lastActive: Date.now(), loginSelectors });
       res.json({ ok: true, sessionId, captchaBase64: "data:image/png;base64," + captchaBuffer.toString("base64") });
     } catch (err) {
       try { if (context) await context.close(); } catch (_) {}
@@ -444,11 +1147,22 @@ function startServer() {
     s.busy = true;
     const { page } = s;
     try {
-      await page.fill("#username", String(username || "").trim());
-      await page.fill("#user_pass", String(password || ""));
-      await page.fill("#captcha", String(captcha || "").trim());
+      // Field ids badal jayein to bhi kaam chale (init-login me jo selector mile the wahi pehle)
+      const stored = s.loginSelectors || {};
+      const userSel = (stored.user && (await firstVisibleSelector(page, [stored.user]))) || await firstVisibleSelector(page, LOGIN_USER_SELECTORS);
+      const passSel = (stored.pass && (await firstVisibleSelector(page, [stored.pass]))) || await firstVisibleSelector(page, LOGIN_PASS_SELECTORS);
+      const capSel = stored.captcha || await firstVisibleSelector(page, LOGIN_CAPTCHA_SELECTORS);
+      const submitSel = stored.submit || await firstVisibleSelector(page, LOGIN_SUBMIT_SELECTORS);
+      if (!userSel || !passSel) {
+        const snap2 = await pageSnapshotBrief(page);
+        const cls2 = classifyLoginPage(snap2);
+        throw new Error(`Login form ke fields nahi mile (page badal gaya). Aakhri page: ${snap2.url || "?"}. ${cls2.hint}`);
+      }
+      await page.fill(userSel, String(username || "").trim());
+      await page.fill(passSel, String(password || ""));
+      if (capSel) await page.fill(capSel, String(captcha || "").trim());
       await Promise.all([
-        page.click("button[type='submit'], button:has-text('LOGIN')"),
+        page.click(submitSel || LOGIN_SUBMIT_SELECTORS[0]),
         page.waitForTimeout(5000)
       ]);
 
@@ -480,6 +1194,8 @@ function startServer() {
     const { sessionId, otp } = req.body || {};
     const s = getSession(sessionId);
     if (!s) return res.status(404).json({ ok: false, error: "Session expired." });
+    if (s.busy) return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
+    s.busy = true;
     const { page } = s;
     try {
       const otpInput = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]");
@@ -495,34 +1211,10 @@ function startServer() {
       return res.status(400).json({ ok: false, error: "OTP invalid ya verify nahi ho paya." });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
+    } finally {
+      s.busy = false;
     }
   });
-
-  async function dismissModals(page) {
-    for (const sel of ["button:has-text('Remind me later')", "button:has-text('CLOSE')", "button:has-text('OK')", ".modal .close"]) {
-      const btn = page.locator(sel).first();
-      if (await btn.isVisible().catch(() => false)) {
-        await btn.click().catch(() => {});
-        await page.waitForTimeout(400);
-      }
-    }
-  }
-
-  async function selectDropdownByText(page, targetText) {
-    return await page.evaluate((txt) => {
-      const lower = txt.toLowerCase();
-      const selects = Array.from(document.querySelectorAll("select"));
-      for (const sel of selects) {
-        const opt = Array.from(sel.options).find(o => (o.text || "").toLowerCase().includes(lower));
-        if (opt) {
-          sel.value = opt.value;
-          sel.dispatchEvent(new Event("change", { bubbles: true }));
-          return { matched: true, name: sel.name || sel.id || "", option: opt.text.trim() };
-        }
-      }
-      return { matched: false };
-    }, targetText);
-  }
 
   // Page ki visible tables + visible text (plain data) — parsing Node me hoti hai
   async function snapshotPage(page) {
@@ -584,61 +1276,22 @@ function startServer() {
   }
   const shortErr = e => String((e && e.message) || e).split("\n")[0].slice(0, 200);
 
-  async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
-    await dismissModals(page);
-    if (!page.url().includes("/returns/auth/dashboard")) {
-      const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
-      if (await retBtn.isVisible().catch(() => false)) {
-        await retBtn.click({ force: true });
-        await page.waitForTimeout(4500);
-      } else {
-        await page.evaluate(() => {
-          const links = Array.from(document.querySelectorAll("a"));
-          const retLink = links.find(a => /returns dashboard/i.test(a.textContent || "") || (a.getAttribute("href") || "").includes("/returns/auth/dashboard"));
-          if (retLink) retLink.click();
-        });
-        await page.waitForTimeout(4500);
-        if (!page.url().includes("/returns/auth/dashboard")) {
-          await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => {});
-          await page.waitForTimeout(3500);
-        }
-      }
-    }
-    await dismissModals(page);
-    if (dbg) dbg.steps[(tag || "ret") + "_urlBeforeSelect"] = page.url();
-    await page.waitForSelector("select", { timeout: 25000 });
-
-    const fyRes = await selectDropdownByText(page, fy);
-    await page.waitForTimeout(1000);
-    const qRes = await selectDropdownByText(page, getQuarterForMonth(monthNum));
-    await page.waitForTimeout(1000);
-    const mRes = await selectDropdownByText(page, getMonthName(monthNum));
-    await page.waitForTimeout(800);
-
-    // Agar FY / Quarter / Month me se koi dropdown match nahi hua to galat period ka data na uthe
-    if (!fyRes.matched || !qRes.matched || !mRes.matched) {
-      throw new Error(`Portal par period select nahi ho paya (FY:${fyRes.matched}, Quarter:${qRes.matched}, Month:${mRes.matched}).`);
-    }
-    const searchBtn = page.locator("button:has-text('SEARCH'), button[type='submit']").first();
-    if (await searchBtn.count()) {
-      await searchBtn.click({ force: true });
-      await page.waitForTimeout(4000);
-    }
-    if (dbg) dbg.steps[(tag || "ret") + "_dashboard"] = { url: page.url(), fyRes, qRes, mRes };
-  }
-
   app.post("/api/gst/fetch-all", async (req, res) => {
     const { sessionId, fy, month, autoClose, options } = req.body || {};
     const opts = { gstr2b: options?.gstr2b !== false, tcs: options?.tcs !== false, notices: !!options?.notices };
+    // Galat FY/month par portal se kuch bhi fetch na ho (chupchaap October ka data na aa jaye)
+    const per = normalizePeriod(fy, month);
+    if (!per.ok) return res.status(400).json({ ok: false, error: per.error });
     const s = getSession(sessionId);
     if (!s || !s.loggedIn) return res.status(401).json({ ok: false, error: "Portal se connected nahi hai. Pehle login karein." });
     if (s.busy) return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
 
     s.busy = true;
-    const { page } = s;
-    const dbg = { timestamp: new Date().toISOString(), version: VERSION, fy: fy || "2026-27", month: String(month || "10").padStart(2, "0"), steps: {} };
+    setProgress(s, "start", "Returns Dashboard khol rahe hain…");
+    let page = s.page; // popup tab adopt ho sakta hai -> naya page wapas milta hai
+    const dbg = { timestamp: new Date().toISOString(), version: VERSION, fy: per.fy, month: per.month, steps: {} };
     const result = {
-      ok: true, fy: dbg.fy, month: dbg.month, period: periodFor(dbg.fy, dbg.month),
+      ok: true, fy: dbg.fy, month: dbg.month, period: per.period,
       notices: [], gstr2b: { summary: null, jsonBase64: null, fileName: null },
       ecommerceTcs: { rows: [], totalGrossTaxable: 0, totalReturned: 0, totalNetValue: 0, totalTcs: 0, mode: "none" },
       // har section ka sach: ok | empty | uncertain | failed  (screen is par chalti hai)
@@ -649,6 +1302,17 @@ function startServer() {
       },
       warnings: []
     };
+    const setGstr2bNotGenerated = (rawText) => {
+      result.status.gstr2b = {
+        state: "failed",
+        code: "gstr2b_not_generated",
+        message: "GSTR-2B portal ne generate hi nahi ki (system ne generate nahi ki — koi record nahi / pichhli 3B pending / QRMP quarter month)."
+      };
+      result.warnings.push("[gstr2b] not generated");
+      result.notGenerated2b = true;
+      dbg.steps.gstr2bNotGenerated = true;
+      dbg.steps.gstr2bNotGeneratedText = String(rawText || "").replace(/\s+/g, " ").slice(0, 400);
+    };
     const setStatus = (key, state, message) => {
       result.status[key] = { state, message: message || "" };
       if (state === "failed" || state === "uncertain") result.warnings.push(`[${key}] ${message}`);
@@ -658,14 +1322,29 @@ function startServer() {
     try {
       // --- STEP 1: GSTR-2B ---
       if (!opts.gstr2b) { result.status.gstr2b = { state: "skipped", message: "Option off tha." }; } else try {
-        await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "gstr2b");
+        page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "gstr2b");
+        s.page = page;
+        {
+          const earlyText = await page.locator("body").innerText().catch(() => "");
+          if (isGstr2bNotGenerated(earlyText)) {
+            setGstr2bNotGenerated(earlyText);
+            throw Object.assign(new Error("__gstr2b_not_generated__"), { gstr2bNotGenerated: true });
+          }
+        }
+        setProgress(s, "gstr2b_card", "GSTR-2B ka DOWNLOAD button dhundh rahe hain…");
         const gstr2bCard = page.locator("div").filter({ hasText: /GSTR-?2B/i }).filter({ has: page.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')") }).last();
         const downloadBtn = gstr2bCard.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')").first();
         dbg.steps.gstr2bCardFound = await downloadBtn.count();
 
         if (!(await downloadBtn.count())) {
-          setStatus("gstr2b", "failed", "GSTR-2B card ya Download button nahi mila (2B abhi generate na hui ho to bhi aisa hota hai).");
+          const noCardText = await page.locator("body").innerText().catch(() => "");
+          if (isGstr2bNotGenerated(noCardText)) {
+            setGstr2bNotGenerated(noCardText);
+          } else {
+            setStatus("gstr2b", "failed", "GSTR-2B card ya Download button nahi mila (2B abhi generate na hui ho to bhi aisa hota hai).");
+          }
         } else {
+          setProgress(s, "gstr2b_click", "GSTR-2B DOWNLOAD dabaya ja raha hai…");
           await downloadBtn.click({ force: true });
           await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
           await page.waitForTimeout(4500);
@@ -684,11 +1363,13 @@ function startServer() {
             page.on("download", onDl);
             let download = null, polls = 0, linkClicked = 0;
             try {
+              setProgress(s, "gstr2b_generate", "2B JSON generate ho rahi hai (portal ko 30-90s lagte hain)…");
               await genJsonBtn.click({ force: true });
               const started = Date.now();
               while (Date.now() - started < 90000) {
                 await page.waitForTimeout(3000);
                 polls++;
+                if (polls % 4 === 0) setProgress(s, "gstr2b_generate", `2B JSON generate ho rahi hai… ${Math.round((Date.now() - started) / 1000)}s`);
                 if (downloads.length) { download = downloads[0]; break; }
                 await dismissModals(page);
                 if (!linkClicked) {
@@ -705,7 +1386,9 @@ function startServer() {
             const portalMsg = after.bodyText.split("\n").map(x => x.trim())
               .filter(x => x.length > 8 && x.length < 260 && /generat|process|wait|not\s+(available|generated)|no\s+(data|record)|try again|download/i.test(x) && !/^GENERATE (JSON|EXCEL)/i.test(x))
               .slice(0, 3).join(" | ");
-            if (!download) {
+            if (!download && isGstr2bNotGenerated(after.bodyText)) {
+              setGstr2bNotGenerated(after.bodyText);
+            } else if (!download) {
               setStatus("gstr2b", "failed", "GSTR-2B JSON 90 second me download nahi hui." + (portalMsg ? " Portal ka message: " + portalMsg : "") + " Portal par check karein ki is client ki 2B is month ke liye generate hui hai ya nahi.");
             } else {
               const rawBuf = fs.readFileSync(await download.path());
@@ -738,15 +1421,25 @@ function startServer() {
           }
         }
       } catch (err) {
-        setStatus("gstr2b", "failed", "GSTR-2B fetch issue: " + shortErr(err));
-        dbg.steps.gstr2bError = err.message;
+        if (err && err.gstr2bNotGenerated) {
+          // setGstr2bNotGenerated() pehle hi ho chuka hai
+        } else if (isGstr2bNotGenerated(err && err.message)) {
+          setGstr2bNotGenerated(err.message);
+        } else {
+          setStatus("gstr2b", "failed", "GSTR-2B fetch issue: " + shortErr(err));
+          dbg.steps.gstr2bError = err.message;
+        }
       }
 
+      setProgress(s, "tcs_open", "E-Com / TCS section khol rahe hain…");
       // --- STEP 2: E-COMMERCE TCS  (Services > Returns > TDS and TCS credit received > PREPARE ONLINE > TCS Credit received) ---
       // Sirf padhta hai — portal par ACCEPT / REJECT kabhi nahi dabata.
       // Agar 2B band hai to bhi E-Com se pehle Returns Dashboard kholna padta hai
       if (!opts.gstr2b && opts.tcs) {
-        try { await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "tcs"); } catch (e) { dbg.steps.tcsDashboardError = e.message; }
+        try {
+          page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "tcs");
+          s.page = page;
+        } catch (e) { dbg.steps.tcsDashboardError = e.message; }
       }
       if (!opts.tcs) { result.status.tcs = { state: "skipped", message: "Option off tha." }; } else try {
         const flow = dbg.steps.tcsFlow = [];
@@ -761,21 +1454,33 @@ function startServer() {
         await dismissModals(page);
         let menu = await clickTcsMenu();
         if (!menu) {
-          await page.goto("https://return.gst.gov.in/returns/auth/dashboard", { waitUntil: "domcontentloaded" }).catch(() => {});
+          await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
           await page.waitForTimeout(3500);
           await dismissModals(page);
           menu = await clickTcsMenu();
         }
         mark("menuClick", { menu });
-        if (!menu) throw new Error("Menu me 'TDS and TCS credit received' link nahi mila.");
+        if (!menu) {
+          // Debug: page par TDS/TCS/returns se juda kya link hai (agle fix ke liye zaroori)
+          dbg.steps.tcsLinks = await page.evaluate(() => Array.from(document.querySelectorAll("a"))
+            .filter(a => a.offsetParent !== null)
+            .map(a => ({ t: (a.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60), h: (a.getAttribute("href") || "").slice(0, 90) }))
+            .filter(x => x.t && /tds|tcs|return|dashboard/i.test(x.t + " " + x.h)).slice(0, 25)).catch(() => []);
+          const hint = (dbg.steps.tcsLinks || []).map(x => x.t).slice(0, 4).join(" / ");
+          throw new Error("Menu me 'TDS and TCS credit received' link nahi mila." + (hint ? " (Page par ye links mile: " + hint + ")" : "") + " Debug me tcsLinks dekhein.");
+        }
         await page.waitForLoadState("domcontentloaded").catch(() => {});
         await page.waitForSelector("select", { timeout: 20000 });
         await page.waitForTimeout(1500);
 
-        const fyRes = await selectDropdownByText(page, result.fy);
+        const dumpTcs = await readSelectOptions(page);
+        const fyRes = await selectDropdownByText(page, result.fy, { selectIndex: guessSelectIndex(dumpTcs, "fy"), timeoutMs: 9000 });
         await page.waitForTimeout(800);
-        const mRes = await selectDropdownByText(page, getMonthName(result.month));
-        mark("period", { fyRes, mRes });
+        const dumpTcs2 = await readSelectOptions(page);
+        const mRes = await selectDropdownByText(page, getMonthName(result.month), {
+          also: monthAliases(result.month, result.fy), selectIndex: guessSelectIndex(dumpTcs2, "month"), timeoutMs: 9000
+        });
+        mark("period", { fyRes, mRes, selects: dumpTcs2 });
         if (!fyRes.matched || !mRes.matched) throw new Error(`TCS page par FY/Month select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}).`);
         await page.locator("button:has-text('SEARCH'):visible").first().click({ timeout: 10000 });
         await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
@@ -901,14 +1606,23 @@ function startServer() {
         dbg.steps.noticesError = err.message;
       }
 
+      // Maanga gaya har section fail -> ok:false (sheet me kuch save na ho).
+      // Kuch section ok, kuch fail -> ok:true + partial (app fail section ka purana data rakhta hai,
+      // aur jo mila use save kar deta hai — pehle yahan sab kuch chhoot jata tha).
+      const outcome = partialOutcome(result.status, opts);
+      setProgress(s, "done", outcome.allFailed ? "Fetch fail hua." : "Ho gaya.");
+      if (outcome.allFailed) {
+        dbg.status = result.status; dbg.warnings = result.warnings; lastDebug = dbg;
+        return res.json(Object.assign({}, result, { ok: false, error: "Data fetch nahi hua (Sheet me save nahi kiya) -> " + outcome.failed.join(" | ") }));
+      }
+      if (outcome.partial) {
+        result.partial = outcome.partial;
+        result.warnings.push("[partial] " + outcome.partial.text);
+      }
       dbg.status = result.status;
       dbg.warnings = result.warnings;
+      if (result.partial) dbg.partial = result.partial;
       lastDebug = dbg;
-      // GSTR-2B / E-Com maanga gaya tha par fail hua -> app ko error do (0 save na ho)
-      const failed = [];
-      if (opts.gstr2b && result.status.gstr2b?.state === "failed") failed.push("GSTR-2B: " + result.status.gstr2b.message);
-      if (opts.tcs && result.status.tcs?.state === "failed") failed.push("E-Com TCS: " + result.status.tcs.message);
-      if (failed.length) return res.json(Object.assign({}, result, { ok: false, error: "Data fetch nahi hua (Sheet me save nahi kiya) -> " + failed.join(" | ") }));
       res.json(result);
     } finally {
       s.busy = false;
@@ -919,6 +1633,8 @@ function startServer() {
 
   app.post("/api/gst/upload-gstr1", async (req, res) => {
     const { sessionId, fy, month, jsonContent, fileName } = req.body || {};
+    const per = normalizePeriod(fy, month);
+    if (!per.ok) return res.status(400).json({ ok: false, error: per.error });
     const s = getSession(sessionId);
     if (!s || !s.loggedIn) return res.status(401).json({ ok: false, error: "Portal se connected nahi hai. Pehle login karein." });
     if (!jsonContent) return res.status(400).json({ ok: false, error: "GSTR-1 JSON content missing hai." });
@@ -929,17 +1645,18 @@ function startServer() {
     try { obj = typeof jsonContent === "string" ? JSON.parse(jsonContent) : jsonContent; } catch (_) {
       return res.status(400).json({ ok: false, error: "GSTR-1 JSON valid nahi hai (parse nahi hui)." });
     }
-    const wantFp = periodFor(fy || "2026-27", String(month || "10").padStart(2, "0"));
+    const wantFp = per.period;
     if (obj && obj.fp && String(obj.fp) !== wantFp) {
       return res.status(400).json({ ok: false, error: `JSON ka period (fp) ${obj.fp} hai, par aapne ${wantFp} select kiya hai. Upload roka gaya.` });
     }
 
     s.busy = true;
-    const { page } = s;
+    let page = s.page;
     const tmpFile = path.join(os.tmpdir(), `${crypto.randomUUID()}_${safeFileName(fileName, "GSTR1.json")}`);
     try {
       fs.writeFileSync(tmpFile, JSON.stringify(obj, null, 2), "utf8");
-      await openReturnsDashboardAndSearch(page, fy || "2026-27", String(month || "10").padStart(2, "0"), null, "gstr1");
+      page = await openReturnsDashboardAndSearch(page, per.fy, per.month, null, "gstr1");
+      s.page = page;
       const gstr1Card = page.locator("div").filter({ hasText: /GSTR-?1/i }).filter({ has: page.locator("button:has-text('PREPARE OFFLINE'), a:has-text('PREPARE OFFLINE')") }).last();
       const offlineBtn = gstr1Card.locator("button:has-text('PREPARE OFFLINE'), a:has-text('PREPARE OFFLINE')").first();
       if (!(await offlineBtn.count())) throw new Error("GSTR-1 PREPARE OFFLINE button nahi mila.");
@@ -979,9 +1696,34 @@ function startServer() {
     res.json({ ok: true });
   });
 
+  // Client har response JSON expect karta hai — Express ka default HTML error na jaye
+  app.use((req, res) => {
+    res.status(404).json({ ok: false, error: `Endpoint nahi mila: ${req.method} ${req.path}` });
+  });
+  app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    const status = err && err.status >= 400 && err.status < 500 ? err.status : 500;
+    const msg = err && err.type === "entity.too.large"
+      ? "Request body 25MB limit se bada hai."
+      : (err && err.type === "entity.parse.failed" ? "Request body valid JSON nahi hai." : (err && err.message) || "Server error");
+    res.status(status).json({ ok: false, error: msg });
+  });
+
   app.listen(PORT, () => console.log(`GST Cloud Bridge v${VERSION} running on port ${PORT}`));
 }
 
-module.exports = { parseTcsRecordCount, parseAmt, buildColumnLabels, mapTcsColumns, parseTcsTables, parseNoticeTables, summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE };
+module.exports = {
+  parseTcsRecordCount, parseAmt, buildColumnLabels, mapTcsColumns, parseTcsTables, parseNoticeTables,
+  summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE,
+  // naye helpers bhi test ke liye bahar (browser ke bina testable)
+  readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod,
+  isGstr2bNotGenerated, GSTR2B_NOT_GENERATED_RE,
+  openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
+  classifyStuckPage, readSelectOptions, guessSelectIndex, quarterAliases, monthAliases,
+  isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
+  firstVisibleSelector, waitForLoginForm, classifyLoginPage, LOGIN_USER_SELECTORS, LOGIN_PASS_SELECTORS,
+  LOGIN_RETRY_KINDS,
+  RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL, startServer
+};
 
 if (require.main === module) startServer();

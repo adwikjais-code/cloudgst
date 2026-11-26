@@ -1,0 +1,104 @@
+name: Android APK
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.7"
+
+      - name: Build debug APK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          gradle -p android assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload build log on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tail -c 55000 build.log > tail.log || true
+          gh issue create \
+            --title "Android build log (auto) $(date -u +%Y-%m-%dT%H:%MZ)" \
+            --body-file tail.log || true
+
+      - name: Upload APK artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudgst-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish APK to Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          cp android/app/build/outputs/apk/release/app-release.apk "CloudGST.apk"
+          ls -l "CloudGST.apk"
+          {
+            echo "### APK verify"
+            echo '```'
+            sha256sum "CloudGST.apk"
+            unzip -l "CloudGST.apk" | tail -25
+            echo "manifest ok: $(unzip -p "CloudGST.apk" AndroidManifest.xml > /dev/null && echo yes)"
+            echo "minSdk: $(unzip -p "CloudGST.apk" AndroidManifest.xml | strings | grep -m1 -E '^2[4-9]$' || echo '?')"
+            echo "signature files: $(unzip -Z1 "CloudGST.apk" | grep -cE '^META-INF/.*(RSA|SF|MF)$' || true)"
+            echo "index.html bytes: $(unzip -p "CloudGST.apk" assets/app/index.html | wc -c)"
+            echo "native portal hook count: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativePortalBtn || true)"
+            echo "json save/select count: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpSavedJsonSel || true)"
+            echo "download button (0 = v5_8 jaisa): $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c downloadGstPortalJsonBtn || true)"
+            echo "file picker (0 = v5_8 jaisa): $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpGstr1FilesInp || true)"
+            echo "dex files: $(unzip -Z1 "CloudGST.apk" | grep -c '^classes.*[.]dex$' || true)"
+            echo "dex openPortal: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac openPortal || true)"
+            echo "dex CloudGSTNative: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac CloudGSTNative || true)"
+            echo "dex appassets: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac appassets || true)"
+            echo "dex user_pass: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac user_pass || true)"
+            echo "dex BiometricPrompt: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac BiometricPrompt || true)"
+            echo "dex setBioLock: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac setBioLock || true)"
+            echo "js back handler: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c cloudGstHandleBack || true)"
+            echo "js bio toggle: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpBioLockBtn || true)"
+            echo '```'
+          } > verify.md
+          cat verify.md
+          cat > notes.md <<'EOF'
+          ## CloudGST Android APK (v5.8.3 — Android 7+ support)
+
+          Install kaise karein:
+          1. Neeche **CloudGST.apk** download karein.
+          2. Phone me kholein — "Unknown sources / Install anyway" allow karein.
+          3. Icon **CloudGST** kholein; Settings me Apps Script URL ek baar daalein (baaki sab pehle jaisa).
+
+          UI **v5_8 jaisa hi** hai (JSON: Drive me Save, portal: json folder dropdown).
+          Mobile extras: **🌐 Portal Login** (ID/password prefilled, sirf captcha), **swipe-back gesture**
+          (pehle modal band, phir pichhla tab, phir app) aur **fingerprint lock**
+          (Settings → 🔒 App lock ON/OFF; device PIN bhi chalta hai).
+          EOF
+          cat verify.md >> notes.md
+          gh release delete android-v5.8.3 --yes 2>/dev/null || true
+          git push origin :refs/tags/android-v5.8.3 2>/dev/null || true
+          gh release create android-v5.8.3 "CloudGST.apk" \
+            --title "CloudGST Android v5.8 (APK)" \
+            --notes-file notes.md
