@@ -140,7 +140,17 @@
           <select id="brGender"><option value="m">पुरुष (करता हूँ)</option><option value="f">स्त्री (करती हूँ)</option></select>
         </div>
       </div>
-      <div class="row"><label><input type="checkbox" id="brDev" checked style="width:auto;margin-right:6px"/>पिन कोड/दिनांक देवनागरी अंकों में (२२१३०१)</label></div>
+      <div class="row two">
+        <div><label>दिनांक / शपथकर्ता की जगह</label>
+          <select id="brGap">
+            <option value="0">0 — एकदम ऊपर</option>
+            <option value="1" selected>1 — कम जगह (ठीक)</option>
+            <option value="2">2 — सामान्य</option>
+            <option value="4">4 — ज़्यादा नीचे (पुराना)</option>
+          </select>
+        </div>
+        <div><label><input type="checkbox" id="brDev" checked style="width:auto;margin-right:6px"/>देवनागरी अंक (२२१३०१)</label></div>
+      </div>
       <div class="btns">
         <button class="btn p" id="brSample" type="button">नमूना भरें</button>
         <button class="btn s" id="brClear" type="button">खाली करें</button>
@@ -182,7 +192,17 @@
         <div><label>उसके पिता/पति का नाम</label><input id="nbPersonFather" placeholder="मोहम्मद क़ासिम" /></div>
         <div><label>दिनांक</label><input id="nbDate" type="date" /></div>
       </div>
-      <div class="row"><label><input type="checkbox" id="nbDev" checked style="width:auto;margin-right:6px"/>पिन कोड/दिनांक देवनागरी अंकों में (२३१००१)</label></div>
+      <div class="row two">
+        <div><label>दिनांक / हस्ताक्षर की जगह</label>
+          <select id="nbGap">
+            <option value="0">0 — एकदम ऊपर</option>
+            <option value="1" selected>1 — कम जगह (ठीक)</option>
+            <option value="2">2 — सामान्य</option>
+            <option value="3">3 — ज़्यादा नीचे (पुराना)</option>
+          </select>
+        </div>
+        <div><label><input type="checkbox" id="nbDev" checked style="width:auto;margin-right:6px"/>देवनागरी अंक (२३१००१)</label></div>
+      </div>
       <div class="btns">
         <button class="btn p" id="nbSample" type="button">नमूना भरें</button>
         <button class="btn s" id="nbClear" type="button">खाली करें</button>
@@ -224,6 +244,7 @@
   function brText(v){
     const g = v.gender === "f";
     // संबंध ke hisaab se grammar: पुत्र -> के/मेरे/करेंगें, पुत्री -> की/मेरी/करेंगी
+    const gap = (function(n){ n = parseInt(n, 10); if (isNaN(n) || n < 0) n = 1; return Math.min(n, 6); })(v.gap);
     const relObj = (v.rel && typeof v.rel === "object") ? v.rel : { word: String(v.rel || "पुत्र"), g: "m" };
     const R = { word: String(relObj.word || "").trim() || "पुत्र",
       poss: relObj.g === "f" ? "की" : "के",
@@ -252,15 +273,13 @@
 '',
 'मै शपथकर्ता ' + v.deponent + ' सत्यापित ' + (g ? 'करती' : 'करता') + ' हूं कि पैरा 1 लगायत पैरा 4 तक मेरी जानकारी में ',
 'सत्य और सही हैं। इसमें कोई बात झूठी नहीं हैं और ना ही छीपाई गई हैं। ईश्वर मेरी मदद करें।',
-'',
-'',
-'',
-'',
+...Array(gap).fill(''),
 'दिनांक ' + date + '                                                            शपथकर्ता'
     ].join("\n");
   }
   function nbrText(v){
     const f = v.gender !== "m";
+    const gap = (function(n){ n = parseInt(n, 10); if (isNaN(n) || n < 0) n = 1; return Math.min(n, 6); })(v.gap);
     const date = v.date ? dnum(fmtDate(v.date), v.dev) : "";
     const prop = String(v.property||"").replace(/\s*।\s*$/,"");
     return [
@@ -286,8 +305,7 @@
 '',
 '',
 'यह अनापत्ति प्रमाण पत्र मैंने अपनी स्वेच्छा से GST पंजीकरण के उद्देश्य से प्रदान किया है।',
-'',
-'',
+...Array(gap).fill(''),
 'दिनांक: ' + date + '                                                              हस्ताक्षर:'
     ].join("\n");
   }
@@ -351,12 +369,14 @@
       state:$("brState").value, pincode:dnum($("brPincode").value.trim(), $("brDev").checked),
       property:$("brProperty").value, son:$("brSon").value, firm:$("brFirm").value,
       business:$("brBusiness").value, date:$("brDate").value, gender:$("brGender").value, dev:$("brDev").checked,
+      gap: parseInt($("brGap").value, 10),
       depRel: (function(){ const r = relPick("brDepRel","brDepRelCustom",null); return r.word || "पुत्र"; })(),
       rel: relPick("brRel","brRelCustom","brRelGender") };
   }
   function nbVals(){
     return { owner:$("nbOwner").value, ownerRel:$("nbOwnerRel").value, ownerFather:$("nbOwnerFather").value,
       residence:$("nbResidence").value, district:$("nbDistrict").value, state:$("nbState").value, pincode:dnum($("nbPincode").value.trim(), $("nbDev").checked),
+      gap: parseInt($("nbGap").value, 10),
       property:$("nbProperty").value, person:$("nbPerson").value, personRel:$("nbPersonRel").value,
       personFather:$("nbPersonFather").value, date:$("nbDate").value, gender:$("nbGender").value, dev:$("nbDev").checked };
   }
@@ -382,10 +402,10 @@
   function brValsRaw(){ return { deponent:$("brDeponent").value, father:$("brFather").value, residence:$("brResidence").value,
       state:$("brState").value, pincode:$("brPincode").value, property:$("brProperty").value, son:$("brSon").value,
       firm:$("brFirm").value, business:$("brBusiness").value, date:$("brDate").value, gender:$("brGender").value, dev:$("brDev").checked,
-      depRelSel:$("brDepRel").value, depRelCustom:$("brDepRelCustom").value,
+      gap:$("brGap").value, depRelSel:$("brDepRel").value, depRelCustom:$("brDepRelCustom").value,
       relSel:$("brRel").value, relCustom:$("brRelCustom").value, relGender:$("brRelGender").value }; }
   function nbValsRaw(){ return { owner:$("nbOwner").value, ownerRel:$("nbOwnerRel").value, ownerFather:$("nbOwnerFather").value,
-      residence:$("nbResidence").value, district:$("nbDistrict").value, state:$("nbState").value, pincode:$("nbPincode").value, property:$("nbProperty").value,
+      residence:$("nbResidence").value, district:$("nbDistrict").value, state:$("nbState").value, pincode:$("nbPincode").value, gap:$("nbGap").value, property:$("nbProperty").value,
       person:$("nbPerson").value, personRel:$("nbPersonRel").value, personFather:$("nbPersonFather").value, date:$("nbDate").value,
       gender:$("nbGender").value, dev:$("nbDev").checked }; }
   function load(){
@@ -395,6 +415,7 @@
         $("brState").value=b.state||""; $("brPincode").value=b.pincode||""; $("brProperty").value=b.property||""; $("brSon").value=b.son||"";
         $("brFirm").value=b.firm||""; $("brBusiness").value=b.business||""; $("brDate").value=b.date||""; $("brGender").value=b.gender||"m";
         $("brDev").checked = b.dev !== false;
+        if(b.gap !== undefined && b.gap !== ""){ $("brGap").value=String(b.gap); }
         if(b.depRelSel){ $("brDepRel").value=b.depRelSel; } if(b.depRelCustom){ $("brDepRelCustom").value=b.depRelCustom; }
         if(b.relSel){ $("brRel").value=b.relSel; } if(b.relCustom){ $("brRelCustom").value=b.relCustom; }
         if(b.relGender){ $("brRelGender").value=b.relGender; }
@@ -404,6 +425,7 @@
         $("nbResidence").value=n.residence||""; $("nbDistrict").value=n.district||""; $("nbState").value=n.state||""; $("nbPincode").value=n.pincode||"";
         $("nbProperty").value=n.property||""; $("nbPerson").value=n.person||""; $("nbPersonRel").value=n.personRel||"पुत्री";
         $("nbPersonFather").value=n.personFather||""; $("nbDate").value=n.date||""; $("nbGender").value=n.gender||"f";
+        if(n.gap !== undefined && n.gap !== ""){ $("nbGap").value=String(n.gap); }
         $("nbDev").checked = n.dev !== false; }
       const tab = localStorage.getItem("noc_tab_v1"); if(tab === "NBR") switchTab("NBR", true);
     }catch(_){}
@@ -422,14 +444,15 @@
   // ---------- samples (aapke docs se) ----------
   const BR_SAMPLE = { deponent:"अब्बास अली", father:"जब्बार", residence:"गरौली औराई, संत रविदास नगर (भदोही)", state:"उत्तर प्रदेश",
     pincode:"221301", property:"गरौली औराई, संत रविदास नगर (भदोही), उत्तर प्रदेश-२२१३०१", son:"आशिक़ अली",
-    firm:"AA CARPETS & RUGS", business:"कारपेट सम्बंधित व्यवसाय", gender:"m", dev:true, depRel:"पुत्र", rel:"पुत्र" };
+    firm:"AA CARPETS & RUGS", business:"कारपेट सम्बंधित व्यवसाय", gender:"m", dev:true, depRel:"पुत्र", rel:"पुत्र", gap:1 };
   const NB_SAMPLE = { owner:"समीर अंसारी", ownerRel:"पुत्र", ownerFather:"मोहम्मद कासिम अंसारी", residence:"कांतित बौलिया",
     district:"मिर्जापुर", state:"उत्तर प्रदेश", pincode:"231001", property:"कांतित बौलिया, मिर्जापुर २३१००१, उत्तर प्रदेश, भारत",
-    person:"रूबी", personRel:"पुत्री", personFather:"मोहम्मद क़ासिम", gender:"f", dev:true };
+    person:"रूबी", personRel:"पुत्री", personFather:"मोहम्मद क़ासिम", gender:"f", dev:true, gap:1 };
   function applyBR(v){
     $("brDeponent").value=v.deponent; $("brFather").value=v.father; $("brResidence").value=v.residence; $("brState").value=v.state;
     $("brPincode").value=v.pincode; $("brProperty").value=v.property; $("brSon").value=v.son; $("brFirm").value=v.firm;
     $("brBusiness").value=v.business; $("brGender").value=v.gender; $("brDev").checked=!!v.dev;
+    $("brGap").value = String(v.gap === undefined ? 1 : v.gap);
     $("brDepRel").value = v.depRel || "पुत्र"; $("brDepRelCustom").value = "";
     $("brRel").value = v.rel || "पुत्र"; $("brRelCustom").value = ""; $("brRelGender").value = v.relGender || "m";
     relRefresh();
@@ -439,7 +462,7 @@
   function applyNB(v){
     $("nbOwner").value=v.owner; $("nbOwnerRel").value=v.ownerRel||"पुत्र"; $("nbOwnerFather").value=v.ownerFather; $("nbResidence").value=v.residence;
     $("nbDistrict").value=v.district; $("nbState").value=v.state||"उत्तर प्रदेश"; $("nbPincode").value=v.pincode; $("nbProperty").value=v.property; $("nbPerson").value=v.person;
-    $("nbPersonRel").value=v.personRel||"पुत्री"; $("nbPersonFather").value=v.personFather; $("nbGender").value=v.gender; $("nbDev").checked=!!v.dev;
+    $("nbGap").value = String(v.gap === undefined ? 1 : v.gap); $("nbPersonRel").value=v.personRel||"पुत्री"; $("nbPersonFather").value=v.personFather; $("nbGender").value=v.gender; $("nbDev").checked=!!v.dev;
     if(!$("nbDate").value){ const d=new Date(); $("nbDate").value=[d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-"); }
     render();
   }
