@@ -61,7 +61,7 @@ import java.util.concurrent.Executor;
 public class MainActivity extends FragmentActivity {
 
     public static final String APP_URL = "https://appassets.androidplatform.net/assets/app/index.html";
-    public static final String APP_VERSION = "android-5.9.12";
+    public static final String APP_VERSION = "android-5.9.13";
 
     private static final int REQ_FILE = 1001;
     private static final int REQ_STORAGE = 1002;

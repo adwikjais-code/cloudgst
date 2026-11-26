@@ -21248,8 +21248,10 @@ function buildEtsyPdfReport(opts) {
           st.cooldownUntil = 0;
           st.phase = "loading_cap";
           gpRenderSerialList();
+          gpPhoneDbg("login start: " + (c.clientName || "") + " (" + (c.gstin || c.portalId || "") + ")");
           try {
             const pres = await gpPhoneLoginStart(c, (pwCheck && pwCheck.pw) || "");
+            gpPhoneDbg("login reply: " + JSON.stringify(pres).slice(0, 200));
             if (pres && pres.loggedIn) {          // session pehle se zinda hai -> seedha fetch
               st.phase = "idle";
               gpRenderSerialList();
@@ -21359,6 +21361,7 @@ function buildEtsyPdfReport(opts) {
               gpToast(_needLogin
                 ? `🔐 ${c.clientName}: ${err.message}`
                 : `❌ ${c.clientName}: ${err.message} — 90s baad dobara try karein.`);
+              gpPhoneDbg("fetch error: " + (err && err.message));
               if (_needLogin) {
                 gpPhoneLoginClient("");
                 // phone mode: captcha/OTP wala card khud khul jata hai (portal screen nahi)
@@ -21889,6 +21892,17 @@ function buildEtsyPdfReport(opts) {
             : (on ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700"
                   : "bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300"));
         };
+        try {
+          if (!document.getElementById("gpPhoneDbgBtn")) {
+            const dbg = document.createElement("button");
+            dbg.id = "gpPhoneDbgBtn";
+            dbg.type = "button";
+            dbg.textContent = "📋 Phone mode debug copy";
+            dbg.className = "px-3 py-2 rounded-xl text-xs font-semibold border border-slate-300 bg-slate-100 hover:bg-slate-200 text-slate-800 transition mt-2";
+            dbg.addEventListener("click", () => gpPhoneDebugCopy());
+            btn.insertAdjacentElement("afterend", dbg);
+          }
+        } catch (_) { }
         window.__gpPaintBioLock = paint;
         paint();
         btn.addEventListener("click", () => {
@@ -21906,10 +21920,52 @@ function buildEtsyPdfReport(opts) {
       function gpPhoneAvailable() {
         try { return !!(window.CloudGSTNative && CloudGSTNative.phoneFetch2b); } catch (_) { return false; }
       }
+      // v5.9.13: ek baar sabko cloud par le aao (phone beta me atke na rahein)
+      try {
+        if (!localStorage.getItem("gst_src_reset_v13")) {
+          localStorage.setItem("gst_src_reset_v13", "1");
+          localStorage.setItem("gst_data_source_v1", "cloud");
+        }
+      } catch (_) { }
+
       function gpDataSource() {
         try { const v = localStorage.getItem(GP_SRC_KEY); if (v === "cloud" || v === "phone") return v; } catch (_) {}
-        return gpPhoneAvailable() ? "phone" : "cloud";
+        return "cloud";   // default cloud (jo pehle se chal raha hai); phone mode = beta, switch se on
       }
+      // 📱 Phone-mode debug log (ek tap me copy karke bhej sakte hain)
+      const GP_DBG_KEY = "gst_phone_debug_v1";
+      function gpPhoneDbg(msg) {
+        try {
+          const line = new Date().toLocaleTimeString("en-IN") + " • " + String(msg).slice(0, 300);
+          const arr = JSON.parse(localStorage.getItem(GP_DBG_KEY) || "[]");
+          arr.push(line);
+          while (arr.length > 60) arr.shift();
+          localStorage.setItem(GP_DBG_KEY, JSON.stringify(arr));
+        } catch (_) { }
+      }
+      function gpPhoneDebugText() {
+        let base = "";
+        try {
+          base = "app " + (window.CloudGSTNative && CloudGSTNative.appVersion ? CloudGSTNative.appVersion() : "web")
+            + " | source: " + gpDataSource()
+            + " | phone api: " + (gpPhoneAvailable() ? "yes" : "no")
+            + " | login api: " + (gpPhoneLoginAvailable() ? "yes" : "no");
+          base += "\nstage: " + String(window.CloudGSTNative.phoneStage ? window.CloudGSTNative.phoneStage() : "-");
+        } catch (_) { }
+        let lines = [];
+        try { lines = JSON.parse(localStorage.getItem(GP_DBG_KEY) || "[]"); } catch (_) { }
+        return "CloudGST phone-mode debug\n" + base + "\n---\n" + (lines.join("\n") || "(koi entry nahi)");
+      }
+      async function gpPhoneDebugCopy() {
+        const txt = gpPhoneDebugText();
+        try {
+          if (window.CloudGSTNative && CloudGSTNative.shareText) { CloudGSTNative.shareText(txt, "Phone mode debug"); return; }
+        } catch (_) { }
+        try { await navigator.clipboard.writeText(txt); gpToast("📋 Debug copy ho gaya"); }
+        catch (_) { gpToast("Debug: " + txt.slice(0, 200)); }
+      }
+      window.gpPhoneDebugCopy = gpPhoneDebugCopy;
+      window.__gpPhoneDebugText = gpPhoneDebugText;
       function gpSetDataSource(v) {
         const val = v === "cloud" ? "cloud" : "phone";
         try { localStorage.setItem(GP_SRC_KEY, val); } catch (_) {}
@@ -22013,6 +22069,7 @@ function buildEtsyPdfReport(opts) {
             if (shownOverlay) return;
             if (stage && stage.indexOf("manual-wait") >= 0) {
               shownOverlay = true;
+              gpPhoneDbg("manual-wait -> overlay");
               try { window.CloudGSTNative.phoneLoginVisible(true); } catch (_) {}
               gpToast("🔐 Login page app ke andar hi khul gaya — captcha/OTP daalein, login hote hi aage chala jayega");
             }
@@ -22031,7 +22088,8 @@ function buildEtsyPdfReport(opts) {
           if (!gpPhoneLoginId) return reject(new Error("Pehle phone login start karein."));
           try { window.CloudGSTNative.phoneLoginCaptcha(String(cap || "")); }
           catch (e) { return reject(new Error("Captcha bhej nahi paye: " + (e.message || e))); }
-          gpNativePoll(gpPhoneLoginId, "Phone login (captcha)", 160000).then(resolve, reject);
+          gpPhoneDbg("captcha submit: " + String(cap).slice(0, 12));
+          gpNativePoll(gpPhoneLoginId, "Phone login (captcha)", 320000).then(resolve, reject);
         });
       }
       function gpPhoneLoginOtp(otp) {
@@ -22039,7 +22097,8 @@ function buildEtsyPdfReport(opts) {
           if (!gpPhoneLoginId) return reject(new Error("Pehle phone login start karein."));
           try { window.CloudGSTNative.phoneLoginOtp(String(otp || "")); }
           catch (e) { return reject(new Error("OTP bhej nahi paye: " + (e.message || e))); }
-          gpNativePoll(gpPhoneLoginId, "Phone login (OTP)", 160000).then(resolve, reject);
+          gpPhoneDbg("otp submit");
+          gpNativePoll(gpPhoneLoginId, "Phone login (OTP)", 320000).then(resolve, reject);
         });
       }
 
@@ -22049,7 +22108,9 @@ function buildEtsyPdfReport(opts) {
           let id = "";
           try { id = String(window.CloudGSTNative.phoneFetch2b(String(fy || ""), String(mon || "")) || ""); } catch (e) { id = ""; }
           if (!id) return reject(new Error("Phone mode start nahi ho paya — app dobara khol kar try karein."));
-          gpNativePoll(id, "Phone mode", 200000).then(resolve, reject);
+          gpPhoneDbg("2b fetch start");
+          gpNativePoll(id, "Phone mode", 200000).then((r) => { gpPhoneDbg("2b ok"); resolve(r); },
+            (e) => { gpPhoneDbg("2b fail: " + (e && e.message)); reject(e); });
         });
       }
 
@@ -22060,7 +22121,7 @@ function buildEtsyPdfReport(opts) {
         const wrap = document.createElement("div");
         wrap.id = "gpSrcSwitch";
         wrap.className = "inline-flex items-center rounded-xl overflow-hidden border border-slate-700 bg-slate-800 text-[11px] font-bold";
-        wrap.innerHTML = '<button type="button" data-src="phone" class="px-2.5 py-2">📱 Phone</button>'
+        wrap.innerHTML = '<button type="button" data-src="phone" class="px-2.5 py-2">📱 Phone 🧪</button>'
           + '<button type="button" data-src="cloud" class="px-2.5 py-2">☁️ Cloud</button>';
         const anchorBtn = document.getElementById("gpNativeBioBtn") || lockBtn;
         anchorBtn.insertAdjacentElement("afterend", wrap);
