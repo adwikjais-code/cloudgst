@@ -20596,7 +20596,10 @@ function buildEtsyPdfReport(opts) {
           return gpToast("⚠️ Password decrypt nahi hua — ✏️ se plain password save karein.");
         }
         try {
-          window.CloudGSTNative.openPortal(String(c.portalId || "").trim(), String(pwRes.pw || "").trim(), String(c.gstin || ""));
+          // month/FY bhi bhejo -> app ke portal screen me "GSTR-1" button us month ka page kholta hai
+          const fp = (typeof gpGetSelectedFp === "function") ? gpGetSelectedFp() : "";
+          const perLabel = (typeof gpGetSelectedMonthDisplay === "function") ? gpGetSelectedMonthDisplay() : "";
+          window.CloudGSTNative.openPortal(String(c.portalId || "").trim(), String(pwRes.pw || "").trim(), String(c.gstin || ""), String(fp || ""), String(perLabel || ""));
         } catch (e) {
           gpToast("❌ App ne portal nahi khola: " + (e.message || e));
         }

@@ -39,6 +39,12 @@ public class PortalLoginActivity extends Activity {
     private int tries = 0;
     private boolean injected = false;
 
+    // GSTR-1 Prepare Online shortcut ke liye
+    private String periodFp = "";        // "102026" (MMYYYY)
+    private String periodLabel = "";     // "October (2026-27)"
+    private int prepTries = 0;
+    private boolean prepBusy = false;
+
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -48,6 +54,10 @@ public class PortalLoginActivity extends Activity {
         password = getIntent().getStringExtra("p");
         if (username == null) username = "";
         if (password == null) password = "";
+        periodFp = getIntent().getStringExtra("fp");
+        periodLabel = getIntent().getStringExtra("per");
+        if (periodFp == null) periodFp = "";
+        if (periodLabel == null) periodLabel = "";
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -67,6 +77,25 @@ public class PortalLoginActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         bar.addView(title, lp);
+
+        // ---- GSTR-1 Prepare Online shortcut (login ke baad ek click) ----
+        Button gstr1 = new Button(this);
+        gstr1.setText("📄 GSTR-1");
+        gstr1.setTextColor(Color.parseColor("#052e1b"));
+        gstr1.setTextSize(11f);
+        gstr1.setAllCaps(false);
+        gstr1.setBackgroundColor(Color.parseColor("#22c55e"));
+        gstr1.setPadding(dp(10), 0, dp(10), 0);
+        gstr1.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openGstr1Prepare();
+            }
+        });
+        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        glp.rightMargin = dp(6);
+        bar.addView(gstr1, glp);
 
         Button close = new Button(this);
         close.setText("✕");
@@ -164,6 +193,88 @@ public class PortalLoginActivity extends Activity {
         });
     }
 
+    // ================= GSTR-1 "Prepare Online" shortcut =================
+
+    /** Login ke baad: portal ke apne buttons dabakar us month ka GSTR-1 Prepare Online page kholta hai. */
+    private void openGstr1Prepare() {
+        if (web == null) return;
+        String url = web.getUrl() == null ? "" : web.getUrl();
+        if (url.contains("/login") || url.contains("services/login")) {
+            Toast.makeText(this, "Pehle captcha dalein aur Login dabayein — phir yeh button chalega",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (prepBusy) return;
+        prepBusy = true;
+        prepTries = 0;
+        Toast.makeText(this, "GSTR-1 Prepare Online khol rahe hain…", Toast.LENGTH_SHORT).show();
+        stepGstr1();
+    }
+
+    private void stepGstr1() {
+        if (web == null) { prepBusy = false; return; }
+        web.evaluateJavascript(buildGstr1Script(), value -> {
+            String v = value == null ? "" : value;
+            if (v.contains("DONE") && !v.contains("NONE")) {
+                prepBusy = false;
+                String lbl = periodLabel.isEmpty() ? "us month" : periodLabel;
+                Toast.makeText(PortalLoginActivity.this,
+                        "✅ GSTR-1 Prepare Online khul gaya — month " + lbl + " check karein",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (prepTries < 12) {
+                prepTries++;
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        stepGstr1();
+                    }
+                }, 1600);
+            } else {
+                prepBusy = false;
+                Toast.makeText(PortalLoginActivity.this,
+                        "⚠️ Portal ne GSTR-1 page khud nahi khola — dashboard par Returns → GSTR-1 dabayein",
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /**
+     * Portal ke DOM me text dhoondh kar uske button/link dabata hai (submit kuch nahi karta):
+     * dashboard -> GSTR-1 -> PREPARE ONLINE, aur prepare page par us month ka period select karta hai.
+     */
+    private String buildGstr1Script() {
+        String mon = periodLabel == null ? "" : periodLabel.toUpperCase();
+        int cut = mon.indexOf('(');           // "OCTOBER (2026-27)" -> "OCTOBER"
+        if (cut > 0) mon = mon.substring(0, cut).trim();
+        String jsMon = JSONObject.quote(mon);
+        return "(function(){try{"
+                + "var MON=" + jsMon + ";"
+                + "function vis(el){try{return !!(el&&el.offsetParent!==null);}catch(e){return false;}}"
+                + "function txt(el){return ((el.innerText||el.textContent||'')+'').replace(/\\s+/g,' ').trim().toUpperCase();}"
+                + "function clickEl(el){var c=(el.closest?el.closest('a,button'):null);"
+                + "if(!c&&el.querySelector){c=el.querySelector('a,button');}if(!c)c=el;"
+                + "try{c.scrollIntoView({block:'center'});}catch(e){}c.click();return true;}"
+                + "function scan(re,sel){var nodes=[].slice.call(document.querySelectorAll(sel));"
+                + "for(var i=0;i<nodes.length;i++){var el=nodes[i];if(!vis(el))continue;var t=txt(el);"
+                + "if(!t||t.length>80)continue;if(re.test(t))return el;}return null;}"
+                + "function find(re){return scan(re,'a,button')||scan(re,'span,div,li,td,h1,h2,h3,h4,p');}"
+                + "var href=(location.href||'').toLowerCase();"
+                + "var bodyTxt=txt(document.body||document.documentElement);"
+                + "if((/gstr-?1/.test(href)&&!/dashboard/.test(href))||/SAVE GSTR-?1/.test(bodyTxt)||/B2B INVOICES/.test(bodyTxt)){"
+                + "if(MON){var sels=[].slice.call(document.querySelectorAll('select'));"
+                + "for(var i=0;i<sels.length;i++){var s=sels[i];var ops=[].slice.call(s.options||[]);"
+                + "for(var j=0;j<ops.length;j++){var ot=((ops[j].text||'')+'').toUpperCase();"
+                + "if(ot.indexOf(MON)>=0){s.selectedIndex=j;s.dispatchEvent(new Event('change',{bubbles:true}));break;}}}}"
+                + "return 'DONE';}"
+                + "var p=find(/PREPARE ONLINE/);if(p){clickEl(p);return 'CLICKED:PREPARE';}"
+                + "var g=find(/^GSTR-?1$/)||find(/GSTR-?1/);if(g){clickEl(g);return 'CLICKED:GSTR1';}"
+                + "return 'NONE';"
+                + "}catch(e){return 'NONE';}})()";
+    }
+
+    /** Login page ke fields dhoondh kar ID/password bharta hai; har 1.2s me 10 baar tak retry. */
     private String buildFillScript() {
         String u = JSONObject.quote(username);
         String p = JSONObject.quote(password);

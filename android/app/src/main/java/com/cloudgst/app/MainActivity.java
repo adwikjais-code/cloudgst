@@ -61,7 +61,7 @@ import java.util.concurrent.Executor;
 public class MainActivity extends FragmentActivity {
 
     public static final String APP_URL = "https://appassets.androidplatform.net/assets/app/index.html";
-    public static final String APP_VERSION = "android-5.9.1";
+    public static final String APP_VERSION = "android-5.9.2";
 
     private static final int REQ_FILE = 1001;
     private static final int REQ_STORAGE = 1002;
@@ -527,13 +527,21 @@ public class MainActivity extends FragmentActivity {
             return APP_VERSION;
         }
 
+        /**
+         * Portal app ke andar khulta hai (ID/password bhare hue, captcha aap dalte hain).
+         * fp = "102026" (MMYYYY), per = "October (2026-27)" -> PORTAL screen ka
+         * "📄 GSTR-1" button us month ka Prepare Online page kholta hai.
+         */
         @JavascriptInterface
-        public void openPortal(final String username, final String password, final String gstin) {
+        public void openPortal(final String username, final String password, final String gstin,
+                               final String fp, final String per) {
             act.runOnUiThread(() -> {
                 Intent i = new Intent(act, PortalLoginActivity.class);
                 i.putExtra("u", username == null ? "" : username);
                 i.putExtra("p", password == null ? "" : password);
                 i.putExtra("g", gstin == null ? "" : gstin);
+                i.putExtra("fp", fp == null ? "" : fp);
+                i.putExtra("per", per == null ? "" : per);
                 act.startActivity(i);
             });
         }
