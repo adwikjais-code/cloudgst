@@ -76,7 +76,19 @@
     <form id="fBR">
       <div class="row two">
         <div><label>शपथकर्ता (मकान मालिक)</label><input id="brDeponent" placeholder="अब्बास अली" /></div>
-        <div><label>पुत्र/पिता का नाम</label><input id="brFather" placeholder="जब्बार" /></div>
+        <div><label>पिता/पति का नाम</label><input id="brFather" placeholder="जब्बार" /></div>
+      </div>
+      <div class="row two">
+        <div><label>शपथकर्ता का संबंध (ऊपर के नाम से)</label>
+          <select id="brDepRel">
+            <option value="पुत्र">पुत्र</option>
+            <option value="पुत्री">पुत्री</option>
+            <option value="पत्नी">पत्नी</option>
+            <option value="पति">पति</option>
+            <option value="__custom__">अन्य (खुद लिखें)…</option>
+          </select>
+        </div>
+        <div id="brDepRelCustomRow" style="display:none"><label>संबंध (खुद लिखें)</label><input id="brDepRelCustom" placeholder="जैसे: पुत्री / पत्नी / पौत्र" /></div>
       </div>
       <div class="row"><label>निवासी (गाँव/मोहल्ला, थाना)</label><input id="brResidence" placeholder="गरौली औराई, संत रविदास नगर (भदोही)" /></div>
       <div class="row two">
@@ -85,9 +97,41 @@
       </div>
       <div class="row"><label>मकान/संपत्ति का पूरा पता (पैरा 1 में)</label><textarea id="brProperty" placeholder="गरौली औराई, संत रविदास नगर (भदोही), उत्तर प्रदेश-221301"></textarea></div>
       <div class="row two">
-        <div><label>पुत्र का नाम (व्यवसाय करने वाला)</label><input id="brSon" placeholder="आशिक़ अली" /></div>
-        <div><label>फर्म का नाम</label><input id="brFirm" placeholder="AA CARPETS & RUGS" /></div>
+        <div><label>व्यक्ति का नाम (जो व्यवसाय करेगा)</label><input id="brSon" placeholder="आशिक़ अली" /></div>
+        <div><label>शपथकर्ता से संबंध</label>
+          <select id="brRel">
+            <option value="पुत्र">पुत्र</option>
+            <option value="पुत्री">पुत्री</option>
+            <option value="पत्नी">पत्नी</option>
+            <option value="पति">पति</option>
+            <option value="नाती">नाती</option>
+            <option value="नातिन">नातिन</option>
+            <option value="पौत्र">पौत्र</option>
+            <option value="पौत्री">पौत्री</option>
+            <option value="दामाद">दामाद</option>
+            <option value="बहू">बहू</option>
+            <option value="भाई">भाई</option>
+            <option value="बहन">बहन</option>
+            <option value="भतीजा">भतीजा</option>
+            <option value="भतीजी">भतीजी</option>
+            <option value="भांजा">भांजा</option>
+            <option value="भांजी">भांजी</option>
+            <option value="पिता">पिता</option>
+            <option value="माता">माता</option>
+            <option value="__custom__">अन्य (खुद लिखें)…</option>
+          </select>
+        </div>
       </div>
+      <div class="row two" id="brRelCustomRow" style="display:none">
+        <div><label>संबंध (खुद लिखें)</label><input id="brRelCustom" placeholder="जैसे: नाती / पौत्री / दामाद" /></div>
+        <div><label>उस संबंध का लिंग</label>
+          <select id="brRelGender">
+            <option value="m">पुल्लिंग — के / मेरे / करेंगें</option>
+            <option value="f">स्त्रीलिंग — की / मेरी / करेंगी</option>
+          </select>
+        </div>
+      </div>
+      <div class="row"><label>फर्म का नाम</label><input id="brFirm" placeholder="AA CARPETS & RUGS" /></div>
       <div class="row"><label>व्यवसाय (पैरा 2)</label><input id="brBusiness" placeholder="कारपेट सम्बंधित व्यवसाय" /></div>
       <div class="row two">
         <div><label>दिनांक</label><input id="brDate" type="date" /></div>
@@ -111,7 +155,7 @@
       </div>
       <div class="row two">
         <div><label>मालिक का संबंध</label>
-          <select id="nbOwnerRel"><option value="पुत्र">पुत्र</option><option value="पुत्री">पुत्री</option><option value="पत्नी">पत्नी</option></select>
+          <select id="nbOwnerRel"><option value="पुत्र">पुत्र</option><option value="पुत्री">पुत्री</option><option value="पत्नी">पत्नी</option><option value="पति">पति</option><option value="नाती">नाती</option><option value="नातिन">नातिन</option><option value="पौत्र">पौत्र</option><option value="पौत्री">पौत्री</option><option value="भाई">भाई</option><option value="भतीजा">भतीजा</option></select>
         </div>
         <div><label>लिंग (प्रमाणित करने वाला)</label>
           <select id="nbGender"><option value="f">स्त्री (करती हूँ)</option><option value="m">पुरुष (करता हूँ)</option></select>
@@ -126,7 +170,7 @@
       <div class="row two">
         <div><label>जिसके नाम से GST होगा</label><input id="nbPerson" placeholder="रूबी" /></div>
         <div><label>उसका संबंध</label>
-          <select id="nbPersonRel"><option value="पुत्री">पुत्री</option><option value="पुत्र">पुत्र</option><option value="पत्नी">पत्नी</option><option value="पति">पति</option></select>
+          <select id="nbPersonRel"><option value="पुत्री">पुत्री</option><option value="पुत्र">पुत्र</option><option value="पत्नी">पत्नी</option><option value="पति">पति</option><option value="नाती">नाती</option><option value="नातिन">नातिन</option><option value="पौत्र">पौत्र</option><option value="पौत्री">पौत्री</option><option value="भाई">भाई</option><option value="भतीजा">भतीजा</option></select>
         </div>
       </div>
       <div class="row two">
@@ -174,6 +218,12 @@
   // ---------- text builders (words doc ke bilkul wahi) ----------
   function brText(v){
     const g = v.gender === "f";
+    // संबंध ke hisaab se grammar: पुत्र -> के/मेरे/करेंगें, पुत्री -> की/मेरी/करेंगी
+    const relObj = (v.rel && typeof v.rel === "object") ? v.rel : { word: String(v.rel || "पुत्र"), g: "m" };
+    const R = { word: String(relObj.word || "").trim() || "पुत्र",
+      poss: relObj.g === "f" ? "की" : "के",
+      mine: relObj.g === "f" ? "मेरी" : "मेरे",
+      verb: relObj.g === "f" ? "करेंगी" : "करेंगें" };
     const date = v.date ? dnum(fmtDate(v.date), v.dev) : "";
     const prop = String(v.property||"").replace(/\s*।\s*$/,"");
     return [
@@ -181,21 +231,21 @@
 'असिस्टेंट कमिश्नर वस्तु एवं सेवा कर ',
 '',
 '',
-'मै, ' + v.deponent + ' पुत्र ' + v.father + ' निवासी-' + v.residence + ', ' + v.state + '-' + v.pincode,
+'मै, ' + v.deponent + ' ' + (v.depRel || "पुत्र") + ' ' + v.father + ' निवासी-' + v.residence + ', ' + v.state + '-' + v.pincode,
 'बहलफ़ निम्नलिखित बयान ' + (g ? 'करती' : 'करता') + ' हूँ कि :-',
 '',
 '',
 '1:- यह कि शपथकर्ता का मकान- ' + v.property + ' में स्थित हैं।             ',
 '     जिसका स्वामी शपथकर्ता हैं और समस्त तथ्यों से परिचित हैं।',
-'2:- यह शपथकर्ता के पुत्र उपरोक्त फर्म "' + v.firm + '"',
-'      के नाम से ' + v.business + ' मेरे उक्त मकान से करेंगें।',
-'3:- यह कि शपथकर्ता के पुत्र ' + v.son + ' जब तक चाहे मेरे मकान से उपरोक्त ',
+'2:- यह शपथकर्ता ' + R.poss + ' ' + R.word + ' उपरोक्त फर्म "' + v.firm + '"',
+'      के नाम से ' + v.business + ' मेरे उक्त मकान से ' + R.verb + '।',
+'3:- यह कि शपथकर्ता ' + R.poss + ' ' + R.word + ' ' + v.son + ' जब तक चाहे मेरे मकान से उपरोक्त ',
 '      व्यवसाय करते रहे।',
-'4:- यह कि मेरे पुत्र को उपरोक्त व्यवसाय करने से मुझे कोई आपत्ति नहीं हैं ना तो भविष्य में होगा। ',
+'4:- यह कि ' + R.mine + ' ' + R.word + ' को उपरोक्त व्यवसाय करने से मुझे कोई आपत्ति नहीं हैं ना तो भविष्य में होगा। ',
 '                                               (सत्यापन )',
 '',
 '',
-'मै शपथकर्ता ' + v.deponent + ' सत्यापित करता हूं कि पैरा 1 लगायत पैरा 4 तक मेरी जानकारी में ',
+'मै शपथकर्ता ' + v.deponent + ' सत्यापित ' + (g ? 'करती' : 'करता') + ' हूं कि पैरा 1 लगायत पैरा 4 तक मेरी जानकारी में ',
 'सत्य और सही हैं। इसमें कोई बात झूठी नहीं हैं और ना ही छीपाई गई हैं। ईश्वर मेरी मदद करें।',
 '',
 '',
@@ -238,11 +288,37 @@
   }
 
   // ---------- read / write ----------
+  // ---------- संबंध: पुत्र / पुत्री / पत्नी / नाती / पौत्र / पौत्री ... ya khud likha hua ----------
+  const REL_GENDER = { "पुत्र":"m", "पुत्री":"f", "पत्नी":"f", "पति":"m", "नाती":"m", "नातिन":"f",
+    "पौत्र":"m", "पौत्री":"f", "दामाद":"m", "जमाई":"m", "बहू":"f", "भाई":"m", "बहन":"f",
+    "भतीजा":"m", "भतीजी":"f", "भांजा":"m", "भांजी":"f", "पिता":"m", "माता":"f", "साला":"m", "साली":"f" };
+  function relPick(selId, customId, genderId){
+    const sel = String($(selId).value || "");
+    if (sel === "__custom__") {
+      const w = String($(customId).value || "").trim();
+      if (!w) return { word: "", g: "m" };   // khaali -> "पुत्र" default (grammar masc.)
+      // pehle list ka gender, phir user ka chuna hua (custom word ke liye)
+      let gv = REL_GENDER[w];
+      if (!gv) gv = genderId ? ($(genderId).value === "f" ? "f" : "m") : "m";
+      return { word: w, g: gv };
+    }
+    return { word: sel, g: REL_GENDER[sel] || "m" };
+  }
+  function relToggle(selId, rowId){
+    $(rowId).style.display = ($(selId).value === "__custom__") ? "" : "none";
+  }
+  function relRefresh(){
+    relToggle("brDepRel", "brDepRelCustomRow");
+    relToggle("brRel", "brRelCustomRow");
+  }
+
   function brVals(){
     return { deponent:$("brDeponent").value, father:$("brFather").value, residence:$("brResidence").value,
       state:$("brState").value, pincode:dnum($("brPincode").value.trim(), $("brDev").checked),
       property:$("brProperty").value, son:$("brSon").value, firm:$("brFirm").value,
-      business:$("brBusiness").value, date:$("brDate").value, gender:$("brGender").value, dev:$("brDev").checked };
+      business:$("brBusiness").value, date:$("brDate").value, gender:$("brGender").value, dev:$("brDev").checked,
+      depRel: (function(){ const r = relPick("brDepRel","brDepRelCustom",null); return r.word || "पुत्र"; })(),
+      rel: relPick("brRel","brRelCustom","brRelGender") };
   }
   function nbVals(){
     return { owner:$("nbOwner").value, ownerRel:$("nbOwnerRel").value, ownerFather:$("nbOwnerFather").value,
@@ -271,7 +347,9 @@
   }
   function brValsRaw(){ return { deponent:$("brDeponent").value, father:$("brFather").value, residence:$("brResidence").value,
       state:$("brState").value, pincode:$("brPincode").value, property:$("brProperty").value, son:$("brSon").value,
-      firm:$("brFirm").value, business:$("brBusiness").value, date:$("brDate").value, gender:$("brGender").value, dev:$("brDev").checked }; }
+      firm:$("brFirm").value, business:$("brBusiness").value, date:$("brDate").value, gender:$("brGender").value, dev:$("brDev").checked,
+      depRelSel:$("brDepRel").value, depRelCustom:$("brDepRelCustom").value,
+      relSel:$("brRel").value, relCustom:$("brRelCustom").value, relGender:$("brRelGender").value }; }
   function nbValsRaw(){ return { owner:$("nbOwner").value, ownerRel:$("nbOwnerRel").value, ownerFather:$("nbOwnerFather").value,
       residence:$("nbResidence").value, district:$("nbDistrict").value, pincode:$("nbPincode").value, property:$("nbProperty").value,
       person:$("nbPerson").value, personRel:$("nbPersonRel").value, personFather:$("nbPersonFather").value, date:$("nbDate").value,
@@ -282,7 +360,11 @@
       if(b.deponent !== undefined){ $("brDeponent").value=b.deponent||""; $("brFather").value=b.father||""; $("brResidence").value=b.residence||"";
         $("brState").value=b.state||""; $("brPincode").value=b.pincode||""; $("brProperty").value=b.property||""; $("brSon").value=b.son||"";
         $("brFirm").value=b.firm||""; $("brBusiness").value=b.business||""; $("brDate").value=b.date||""; $("brGender").value=b.gender||"m";
-        $("brDev").checked = b.dev !== false; }
+        $("brDev").checked = b.dev !== false;
+        if(b.depRelSel){ $("brDepRel").value=b.depRelSel; } if(b.depRelCustom){ $("brDepRelCustom").value=b.depRelCustom; }
+        if(b.relSel){ $("brRel").value=b.relSel; } if(b.relCustom){ $("brRelCustom").value=b.relCustom; }
+        if(b.relGender){ $("brRelGender").value=b.relGender; }
+        relRefresh(); }
       const n = JSON.parse(localStorage.getItem("noc_nbr_v1") || "{}");
       if(n.owner !== undefined){ $("nbOwner").value=n.owner||""; $("nbOwnerRel").value=n.ownerRel||"पुत्र"; $("nbOwnerFather").value=n.ownerFather||"";
         $("nbResidence").value=n.residence||""; $("nbDistrict").value=n.district||""; $("nbPincode").value=n.pincode||"";
@@ -306,7 +388,7 @@
   // ---------- samples (aapke docs se) ----------
   const BR_SAMPLE = { deponent:"अब्बास अली", father:"जब्बार", residence:"गरौली औराई, संत रविदास नगर (भदोही)", state:"उत्तर प्रदेश",
     pincode:"221301", property:"गरौली औराई, संत रविदास नगर (भदोही), उत्तर प्रदेश-२२१३०१", son:"आशिक़ अली",
-    firm:"AA CARPETS & RUGS", business:"कारपेट सम्बंधित व्यवसाय", gender:"m", dev:true };
+    firm:"AA CARPETS & RUGS", business:"कारपेट सम्बंधित व्यवसाय", gender:"m", dev:true, depRel:"पुत्र", rel:"पुत्र" };
   const NB_SAMPLE = { owner:"समीर अंसारी", ownerRel:"पुत्र", ownerFather:"मोहम्मद कासिम अंसारी", residence:"कांतित बौलिया",
     district:"मिर्जापुर", pincode:"231001", property:"कांतित बौलिया, मिर्जापुर २३१००१, उत्तर प्रदेश, भारत",
     person:"रूबी", personRel:"पुत्री", personFather:"मोहम्मद क़ासिम", gender:"f", dev:true };
@@ -314,6 +396,9 @@
     $("brDeponent").value=v.deponent; $("brFather").value=v.father; $("brResidence").value=v.residence; $("brState").value=v.state;
     $("brPincode").value=v.pincode; $("brProperty").value=v.property; $("brSon").value=v.son; $("brFirm").value=v.firm;
     $("brBusiness").value=v.business; $("brGender").value=v.gender; $("brDev").checked=!!v.dev;
+    $("brDepRel").value = v.depRel || "पुत्र"; $("brDepRelCustom").value = "";
+    $("brRel").value = v.rel || "पुत्र"; $("brRelCustom").value = ""; $("brRelGender").value = v.relGender || "m";
+    relRefresh();
     if(!$("brDate").value){ const d=new Date(); $("brDate").value=[d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-"); }
     render();
   }
@@ -340,6 +425,7 @@
   });
   document.querySelectorAll("#fBR input, #fBR select, #fBR textarea, #fNBR input, #fNBR select, #fNBR textarea")
     .forEach(el => { el.addEventListener("input", render); el.addEventListener("change", render); });
+  ["brRel", "brDepRel"].forEach(id => $(id).addEventListener("change", relRefresh));
   const NAT = (typeof window !== "undefined") ? window.NOCBridge : null;   // Android APK bridge
   $("btnPrint").addEventListener("click", () => {
     if (NAT && NAT.printPage) { try { NAT.printPage(); return; } catch(_){} }

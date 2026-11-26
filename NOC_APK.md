@@ -1,9 +1,9 @@
-# NOC Maker — Android APK (v1.0)
+# NOC Maker — Android APK (v1.1)
 
 **Download (phone me seedha):**
 👉 https://github.com/adwikjais-code/cloudgst/releases/download/noc-apk-v1/NOC_Maker.apk
 
-- Size: **227,117 bytes (~222 KB)** · signed release APK (v1+v2+v3 signature) · `minSdk 24` (Android 7+), `targetSdk 34`
+- Size: **227,117 bytes (~222 KB)** · signed release APK (v1+v2+v3 signature) · v1.1, `minSdk 24` (Android 7+), `targetSdk 34`
 - Package: **`com.cloudgst.noc`** ("NOC Maker") — aapke CloudGST app (`com.cloudgst.app`) se **alag** hai, dono saath-saath install rehte hain.
 - **Internet ki zarurat nahi** — INTERNET permission hi nahi maangi gayi. Poora tool APK ke andar hai.
 
@@ -17,6 +17,7 @@
 | Cheez | Detail |
 |---|---|
 | Tabs | **BR NOC (शपथ पत्र)** aur **NBR NOC (अनापत्ति प्रमाण पत्र)** |
+| संबंध flexible | BR me "पुत्र" fix nahi — **पुत्र / पुत्री / पत्नी / पति / नाती / नातिन / पौत्र / पौत्री / दामाद / बहू / भाई / भतीजा / भांजा / पिता / माता** + **अन्य (खुद लिखें)**. Grammar khud badalti hai: के/की, मेरे/मेरी, करेंगें/करेंगी. शपथकर्ता ka apna sambandh bhi alag se chuna jaata hai (मै, नाम **पुत्री/पत्नी** पिता…) |
 | Live preview | type karte hi A4 paper par format turant banta hai (aapke doc ki exact wording/line-breaks) |
 | 🖨️ Print / PDF | Android ka print dialog → **"Save as PDF"** → A4 PDF (email/WhatsApp par bhej sakte hain) |
 | 📋 Copy | poora text clipboard me → WhatsApp/Docs me paste |
