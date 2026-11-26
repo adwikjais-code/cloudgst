@@ -260,7 +260,14 @@ function gstCertFolder_() {
     }
   } catch (e) {}
 
-  return { folder: null, how: '' };
+  // JSON folder ki tarah — na mile to KHUD bana deta hai (user ko kuch karna hi nahi padta)
+  try {
+    var made = DriveApp.createFolder(GST_CERT_FOLDER_NAME);
+    if (props) { try { props.setProperty('GST_CERT_FOLDER_ID', made.getId()); } catch (e) {} }
+    return { folder: made, how: 'khud bana diya', created: true };
+  } catch (e2) {
+    return { folder: null, how: '', error: String(e2) };
+  }
 }
 
 // App se folder ka link/ID set karna (Shared Drive ka folder ho to yahi rasta)
@@ -487,11 +494,30 @@ function scanGstCertFolder(data) {
     return {
       status: 'error',
       code: 'folder_not_found',
-      message: "My Drive me '" + GST_CERT_FOLDER_NAME + "' folder nahi mila. Ek baar folder bana lijiye (naam bilkul '" + GST_CERT_FOLDER_NAME + "'), ya folder ka link paste kar dein — phir hamesha wahi folder use hoga, kisi doosre folder me nahi dekhega."
+      message: "Folder khud bana nahi paya (" + (resolved.error || 'permission') + "). My Drive me ek baar '" + GST_CERT_FOLDER_NAME + "' folder bana lijiye, ya folder ka link paste kar dein — uske baad hamesha wahi use hoga."
     };
   }
   var folderUrl = '';
   try { folderUrl = folder.getUrl(); } catch (e) {}
+  if (resolved.created) {
+    return {
+      status: 'ok',
+      created: true,
+      folder: folder.getName(),
+      folderId: folder.getId(),
+      folderUrl: folderUrl,
+      total: 0,
+      scanned: 0,
+      ocrAvailable: true,
+      driveServiceOn: gstCertOcrAvailable_(),
+      ocrTried: 0,
+      ocrUsed: 0,
+      candidates: [],
+      skipped: [],
+      errors: [],
+      message: "Drive me '" + folder.getName() + "' folder khud ban gaya. Ab isme GST certificates daal dein — agli baar seedha isi folder me dekhega."
+    };
+  }
   var existing = existingClientKeys_(ss);
   var files = gstCertFiles_(folder);
   var candidates = [], skipped = [], errors = [];
