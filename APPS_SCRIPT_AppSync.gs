@@ -229,20 +229,59 @@ var GST_STATE_NAMES = {
   '35': 'Andaman & Nicobar', '36': 'Telangana', '37': 'Andhra Pradesh', '38': 'Ladakh', '97': 'Other Territory'
 };
 
+// Folder dhoondhna: (1) saved ID (2) exact naam (3) milta-julta naam ("GST Certificate", "GST Papers"…)
+// (4) Clients folder ke andar (5) kuch na mile to KHUD bana deta hai — user ko dead-end nahi milta.
 function gstCertFolder_(preferredId) {
-  var id = String(preferredId || '').trim();
-  if (!id) {
-    try { id = String(PropertiesService.getScriptProperties().getProperty('GST_CERT_FOLDER_ID') || '').trim(); } catch (e) {}
+  var props = null;
+  try { props = PropertiesService.getScriptProperties(); } catch (e) {}
+
+  var ids = [];
+  if (preferredId) ids.push(String(preferredId).trim());
+  if (props) ids.push(String(props.getProperty('GST_CERT_FOLDER_ID') || '').trim());
+  for (var i = 0; i < ids.length; i++) {
+    if (!ids[i]) continue;
+    try { var f = DriveApp.getFolderById(ids[i]); if (f && !f.isTrashed()) return f; } catch (e) {}
   }
-  if (id) {
-    try { var f = DriveApp.getFolderById(id); if (f && !f.isTrashed()) return f; } catch (e) {}
+
+  var exact = [], fuzzy = [];
+  try {
+    var all = DriveApp.getFolders();
+    while (all.hasNext()) {
+      var fo = all.next();
+      if (fo.isTrashed()) continue;
+      var nm = String(fo.getName() || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!nm) continue;
+      if (nm === 'gst certificates' || nm === 'gst certificate' || nm === 'gst certs' || nm === 'gst cert') exact.push(fo);
+      else if (/gst/.test(nm) && /(cert|paper|registration|reg\b)/.test(nm)) fuzzy.push(fo);
+    }
+  } catch (e) {}
+
+  var pick = exact.length ? exact[0] : (fuzzy.length ? fuzzy[0] : null);
+  if (!pick) {
+    // Clients folder ke andar bhi dekh lete hain
+    try {
+      var kids = DriveApp.getFolderById(CLIENTS_FOLDER_ID).getFolders();
+      while (kids.hasNext()) {
+        var k = kids.next();
+        var kn = String(k.getName() || '').toLowerCase();
+        if (!k.isTrashed() && /gst/.test(kn) && /(cert|paper|registration)/.test(kn)) { pick = k; break; }
+      }
+    } catch (e) {}
   }
-  var it = DriveApp.getFoldersByName(GST_CERT_FOLDER_NAME);
-  while (it.hasNext()) {
-    var f2 = it.next();
-    if (!f2.isTrashed()) return f2;
+  if (pick && props) { try { props.setProperty('GST_CERT_FOLDER_ID', pick.getId()); } catch (e) {} }
+  return pick;
+}
+
+function gstCertFolderEnsure_(preferredId) {
+  var folder = gstCertFolder_(preferredId);
+  if (folder) return { folder: folder, created: false };
+  try {
+    var made = DriveApp.createFolder(GST_CERT_FOLDER_NAME);
+    try { PropertiesService.getScriptProperties().setProperty('GST_CERT_FOLDER_ID', made.getId()); } catch (e) {}
+    return { folder: made, created: true };
+  } catch (e) {
+    return { folder: null, created: false, error: String(e) };
   }
-  return null;
 }
 
 function gstCertFiles_(folder) {
@@ -452,11 +491,33 @@ function existingClientKeys_(ss) {
 
 function scanGstCertFolder(data) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var folder = gstCertFolder_(data && data.folderId);
+  var resolved = gstCertFolderEnsure_(data && data.folderId);
+  var folder = resolved.folder;
   if (!folder) {
     return {
       status: 'error',
-      message: "Drive me '" + GST_CERT_FOLDER_NAME + "' naam ka folder nahi mila. My Drive me isi naam ka folder banaiye aur GST certificates usme daaliye."
+      message: "Drive me folder na mila aur bana bhi nahi paya (" + (resolved.error || 'permission') + "). My Drive me '" + GST_CERT_FOLDER_NAME + "' folder khud bana lijiye."
+    };
+  }
+  var folderUrl = '';
+  try { folderUrl = folder.getUrl(); } catch (e) {}
+  if (resolved.created) {
+    return {
+      status: 'ok',
+      created: true,
+      folder: folder.getName(),
+      folderId: folder.getId(),
+      folderUrl: folderUrl,
+      total: 0,
+      scanned: 0,
+      ocrAvailable: true,
+      driveServiceOn: gstCertOcrAvailable_(),
+      ocrTried: 0,
+      ocrUsed: 0,
+      candidates: [],
+      skipped: [],
+      errors: [],
+      message: "Drive me '" + folder.getName() + "' folder bana diya. Ab isme GST certificates daalein, phir dobara scan karein."
     };
   }
   var existing = existingClientKeys_(ss);
@@ -533,6 +594,7 @@ function scanGstCertFolder(data) {
     status: 'ok',
     folder: folder.getName(),
     folderId: folder.getId(),
+    folderUrl: folderUrl,
     total: files.length,
     scanned: max,
     ocrAvailable: true, // OCR ab default chalta hai (OAuth REST fallback) — Drive service on karna optional
