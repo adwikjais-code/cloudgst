@@ -113,7 +113,12 @@ public class MainActivity extends Activity {
                     }
                     return "Downloads/" + name;
                 }
-                File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                // Android 9 aur purane: public Downloads me likhne ke liye permission chahiye hoti hai.
+                File dir = null;
+                if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                }
                 if (dir == null || (!dir.exists() && !dir.mkdirs())) dir = getExternalFilesDir(null);
                 File f = new File(dir, name);
                 try (FileOutputStream fos = new FileOutputStream(f)) {
