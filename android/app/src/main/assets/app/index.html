@@ -8328,7 +8328,40 @@ function buildEtsyPdfReport(opts) {
       }
     }
 
+    // ===== APK: native fingerprint lock ON hai to app ka apna password popup dobara na aaye =====
+    function gpNativeBioOn() {
+      try { return !!(window.CloudGSTNative && CloudGSTNative.isBioLockEnabled && CloudGSTNative.isBioLockEnabled()); } catch (_) { return false; }
+    }
+
+    // Native fingerprint verify hone ke baad app isse bulati hai -> lock screen hat jata hai
+    window.cloudGstNativeUnlocked = function () {
+      try {
+        document.getElementById("pinLockOverlay").classList.add("hidden");
+        document.getElementById("pinErrorMsg").classList.add("hidden");
+        document.getElementById("pinInput").value = "";
+        if (typeof showToast === "function") showToast("👆 Fingerprint verified — app unlock ho gaya!");
+      } catch (_) {}
+    };
+
+    // Client ka portal password (enc:v1:) dekhne ke liye app password chahiye hota hai
+    window.gpAskAppPassword = function (subtitle) {
+      try {
+        const sub = document.getElementById("pinModalSubtitle");
+        if (sub && subtitle) sub.textContent = subtitle;
+        document.getElementById("pinInput").value = "";
+        document.getElementById("pinErrorMsg").classList.add("hidden");
+        document.getElementById("pinLockOverlay").classList.remove("hidden");
+        setTimeout(() => { const f = document.getElementById("pinInput"); if (f) f.focus(); }, 120);
+      } catch (_) {}
+    };
+
     function checkDeviceAndAuthenticate() {
+      // Fingerprint lock ON (APK) -> native lock screen hi gate hai, dobara password popup nahi
+      if (gpNativeBioOn()) {
+        document.getElementById("deviceOtpOverlay").classList.add("hidden");
+        document.getElementById("pinLockOverlay").classList.add("hidden");
+        return;
+      }
       // Email OTP wali device-security hata di gayi hai: seedha password screen
       document.getElementById("deviceOtpOverlay").classList.add("hidden");
       document.getElementById("pinInput").value = "";
@@ -20592,6 +20625,12 @@ function buildEtsyPdfReport(opts) {
         if (!window.CloudGSTNative) return gpToast("⚠️ Portal Login sirf Android app me chalta hai.");
         if (!c.portalId) return gpToast("⚠️ Portal ID save nahi hai — ✏️ se add karein.");
         const pwRes = await gpResolvePassword(c);
+        if ((!pwRes.ok && pwRes.reason === "locked") || (!pwRes.pw && pwRes.reason === "locked")) {
+          if (window.gpAskAppPassword) {
+            gpAskAppPassword("👆 Fingerprint se app khula hai — is client ka portal password decrypt karne ke liye app ka password dalein.");
+          }
+          return gpToast("🔐 Client password dekhne ke liye app password dalein");
+        }
         if (!pwRes.ok || !pwRes.pw || pwRes.pw.startsWith("enc:")) {
           return gpToast("⚠️ Password decrypt nahi hua — ✏️ se plain password save karein.");
         }

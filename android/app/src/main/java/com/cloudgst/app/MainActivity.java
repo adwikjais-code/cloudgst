@@ -61,7 +61,7 @@ import java.util.concurrent.Executor;
 public class MainActivity extends FragmentActivity {
 
     public static final String APP_URL = "https://appassets.androidplatform.net/assets/app/index.html";
-    public static final String APP_VERSION = "android-5.9.4";
+    public static final String APP_VERSION = "android-5.9.5";
 
     private static final int REQ_FILE = 1001;
     private static final int REQ_STORAGE = 1002;
@@ -74,6 +74,7 @@ public class MainActivity extends FragmentActivity {
     private View lockView;
     private ValueCallback<Uri[]> filePathCallback;
     private boolean appLoaded = false;
+    private boolean bioUnlocked = false;
     private SharedPreferences prefs;
 
     /** Storage permission ke baad pending save (sirf Android 7/8 ke liye). */
@@ -138,6 +139,10 @@ public class MainActivity extends FragmentActivity {
                         "window.document.documentElement.classList.add('native-app');",
                         null);
                 injectDownloadBridge(view);
+                if (bioUnlocked) {
+                    view.evaluateJavascript(
+                            "(window.cloudGstNativeUnlocked&&window.cloudGstNativeUnlocked())", null);
+                }
             }
         });
 
@@ -391,8 +396,14 @@ public class MainActivity extends FragmentActivity {
     }
 
     private void unlockApp() {
+        bioUnlocked = true;
         if (lockView != null && lockView.getParent() != null) {
             rootView.removeView(lockView);
+        }
+        if (web != null && appLoaded) {
+            // app khud ka password popup na dikhaye (fingerprint hi unlock hai)
+            web.evaluateJavascript(
+                    "(window.cloudGstNativeUnlocked&&window.cloudGstNativeUnlocked())", null);
         }
         loadApp();
     }
@@ -580,6 +591,7 @@ public class MainActivity extends FragmentActivity {
             act.runOnUiThread(() -> {
                 if (!enable) {
                     act.prefs.edit().putBoolean(PREF_BIO_LOCK, false).apply();
+                    act.bioUnlocked = false;
                     Toast.makeText(act, "Fingerprint lock OFF", Toast.LENGTH_SHORT).show();
                     return;
                 }

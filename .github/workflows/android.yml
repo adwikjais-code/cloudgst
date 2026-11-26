@@ -13,7 +13,7 @@ permissions:
   issues: write
 
 env:
-  RELEASE_TAG: android-v5.9.4
+  RELEASE_TAG: android-v5.9.5
 
 jobs:
   build:
@@ -75,6 +75,8 @@ jobs:
             echo "js header fingerprint btn: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativeBioBtn || true)"
             echo "js bioStatus bridge: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c bioStatus || true)"
             echo "dex bioStatus: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac bioStatus || true)"
+            echo "js native unlock hook: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c cloudGstNativeUnlocked || true)"
+            echo "dex native unlock hook: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac cloudGstNativeUnlocked || true)"
             echo "js native portal: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativePortalBtn || true)"
             echo "dex openPortal: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac openPortal || true)"
             echo "dex CloudGSTNative: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac CloudGSTNative || true)"
@@ -87,7 +89,7 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.9.4 — 👆 Fingerprint button header me, option kabhi chhupta nahi)
+          ## CloudGST Android APK (v5.9.5 — fingerprint ke baad password popup nahi aata)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
@@ -112,5 +114,5 @@ jobs:
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
           gh release create "$RELEASE_TAG" "CloudGST.apk" \
-            --title "CloudGST Android v5.9.4 (APK)" \
+            --title "CloudGST Android v5.9.5 (APK)" \
             --notes-file notes.md
