@@ -282,21 +282,59 @@ function gstCertOcrAvailable_() {
   return !!(typeof Drive !== 'undefined' && Drive && Drive.Files && Drive.Files.copy);
 }
 
-function gstCertTextByOcr_(fileId) {
-  if (!gstCertOcrAvailable_()) return '';
-  var tmp = null;
+// PDF/photo ko Google Doc me convert + OCR. Do raste:
+//   1) Drive advanced service (agar on hai) — sabse simple
+//   2) OAuth token + Drive v2 REST — koi service enable karne ki zaroorat NAHI (default me chalta hai)
+function gstCertCopyToDocWithOcr_(fileId) {
+  var title = 'gst_ocr_' + fileId + '_' + Date.now();
+  if (gstCertOcrAvailable_()) {
+    try {
+      var created = Drive.Files.copy({ title: title }, fileId, { convert: true, ocr: true });
+      if (created && created.id) return created.id;
+    } catch (e) {}
+  }
   try {
-    tmp = Drive.Files.copy({ title: 'gst_ocr_' + fileId + '_' + Date.now() }, fileId, { convert: true, ocr: true });
-    var doc = DocumentApp.openById(tmp.id);
+    var url = 'https://www.googleapis.com/drive/v2/files/' + encodeURIComponent(fileId) + '/copy?convert=true&ocr=true&fields=id';
+    var res = UrlFetchApp.fetch(url, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify({ title: title }),
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() === 200) {
+      var j = JSON.parse(res.getContentText() || '{}');
+      if (j && j.id) return j.id;
+    }
+  } catch (e) {}
+  return '';
+}
+
+function gstCertDeleteQuietly_(docId) {
+  if (!docId) return;
+  try { DriveApp.getFileById(docId).setTrashed(true); return; } catch (e) {}
+  try { Drive.Files.remove(docId); return; } catch (e2) {}
+  try {
+    UrlFetchApp.fetch('https://www.googleapis.com/drive/v2/files/' + encodeURIComponent(docId), {
+      method: 'delete',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+  } catch (e3) {}
+}
+
+function gstCertTextByOcr_(fileId) {
+  var docId = gstCertCopyToDocWithOcr_(fileId);
+  if (!docId) return '';
+  try {
+    var doc = DocumentApp.openById(docId);
     var txt = doc.getBody().getText() || '';
     try { doc.saveAndClose(); } catch (e) {}
     return txt;
   } catch (e) {
     return '';
   } finally {
-    if (tmp && tmp.id) {
-      try { Drive.Files.remove(tmp.id); } catch (e2) { try { DriveApp.getFileById(tmp.id).setTrashed(true); } catch (e3) {} }
-    }
+    gstCertDeleteQuietly_(docId);
   }
 }
 
@@ -459,7 +497,7 @@ function scanGstCertFolder(data) {
 
       gstin = gstGstinClean_(gstin);
       if (!gstin) {
-        skipped.push({ fileName: fileName, reason: 'GSTIN nahi mila (file ka naam GSTIN se rakhein, ya Drive OCR service on karein)' });
+        skipped.push({ fileName: fileName, reason: 'GSTIN nahi mila — file ka naam GSTIN se rakhein (jaise 09FNZPM7904J1ZY_Nam.pdf), ya OCR wali file saaf scan karein' });
         continue;
       }
       if (existing.gstins[gstin] || seenGstin[gstin]) {
@@ -497,7 +535,8 @@ function scanGstCertFolder(data) {
     folderId: folder.getId(),
     total: files.length,
     scanned: max,
-    ocrAvailable: gstCertOcrAvailable_(),
+    ocrAvailable: true, // OCR ab default chalta hai (OAuth REST fallback) — Drive service on karna optional
+    driveServiceOn: gstCertOcrAvailable_(),
     ocrTried: ocrTried,
     ocrUsed: ocrUsed,
     candidates: candidates,
