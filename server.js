@@ -477,6 +477,10 @@ function gstr2bPageSaysNotGenerated(text) {
   return isGstr2bNotGenerated(t) && /error|attention/i.test(t);
 }
 
+function isReturnsDashboardUrl(url) {
+  return String(url || "").includes("/returns/auth/dashboard");
+}
+
 function gstr2bPageSaysSessionExpired(text) {
   return !!text && /session\s*(?:has\s*)?(?:expired|timed\s*out)|please\s+login\s+again|login\s+to\s+continue/i.test(String(text));
 }
@@ -819,7 +823,7 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
   const startedOn = page;
 
   await dismissModals(page);
-  if (!String(page.url() || "").includes("/returns/auth/dashboard")) {
+  if (!isReturnsDashboardUrl(page.url())) {
     const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
     if (await retBtn.isVisible().catch(() => false)) {
       await retBtn.click({ force: true }).catch(() => {});
@@ -942,11 +946,41 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
     return { fyRes, qRes, mRes, dump };
   };
 
+  // Bahut baar RETURN DASHBOARD click ke baad portal wapas "User Dashboard" par phenk deta hai.
+  // Us page par month dropdown hota hi nahi -> FY true / Month false wala error aata hai. Pehle sahi page par jao.
+  if (!isReturnsDashboardUrl(page.url())) {
+    // Sirf tab jab month dropdown hi nahi hai (user dashboard / FY-only page) — warna page ko chhedna nahi
+    const dumpNow = await readSelectOptions(page).catch(() => []);
+    const monthThere = guessSelectIndex(dumpNow, "month") >= 0;
+    if (!monthThere) {
+      step("wrongPageBeforeSelect", { url: page.url(), selects: dumpNow });
+      await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
+      await page.waitForTimeout(3000);
+      await dismissModals(page).catch(() => {});
+      page = await adoptNewPopupPage(context, page, pagesBefore);
+      await waitForDashboardSelects(page, 25000);
+      step("urlAfterForceReturns", page.url());
+    }
+  }
+
   let per = await periodAttempt(1);
   if (!per.fyRes.matched || !per.mRes.matched) {
-    // Doosri koshish — password change/redirect ke baad portal ka dashboard der se bharta hai
-    await page.waitForTimeout(2500);
+    // Doosri koshish — password change/redirect ke baad portal ka dashboard der se bharta hai.
+    // Pehle page ko fresh karte hain (reload ya galat page se returns dashboard) — isse month dropdown wapas aa jata hai.
+    await page.waitForTimeout(1500);
     await dismissModals(page).catch(() => {});
+    try {
+      if (!isReturnsDashboardUrl(page.url())) {
+        await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
+      } else {
+        await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+      }
+    } catch (_) {}
+    await page.waitForTimeout(3000);
+    await dismissModals(page).catch(() => {});
+    page = await adoptNewPopupPage(context, page, pagesBefore);
+    await waitForDashboardSelects(page, 25000);
+    step("urlBeforeRetry2", page.url());
     per = await periodAttempt(2);
   }
   const { fyRes, qRes, mRes } = per;
@@ -1493,7 +1527,8 @@ function startServer() {
       // --- STEP 2: E-COMMERCE TCS  (Services > Returns > TDS and TCS credit received > PREPARE ONLINE > TCS Credit received) ---
       // Sirf padhta hai — portal par ACCEPT / REJECT kabhi nahi dabata.
       // Agar 2B band hai to bhi E-Com se pehle Returns Dashboard kholna padta hai
-      if (!opts.gstr2b && opts.tcs) {
+      if (opts.tcs && (!opts.gstr2b || !isReturnsDashboardUrl(page.url()))) {
+        // 2B step fail hua ho ya 2B ke download page par hain -> TCS ke liye dashboard dobara kholna zaroori hai
         try {
           page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "tcs");
           s.page = page;
@@ -1542,7 +1577,14 @@ function startServer() {
         if (!fyRes.matched || !mRes.matched) throw new Error(`TCS page par FY/Month select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}).`);
         await page.locator("button:has-text('SEARCH'):visible").first().click({ timeout: 10000 });
         await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        await waitForBodyMatch(page, /PREPARE\s+ONLINE|VIEW|no\s+records?|no\s+data/i, 3500, 700);
+        // Button render hone ka intezaar — jaldi aa jaye to jaldi, warna max 12s (pehle fixed 3.5s tha,
+        // kabhi button der se aata tha to "PREPARE ONLINE nahi mila" wala jhoota error aa jata tha)
+        for (let i = 0; i < 12; i++) {
+          const ready = (await page.locator("button:has-text('PREPARE ONLINE'):visible, a:has-text('PREPARE ONLINE'):visible").count().catch(() => 0)) > 0
+            || (await page.locator("button:visible, a.btn:visible").filter({ hasText: /^\s*VIEW\b/i }).count().catch(() => 0)) > 0;
+          if (ready) break;
+          await page.waitForTimeout(1000);
+        }
 
         let prep = page.locator("button:has-text('PREPARE ONLINE'):visible, a:has-text('PREPARE ONLINE'):visible").first();
         if (!(await prep.count())) {
@@ -1556,7 +1598,7 @@ function startServer() {
         }
         await prep.click({ timeout: 10000 });
         await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        await waitForBodyMatch(page, /number\s+of\s+records|TCS\s+credit\s+received|no\s+records?|no\s+data/i, 4500, 700);
+        await waitForBodyMatch(page, /number\s+of\s+records|TCS\s+credit\s+received/i, 6000, 700);
 
         let snap = await snapshotPage(page);
         mark("cardsPage", { buttons: snap.buttons });
@@ -1596,7 +1638,7 @@ function startServer() {
             attempts.push(c);
             if (!c) continue;
             await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-            await waitForBodyMatch(page, /TCS\s+Credit\s+Received\s*-\s*Summary|number\s+of\s+records|no\s+records?|no\s+data/i, 4000, 700);
+            await waitForBodyMatch(page, /TCS\s+Credit\s+Received\s*-\s*Summary|number\s+of\s+records/i, 4000, 700);
             snap = await snapshotPage(page);
             if (isSummary(snap)) break;
             if (isTcsEmpty(snap.bodyText)) { dbg.steps.tcsEmptyFast = true; break; }
@@ -1776,7 +1818,7 @@ module.exports = {
   summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE,
   // naye helpers bhi test ke liye bahar (browser ke bina testable)
   readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod,
-  isGstr2bNotGenerated, GSTR2B_NOT_GENERATED_RE, isGstr2bNotGeneratedFast, GSTR2B_NOT_GENERATED_FAST_RE, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, TCS_EMPTY_RE, waitForBodyMatch,
+  isGstr2bNotGenerated, GSTR2B_NOT_GENERATED_RE, isGstr2bNotGeneratedFast, isReturnsDashboardUrl, GSTR2B_NOT_GENERATED_FAST_RE, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, TCS_EMPTY_RE, waitForBodyMatch,
   openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
   classifyStuckPage, readSelectOptions, guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,

@@ -6,7 +6,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
-const { isGstr2bNotGenerated, isGstr2bNotGeneratedFast, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, waitForBodyMatch } = require("../server.js");
+const { isGstr2bNotGenerated, isGstr2bNotGeneratedFast, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, waitForBodyMatch, isReturnsDashboardUrl } = require("../server.js");
 
 const ROOT = path.join(__dirname, "..");
 const SECRET = "test-secret-123";
@@ -341,4 +341,14 @@ test("2B: app khud 'GENERATE JSON' nahi dabata aur 90s wait bhi nahi", () => {
   assert.equal(/90000/.test(src), false, "2B ke liye 90s wait nahi hona chahiye");
   assert.ok(/setGstr2bNotGenerated/.test(src), "not-generated path hona chahiye");
   assert.ok(/Gstr2bPageSaysNotGenerated|gstr2bPageSaysNotGenerated/.test(src));
+});
+
+/* ---------- Returns dashboard page detection (TCS/2B dono isi par depend karte hain) ---------- */
+test("isReturnsDashboardUrl: returns dashboard vs user dashboard", () => {
+  assert.equal(isReturnsDashboardUrl("https://services.gst.gov.in/services/returns/auth/dashboard"), true);
+  assert.equal(isReturnsDashboardUrl("https://services.gst.gov.in/services/returns/auth/dashboard?fy=2026-27"), true);
+  assert.equal(isReturnsDashboardUrl("https://services.gst.gov.in/services/auth/dashboard"), false);
+  assert.equal(isReturnsDashboardUrl("https://gstr2b.gst.gov.in/gstr2b/auth/gstr2b"), false);
+  assert.equal(isReturnsDashboardUrl(""), false);
+  assert.equal(isReturnsDashboardUrl(null), false);
 });
