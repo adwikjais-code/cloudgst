@@ -63,10 +63,15 @@ public class PhoneFetch {
     private boolean netRetried = false;
     private String cachedUa = "Mozilla/5.0";
     private String lastToken = "";
+    private volatile String stage = "idle";
 
     public PhoneFetch(Activity act, Callback cb) {
         this.act = act;
         this.cb = cb;
+    }
+
+    public String stage() {
+        return stage == null ? "" : stage;
     }
 
     public boolean isBusy() {
@@ -99,6 +104,7 @@ public class PhoneFetch {
         finished = false;
         retriedDirect = false;
         netRetried = false;
+        stage = "load";
         lastToken = "";
         ensureWeb(host);
         wv.loadUrl(AUTH_DASHBOARD);
@@ -199,6 +205,7 @@ public class PhoneFetch {
                     tok = raw.replace("\"", "").trim();
                 }
                 lastToken = tok;
+                stage = "poll:" + tok;
                 if (finished) return;
                 if (tok.startsWith("ERR:")) {
                     deliver(reqId, err("script_error",
@@ -315,6 +322,7 @@ public class PhoneFetch {
     // ============================ download ============================
 
     private void onClickedDownload(String url, String ua) {
+        stage = "download";
         if (url == null || url.isEmpty()) return;
         String agent = (ua == null || ua.isEmpty()) ? cachedUa : ua;
         if (url.startsWith("blob:")) {

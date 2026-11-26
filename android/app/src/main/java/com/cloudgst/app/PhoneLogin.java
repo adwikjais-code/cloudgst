@@ -54,6 +54,7 @@ public class PhoneLogin {
     private int phase = 0;                 // 0 = idle, 1 = captcha dhoondh rahe, 2 = submit ke baad
     private boolean finished = false;
     private boolean otpMode = false;
+    private volatile String stage = "idle";
 
     private static final int PHASE_IDLE = 0;
     private static final int PHASE_FIND_CAPTCHA = 1;
@@ -66,7 +67,13 @@ public class PhoneLogin {
 
     // ======================= start =======================
 
+    /** App ko progress dikhane / debug ke liye (screen par status). */
+    public String stage() {
+        return stage == null ? "" : stage;
+    }
+
     public void start(String id, String user, String pass, ViewGroup host) {
+        stage = "start";
         this.username = user == null ? "" : user.trim();
         this.password = pass == null ? "" : pass;
         finished = false;
@@ -77,6 +84,7 @@ public class PhoneLogin {
         ensureWeb(host);
         // Pehle network check — DNS/internet dikkat ho to saaf message mile
         new Thread(() -> {
+            stage = "preflight";
             String netErr = preflight(LOGIN_URL);
             h.post(() -> {
                 if (finished) return;
@@ -85,6 +93,7 @@ public class PhoneLogin {
                             + "). Wi-Fi/mobile data check karein, phir try karein."));
                     return;
                 }
+                stage = "load:login";
                 if (wv != null) wv.loadUrl(LOGIN_URL);
                 h.postDelayed(tickRun, 1200);
             });
@@ -168,6 +177,7 @@ public class PhoneLogin {
                 JSONObject d = null;
                 try { d = new JSONObject(raw); } catch (Exception ignored) { }
                 String t = d == null ? "" : d.optString("t", "");
+                stage = "poll:" + (t.isEmpty() ? "wait" : t);
                 if ("CAPTCHA".equals(t)) {
                     captchaSrc = d.optString("src", "");
                     grabCaptcha();
@@ -209,6 +219,7 @@ public class PhoneLogin {
     // ======================= captcha image =======================
 
     private void grabCaptcha() {
+        stage = "captcha-image";
         final String src = captchaSrc == null ? "" : captchaSrc.trim();
         if (src.isEmpty()) {
             deliver(err("captcha_missing", "Login page par captcha nahi mila — ☁️ Cloud mode try karein."));
@@ -245,6 +256,7 @@ public class PhoneLogin {
     // ======================= actions =======================
 
     public void submitCaptcha(String captcha) {
+        stage = "submit-captcha";
         if (wv == null || finished) return;
         phase = PHASE_AFTER_SUBMIT;
         tries = 0;
@@ -271,6 +283,7 @@ public class PhoneLogin {
     }
 
     public void submitOtp(String otp) {
+        stage = "submit-otp";
         if (wv == null || finished) return;
         phase = PHASE_AFTER_SUBMIT;
         tries = 0;
@@ -358,6 +371,7 @@ public class PhoneLogin {
     private void deliver(final String payload) {
         if (finished) return;
         finished = true;
+        stage = "done";
         h.removeCallbacks(tickRun);
         h.removeCallbacks(timeoutRun);
         h.post(() -> {

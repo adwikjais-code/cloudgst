@@ -61,7 +61,7 @@ import java.util.concurrent.Executor;
 public class MainActivity extends FragmentActivity {
 
     public static final String APP_URL = "https://appassets.androidplatform.net/assets/app/index.html";
-    public static final String APP_VERSION = "android-5.9.9";
+    public static final String APP_VERSION = "android-5.9.10";
 
     private static final int REQ_FILE = 1001;
     private static final int REQ_STORAGE = 1002;
@@ -630,6 +630,27 @@ public class MainActivity extends FragmentActivity {
         }
     }
 
+    /** App JS poll karta hai — push (evaluateJavascript) fail ho jaye to bhi jawab pahunchta hai. */
+    String phonePayloadFor(String id) {
+        try {
+            if (id == null || !id.equals(phonePayloadId)) return "";
+            return phonePayload == null ? "" : phonePayload;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** Abhi kaam kis step par hai (progress/debug ke liye). */
+    String phoneStage() {
+        try {
+            if (phoneLogin != null && phoneLogin.isBusy()) return "login:" + phoneLogin.stage();
+            if (phoneFetch != null && phoneFetch.isBusy()) return "fetch:" + phoneFetch.stage();
+            if (phoneLogin != null) return "login:" + phoneLogin.stage();
+            if (phoneFetch != null) return "fetch:" + phoneFetch.stage();
+        } catch (Throwable ignored) { }
+        return "";
+    }
+
     String phonePayloadChunk(String id, int offset, int len) {
         try {
         if (id == null || !id.equals(phonePayloadId) || phonePayload == null) return "";
@@ -781,6 +802,25 @@ public class MainActivity extends FragmentActivity {
         @JavascriptInterface
         public boolean phoneLoginAvailable() {
             return true;
+        }
+
+        /** JS isse poll karti hai (har 1.2s) — jawab ka bharosa. */
+        @JavascriptInterface
+        public String phonePayloadFor(final String id) {
+            try {
+                return act.phonePayloadFor(id);
+            } catch (Throwable t) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public String phoneStage() {
+            try {
+                return act.phoneStage();
+            } catch (Throwable t) {
+                return "";
+            }
         }
 
         /** Phone mode: phone par login session se GSTR-2B JSON (chhupe WebView me, screen par kuch nahi). */

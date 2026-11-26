@@ -13,7 +13,7 @@ permissions:
   issues: write
 
 env:
-  RELEASE_TAG: android-v5.9.9
+  RELEASE_TAG: android-v5.9.10
 
 jobs:
   build:
@@ -82,6 +82,8 @@ jobs:
             echo "dex phone fetch: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac phoneFetch2b || true)"
             echo "dex ui-thread start: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac startPhoneFetch || true)"
             echo "dex phone login: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac phoneLoginStart || true)"
+            echo "dex phone poll: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac phonePayloadFor || true)"
+            echo "js phone poll: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativePoll || true)"
             echo "js native portal: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativePortalBtn || true)"
             echo "dex openPortal: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac openPortal || true)"
             echo "dex CloudGSTNative: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac CloudGSTNative || true)"
@@ -94,7 +96,7 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.9.9 — phone mode: cloud jaisa login (captcha app me), network fix, serial multi-client)
+          ## CloudGST Android APK (v5.9.10 — phone login: jawab polling (push miss fix) + step diagnostics)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
@@ -119,5 +121,5 @@ jobs:
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
           gh release create "$RELEASE_TAG" "CloudGST.apk" \
-            --title "CloudGST Android v5.9.9 (APK)" \
+            --title "CloudGST Android v5.9.10 (APK)" \
             --notes-file notes.md

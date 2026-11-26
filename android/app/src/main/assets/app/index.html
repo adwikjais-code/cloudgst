@@ -21958,6 +21958,39 @@ function buildEtsyPdfReport(opts) {
           p.reject(new Error("Phone mode ka jawab padh nahi paye: " + (e.message || e)));
         }
       };
+      // Native se jawab POLL karke lo (push miss ho jaye to bhi jawab milta hai) — stage bhi dikhta hai
+      function gpNativePoll(id, label, timeoutMs) {
+        return new Promise((resolve, reject) => {
+          const started = Date.now();
+          let lastStage = "";
+          const tick = () => {
+            let raw = "";
+            try { raw = String(window.CloudGSTNative.phonePayloadFor(String(id)) || ""); } catch (_) { raw = ""; }
+            try { lastStage = String(window.CloudGSTNative.phoneStage() || lastStage || ""); } catch (_) { }
+            if (raw) {
+              clearInterval(timer);
+              try {
+                const data = JSON.parse(raw);
+                if (data && data.ok === false) {
+                  const e = new Error(data.error || (label + " fail"));
+                  e.code = data.code || "";
+                  reject(e);
+                } else resolve(data);
+              } catch (e) {
+                reject(new Error(label + ": jawab padh nahi paye"));
+              }
+              return;
+            }
+            if (Date.now() - started > timeoutMs) {
+              clearInterval(timer);
+              reject(new Error(label + ": time par jawab nahi aaya" + (lastStage ? " (step: " + lastStage + ")" : "")));
+            }
+          };
+          const timer = setInterval(tick, 1200);
+          tick();
+        });
+      }
+
       function gpPhoneLoginStart(c, pw) {
         return new Promise((resolve, reject) => {
           if (!gpPhoneLoginAvailable()) return reject(new Error("Phone login is app me nahi hai — app update karein (ya ☁️ Cloud mode)."));
@@ -21965,32 +21998,23 @@ function buildEtsyPdfReport(opts) {
           try { id = String(window.CloudGSTNative.phoneLoginStart(String(c.portalId || "").trim(), String(pw || "")) || ""); } catch (e) { id = ""; }
           if (!id) return reject(new Error("Phone login start nahi ho paya."));
           gpPhoneLoginId = id;
-          gpPhonePending[id] = { resolve, reject };
-          setTimeout(() => {
-            if (gpPhonePending[id]) { delete gpPhonePending[id]; reject(new Error("Phone login: time par jawab nahi aaya.")); }
-          }, 170000);
+          gpNativePoll(id, "Phone login", 160000).then(resolve, reject);
         });
       }
       function gpPhoneLoginCaptcha(cap) {
         return new Promise((resolve, reject) => {
           if (!gpPhoneLoginId) return reject(new Error("Pehle phone login start karein."));
-          gpPhonePending[gpPhoneLoginId] = { resolve, reject };
-          setTimeout(() => {
-            if (gpPhonePending[gpPhoneLoginId]) { delete gpPhonePending[gpPhoneLoginId]; reject(new Error("Phone login: captcha ke baad jawab nahi aaya.")); }
-          }, 170000);
           try { window.CloudGSTNative.phoneLoginCaptcha(String(cap || "")); }
-          catch (e) { delete gpPhonePending[gpPhoneLoginId]; reject(new Error("Captcha bhej nahi paye: " + (e.message || e))); }
+          catch (e) { return reject(new Error("Captcha bhej nahi paye: " + (e.message || e))); }
+          gpNativePoll(gpPhoneLoginId, "Phone login (captcha)", 160000).then(resolve, reject);
         });
       }
       function gpPhoneLoginOtp(otp) {
         return new Promise((resolve, reject) => {
           if (!gpPhoneLoginId) return reject(new Error("Pehle phone login start karein."));
-          gpPhonePending[gpPhoneLoginId] = { resolve, reject };
-          setTimeout(() => {
-            if (gpPhonePending[gpPhoneLoginId]) { delete gpPhonePending[gpPhoneLoginId]; reject(new Error("Phone login: OTP ke baad jawab nahi aaya.")); }
-          }, 170000);
           try { window.CloudGSTNative.phoneLoginOtp(String(otp || "")); }
-          catch (e) { delete gpPhonePending[gpPhoneLoginId]; reject(new Error("OTP bhej nahi paye: " + (e.message || e))); }
+          catch (e) { return reject(new Error("OTP bhej nahi paye: " + (e.message || e))); }
+          gpNativePoll(gpPhoneLoginId, "Phone login (OTP)", 160000).then(resolve, reject);
         });
       }
 
@@ -22000,13 +22024,7 @@ function buildEtsyPdfReport(opts) {
           let id = "";
           try { id = String(window.CloudGSTNative.phoneFetch2b(String(fy || ""), String(mon || "")) || ""); } catch (e) { id = ""; }
           if (!id) return reject(new Error("Phone mode start nahi ho paya — app dobara khol kar try karein."));
-          gpPhonePending[id] = { resolve, reject };
-          setTimeout(() => {
-            if (gpPhonePending[id]) {
-              delete gpPhonePending[id];
-              reject(new Error("Phone mode: phone ne time par jawab nahi diya — ☁️ Cloud mode try karein."));
-            }
-          }, 200000);
+          gpNativePoll(id, "Phone mode", 200000).then(resolve, reject);
         });
       }
 
