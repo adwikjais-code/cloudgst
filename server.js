@@ -823,6 +823,82 @@ async function adoptNewPopupPage(context, currentPage, pagesBefore) {
   return np;
 }
 
+/* Returns Dashboard kholne ka WAF-safe rasta.
+ * DIRECT URL GOTO NAHI — portal ka WAF use "Access Denied" (services.gst.gov.in/services/error/accessdenied) se
+ * block kar deta hai, aur us page par koi dropdown nahi hota -> "period select nahi ho paya".
+ * Insaan jaisa rasta: RETURN DASHBOARD button/link click -> nahi mila to Services > Returns > Returns Dashboard
+ * menu link click -> phir bhi na ho to aakhri option ke roop me direct URL.
+ */
+async function clickReturnsDashboardLink(page) {
+  try {
+    const btn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
+    if (await btn.isVisible().catch(() => false)) {
+      await btn.click({ force: true }).catch(() => {});
+      return "button";
+    }
+  } catch (_) {}
+  const viaAnchor = await page.evaluate(() => {
+    const links = Array.from(document.querySelectorAll("a"));
+    const a = links.find(x => /returns\s+dashboard/i.test(x.textContent || "") || (x.getAttribute("href") || "").includes("/returns/auth/dashboard"));
+    if (a) { a.click(); return "anchor:" + (a.textContent || "").replace(/\s+/g, " ").trim().slice(0, 30); }
+    return null;
+  }).catch(() => null);
+  return viaAnchor;
+}
+
+async function ensureReturnsDashboard(page, context, pagesBefore, dbg, tag) {
+  const t = tag || "ret";
+  const step = (k, v) => { if (dbg && dbg.steps) dbg.steps[t + "_" + k] = v; };
+  if (isReturnsDashboardUrl(page.url())) return { page, ok: true, how: "already" };
+
+  // Access Denied page par hain to pehle services dashboard par wapas (thoda cool down ke baad)
+  let snap = await pageSnapshotBrief(page).catch(() => null);
+  if (classifyStuckPage(snap).kind === "access_denied") {
+    step("recoverFromAccessDenied", true);
+    await page.waitForTimeout(5000);
+    await page.goto(GST_AUTH_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
+    await page.waitForTimeout(3000);
+    await dismissModals(page).catch(() => {});
+    page = await adoptNewPopupPage(context, page, pagesBefore);
+  }
+
+  let how = await clickReturnsDashboardLink(page);
+  await page.waitForTimeout(4500);
+  page = await adoptNewPopupPage(context, page, pagesBefore);
+  let ok = await waitForDashboardSelects(page, 25000);
+
+  if (!ok) {
+    // Services > Returns > Returns Dashboard (aapke screenshot wala menu)
+    await page.evaluate(() => {
+      const el = Array.from(document.querySelectorAll("a,button,span")).find(x => /^\s*services\s*$/i.test((x.textContent || "").trim()) && x.offsetParent !== null);
+      if (el) el.click();
+    }).catch(() => {});
+    await page.waitForTimeout(1800);
+    const clickedMenu = await page.evaluate(() => {
+      const a = Array.from(document.querySelectorAll("a")).find(x => x.offsetParent !== null && (/^\s*returns\s+dashboard\s*$/i.test((x.textContent || "").trim()) || (x.getAttribute("href") || "").includes("/returns/auth/dashboard")));
+      if (a) { a.click(); return true; }
+      return false;
+    }).catch(() => false);
+    step("menuClick", clickedMenu);
+    await page.waitForTimeout(4500);
+    page = await adoptNewPopupPage(context, page, pagesBefore);
+    ok = await waitForDashboardSelects(page, 25000);
+    if (ok) how = (how || "") + "+menu";
+    else {
+      // Aakhri option: direct URL (WAF kabhi ise block karta hai, isliye sabse baad me)
+      await page.waitForTimeout(2500);
+      await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
+      await page.waitForTimeout(3000);
+      await dismissModals(page).catch(() => {});
+      page = await adoptNewPopupPage(context, page, pagesBefore);
+      ok = await waitForDashboardSelects(page, 20000);
+      if (ok) how = (how || "") + "+directUrl";
+    }
+  }
+  step("ensure", { how, ok, url: page.url() });
+  return { page, ok, how };
+}
+
 /* Returns Dashboard kholna + FY/Quarter/Month select karna.
  * Fail hone par ek retry (seedha return.gst.gov.in URL), aur phir bhi fail ho to ASLI page ka
  * diagnostic error deta hai (pehle sirf "waitForSelector Timeout 25000ms" aata tha — pata hi nahi
@@ -863,11 +939,11 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
     // Retry 1: kabhi menu click navigate nahi karta; WAF/portal slow hone par 40s bhi kam pad jate hain
     const snap1 = await pageSnapshotBrief(page);
     step("selectTimeoutAt", Object.assign({ url: page.url(), kind: classifyStuckPage(snap1).kind }, snap1));
-    await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
-    await page.waitForTimeout(3000);
-    await dismissModals(page);
-    page = await adoptNewPopupPage(context, page, pagesBefore);
-    ok = await waitForDashboardSelects(page, 25000);
+    // Retry bhi WAF-safe: pehle menu/button click, direct URL sirf aakhri option me (helper ke andar)
+    const ens1 = await ensureReturnsDashboard(page, context, pagesBefore, dbg, t);
+    page = ens1.page;
+    step("retry1Ensure", { ok: ens1.ok, how: ens1.how });
+    ok = ens1.ok;
     if (!ok) stuck = await pageSnapshotBrief(page);
   }
   if (!ok) {
@@ -968,12 +1044,16 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
     const monthThere = guessSelectIndex(dumpNow, "month") >= 0;
     if (!monthThere) {
       step("wrongPageBeforeSelect", { url: page.url(), selects: dumpNow });
-      await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
-      await page.waitForTimeout(3000);
-      await dismissModals(page).catch(() => {});
-      page = await adoptNewPopupPage(context, page, pagesBefore);
-      await waitForDashboardSelects(page, 25000);
-      step("urlAfterForceReturns", page.url());
+      const ens = await ensureReturnsDashboard(page, context, pagesBefore, dbg, t);
+      page = ens.page;
+      step("urlAfterForceReturns", { url: page.url(), ok: ens.ok, how: ens.how });
+      if (!ens.ok) {
+        // Direct URL par WAF ne Access Denied diya — saaf message (period select ka confusing error nahi)
+        const snapNow = await pageSnapshotBrief(page).catch(() => null);
+        const clsNow = classifyStuckPage(snapNow);
+        step("forceReturnsFailed", Object.assign({ kind: clsNow.kind }, snapNow));
+        throw new Error(`Returns Dashboard nahi khul paya (${clsNow.kind}). Aakhri page: ${page.url()}. ${clsNow.hint} [${t}_forceReturnsFailed dekhein]`);
+      }
     }
   }
 
@@ -984,10 +1064,12 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
     await page.waitForTimeout(1500);
     await dismissModals(page).catch(() => {});
     try {
-      if (!isReturnsDashboardUrl(page.url())) {
-        await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
-      } else {
+      if (isReturnsDashboardUrl(page.url())) {
         await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+      } else {
+        const ens2 = await ensureReturnsDashboard(page, context, pagesBefore, dbg, t);
+        page = ens2.page;
+        step("retry2Ensure", { ok: ens2.ok, how: ens2.how });
       }
     } catch (_) {}
     await page.waitForTimeout(3000);
@@ -1830,7 +1912,7 @@ module.exports = {
   summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE,
   // naye helpers bhi test ke liye bahar (browser ke bina testable)
   readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod,
-  isGstr2bNotGenerated, GSTR2B_NOT_GENERATED_RE, isGstr2bNotGeneratedFast, isReturnsDashboardUrl, GSTR2B_NOT_GENERATED_FAST_RE, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, TCS_EMPTY_RE, waitForBodyMatch,
+  isGstr2bNotGenerated, GSTR2B_NOT_GENERATED_RE, isGstr2bNotGeneratedFast, isReturnsDashboardUrl, ensureReturnsDashboard, clickReturnsDashboardLink, GSTR2B_NOT_GENERATED_FAST_RE, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, TCS_EMPTY_RE, waitForBodyMatch,
   openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
   classifyStuckPage, readSelectOptions, guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
