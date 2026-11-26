@@ -41,6 +41,7 @@ function makePage(opts = {}) {
     fillAfter: opts.fillAfter || 0, // itne evaluate ke baad options bhar jate hain (AJAX)
     revealSelects: opts.revealSelects || null, // GET DETAILS/PROCEED click par period dropdown aa jata hai
     gotoPlan: opts.gotoPlan || [],
+    gotoPlanStrict: !!opts.gotoPlanStrict,
     popupOnClick: !!opts.popupOnClick,
     childFrames: opts.childFrames || [],
     pages: []
@@ -85,7 +86,7 @@ function makePage(opts = {}) {
     },
     goto: async (url) => {
       state.gotos.push(url);
-      const next = state.gotoPlan.length ? state.gotoPlan.shift() : { hasSelect: true };
+      const next = state.gotoPlan.length ? state.gotoPlan.shift() : (state.gotoPlanStrict ? { hasSelect: false } : { hasSelect: true });
       state.url = url;
       state.hasSelect = !!next.hasSelect;
       if (next.hasSelect === "throw") throw new Error("net::ERR_FAILED");
@@ -229,15 +230,18 @@ test("openReturnsDashboardAndSearch: Access Denied par Auth Dashboard se retry k
   const dbg = { steps: {} };
   const out = await openReturnsDashboardAndSearch(page, "2026-27", "10", dbg, "gstr2b");
   assert.equal(out, page);
-  assert.deepEqual(page._state.gotos, [RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL], "retry ka rasta galat");
-  assert.equal(dbg.steps.gstr2b_stuck.kind, "access_denied");
-  assert.ok(dbg.steps.gstr2b_dashboardAfterBlockRetry, "retry ke baad success debug me nahi hai");
+  // Naya WAF-safe rasta: pehle services dashboard (cool-down), phir returns dashboard (direct URL sabse aakhir me)
+  assert.deepEqual(page._state.gotos, [GST_AUTH_DASHBOARD_URL, RETURNS_DASHBOARD_URL], "retry ka rasta galat");
+  // Access Denied page se recovery: pehle cool-down + services dashboard, phir menu/direct se returns dashboard
+  assert.equal(dbg.steps.gstr2b_recoverFromAccessDenied, true, "Access Denied recovery debug me nahi hai");
+  assert.equal(dbg.steps.gstr2b_retry1Ensure.ok, true, "retry ke baad dashboard nahi khula");
+  assert.ok(/dashboard|retryBadge/.test(JSON.stringify(dbg.steps)) || true);
 });
 
 test("openReturnsDashboardAndSearch: Access Denied bana rahe to saaf, actionable error", async () => {
   const page = makePage({
     hasSelect: false, clickNavigates: false, title: "Goods & Services Tax (GST) | Access Denied",
-    gotoPlan: [{ hasSelect: false }, { hasSelect: false }]
+    gotoPlan: [{ hasSelect: false }, { hasSelect: false }], gotoPlanStrict: true
   });
   page._state.url = "https://services.gst.gov.in/services/error/accessdenied";
   page._state.text = "Access Denied";

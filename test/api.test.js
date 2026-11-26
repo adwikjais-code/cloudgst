@@ -6,7 +6,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
-const { isGstr2bNotGenerated, isGstr2bNotGeneratedFast, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, waitForBodyMatch, isReturnsDashboardUrl, partialOutcome } = require("../server.js");
+const { isGstr2bNotGenerated, isGstr2bNotGeneratedFast, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, waitForBodyMatch, isReturnsDashboardUrl, partialOutcome, classifyStuckPage } = require("../server.js");
 
 const ROOT = path.join(__dirname, "..");
 const SECRET = "test-secret-123";
@@ -384,4 +384,22 @@ test("partialOutcome: gstr2b not_generated ko failure nahi ginta (sheet save hot
   // asli failure (navigation/portal issue) ab bhi failure rahe
   const realFail = partialOutcome({ gstr2b: { state: "failed", message: "portal error" } }, { gstr2b: true });
   assert.equal(realFail.allFailed, true);
+});
+
+/* ---------- Access Denied (WAF) se bachne ka rasta ---------- */
+test("returns dashboard: direct URL goto sirf aakhri option hai (WAF Access Denied na de)", () => {
+  const fs = require("node:fs");
+  const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  // Direct URL goto poori file me sirf 2 jagah: ensureReturnsDashboard (last resort) + TCS menu fallback (proven)
+  const gotos = src.match(/page\.goto\(RETURNS_DASHBOARD_URL/g) || [];
+  assert.equal(gotos.length, 2, "direct URL goto kahin naya add hua hai — WAF Access Denied dega");
+  assert.ok(/async function ensureReturnsDashboard/.test(src));
+  assert.ok(/RETURN DASHBOARD/.test(src), "button click ka rasta chahiye");
+  assert.ok(/returns\s+dashboard/i.test(src), "menu/link click ka rasta chahiye");
+});
+
+test("classifyStuckPage: access denied page par recovery hint milta hai", () => {
+  const cls = classifyStuckPage({ url: "https://services.gst.gov.in/services/error/accessdenied", text: "Access Denied" });
+  assert.equal(cls.kind, "access_denied");
+  assert.ok(cls.hint.length > 10);
 });
