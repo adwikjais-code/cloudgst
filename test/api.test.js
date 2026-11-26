@@ -331,3 +331,14 @@ test("gstr2bPageSaysSessionExpired: expired/login-again pakadta hai", () => {
   assert.equal(gstr2bPageSaysSessionExpired("Session timed out"), true);
   assert.equal(gstr2bPageSaysSessionExpired("GSTR-2B Summary"), false);
 });
+
+/* ---------- 2B generate app KABHI nahi dabata (regression guard) ---------- */
+test("2B: app khud 'GENERATE JSON' nahi dabata aur 90s wait bhi nahi", () => {
+  const fs = require("node:fs");
+  const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  assert.equal(/genJsonBtn/.test(src), false, "generate button ka code nahi hona chahiye");
+  assert.equal(/gstr2b_generate/.test(src), false, "generate progress step nahi hona chahiye");
+  assert.equal(/90000/.test(src), false, "2B ke liye 90s wait nahi hona chahiye");
+  assert.ok(/setGstr2bNotGenerated/.test(src), "not-generated path hona chahiye");
+  assert.ok(/Gstr2bPageSaysNotGenerated|gstr2bPageSaysNotGenerated/.test(src));
+});

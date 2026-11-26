@@ -1344,11 +1344,11 @@ function startServer() {
       },
       warnings: []
     };
-    const setGstr2bNotGenerated = (rawText) => {
+    const setGstr2bNotGenerated = (rawText, customMsg) => {
       result.status.gstr2b = {
         state: "failed",
         code: "gstr2b_not_generated",
-        message: "GSTR-2B portal ne generate hi nahi ki (system ne generate nahi ki — koi record nahi / pichhli 3B pending / QRMP quarter month)."
+        message: customMsg || "GSTR-2B portal ne generate hi nahi ki (system ne generate nahi ki — koi record nahi / pichhli 3B pending / QRMP quarter month)."
       };
       result.warnings.push("[gstr2b] not generated");
       result.notGenerated2b = true;
@@ -1386,98 +1386,96 @@ function startServer() {
             setStatus("gstr2b", "failed", "GSTR-2B card ya Download button nahi mila (2B abhi generate na hui ho to bhi aisa hota hai).");
           }
         } else {
-          setProgress(s, "gstr2b_click", "GSTR-2B DOWNLOAD dabaya ja raha hai…");
+          setProgress(s, "gstr2b_click", "GSTR-2B ka DOWNLOAD dabaya ja raha hai…");
           await downloadBtn.click({ force: true });
           await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-          await page.waitForTimeout(1500);
+          await page.waitForTimeout(1200);
           dbg.steps.gstr2bPageUrl = page.url();
           dbg.steps.gstr2bButtons = await page.evaluate(() =>
             Array.from(document.querySelectorAll("button, a.btn, input[type='button']")).map(b => (b.innerText || b.value || "").trim()).filter(Boolean).slice(0, 15));
 
-          const genJsonBtn = page.locator("button:has-text('GENERATE JSON'), a:has-text('GENERATE JSON'), button:has-text('JSON')").first();
-          if (!(await genJsonBtn.count())) {
-            // Screenshot wala case: 2B bani hi nahi -> page par Error likha hota hai, GENERATE JSON button nahi hota.
-            const noGenText = await page.locator("body").innerText().catch(() => "");
-            dbg.steps.gstr2bNoGenText = String(noGenText || "").replace(/\s+/g, " ").slice(0, 400);
-            if (gstr2bPageSaysNotGenerated(noGenText)) {
-              setGstr2bNotGenerated(noGenText);
-            } else if (gstr2bPageSaysSessionExpired(noGenText)) {
+          // IMPORTANT: app khud kabhi "GENERATE JSON" nahi dabata (2B generate karna taxpayer ka kaam hai).
+          // Sirf pehle se bani hui 2B download hoti hai; na mile to "not generated" likh kar TURANT aage badh jate hain — 90s wait nahi.
+          const downloads = [];
+          const onDl = d => downloads.push(d);
+          page.on("download", onDl);
+          let download = null, linkClicked = 0;
+          try {
+            const startText = await page.locator("body").innerText().catch(() => "");
+            dbg.steps.gstr2bPageText = String(startText || "").replace(/\s+/g, " ").slice(0, 700);
+            if (gstr2bPageSaysNotGenerated(startText)) {
+              setGstr2bNotGenerated(startText);
+            } else if (gstr2bPageSaysSessionExpired(startText)) {
               setStatus("gstr2b", "failed", "Portal session expire ho gaya — dobara fetch karein.");
             } else {
-              setStatus("gstr2b", "failed", "GSTR-2B GENERATE JSON button nahi mila.");
-            }
-          } else {
-            // Portal JSON file async banata hai: click ke baad 90 second tak har 3 second par check karte hain
-            // (download event ya "Click here to download / File 1" link)
-            const downloads = [];
-            const onDl = d => downloads.push(d);
-            page.on("download", onDl);
-            let download = null, polls = 0, linkClicked = 0;
-            try {
-              setProgress(s, "gstr2b_generate", "2B JSON generate ho rahi hai (portal ko 30-90s lagte hain)…");
-              await genJsonBtn.click({ force: true });
-              const started = Date.now();
-              while (Date.now() - started < 90000) {
-                await page.waitForTimeout(3000);
-                polls++;
-                if (polls % 4 === 0) setProgress(s, "gstr2b_generate", `2B JSON generate ho rahi hai… ${Math.round((Date.now() - started) / 1000)}s`);
-                if (downloads.length) { download = downloads[0]; break; }
-                // FAST-FAIL: portal khud bol de ki 2B bani hi nahi / session gaya -> 90s intezaar na karo
-                {
-                  const pollText = await page.locator("body").innerText().catch(() => "");
-                  if (gstr2bPageSaysNotGenerated(pollText)) { setGstr2bNotGenerated(pollText); break; }
-                  if (gstr2bPageSaysSessionExpired(pollText)) {
-                    setStatus("gstr2b", "failed", "Portal session expire ho gaya — dobara fetch karein.");
-                    break;
+              const linkSel = "a:has-text('Click here to download'), a:has-text('File 1'), a:has-text('DOWNLOAD'), button:has-text('DOWNLOAD')";
+              const dlCand = page.locator(linkSel).first();
+              if (await dlCand.count().catch(() => 0)) {
+                setProgress(s, "gstr2b_download", "GSTR-2B file download ho rahi hai…");
+                linkClicked++;
+                await dlCand.click({ force: true, timeout: 8000 }).catch(() => {});
+                const t1 = Date.now();
+                while (Date.now() - t1 < 8000 && !downloads.length) await page.waitForTimeout(600);
+              }
+              if (!downloads.length) {
+                // 4 second ka aakhri mauka (link kabhi 1-2s late aata hai) — 90s kahin nahi
+                const t2 = Date.now();
+                while (Date.now() - t2 < 4000 && !downloads.length) {
+                  await page.waitForTimeout(800);
+                  const t = await page.locator("body").innerText().catch(() => "");
+                  if (gstr2bPageSaysNotGenerated(t)) { setGstr2bNotGenerated(t); break; }
+                  const l = page.locator("a:has-text('Click here to download'), a:has-text('File 1')").first();
+                  if (await l.count().catch(() => 0)) {
+                    linkClicked++;
+                    await l.click({ force: true, timeout: 6000 }).catch(() => {});
+                    const t3 = Date.now();
+                    while (Date.now() - t3 < 4000 && !downloads.length) await page.waitForTimeout(600);
                   }
                 }
-                await dismissModals(page);
-                if (!linkClicked) {
-                  const link = page.locator("a:has-text('Click here to download'), a:has-text('File 1')").first();
-                  if (await link.count()) { linkClicked++; await link.click({ force: true, timeout: 8000 }).catch(() => {}); }
-                }
               }
-            } finally {
-              page.off("download", onDl);
+              if (downloads.length) download = downloads[0];
             }
-            const after = await snapshotPage(page);
-            const multiFile = (await page.locator("a:has-text('File 2')").count().catch(() => 0)) > 0;
-            dbg.steps.gstr2bAfterGenerate = { polls, linkClicked, gotDownload: !!download, multiFile, url: after.url, buttons: after.buttons, bodyExcerpt: after.bodyText.slice(0, 1500) };
-            const portalMsg = after.bodyText.split("\n").map(x => x.trim())
-              .filter(x => x.length > 8 && x.length < 260 && /generat|process|wait|not\s+(available|generated)|no\s+(data|record)|try again|download/i.test(x) && !/^GENERATE (JSON|EXCEL)/i.test(x))
-              .slice(0, 3).join(" | ");
-            if (!download && isGstr2bNotGenerated(after.bodyText)) {
-              setGstr2bNotGenerated(after.bodyText);
-            } else if (!download) {
-              setStatus("gstr2b", "failed", "GSTR-2B JSON 90 second me download nahi hui." + (portalMsg ? " Portal ka message: " + portalMsg : "") + " Portal par check karein ki is client ki 2B is month ke liye generate hui hai ya nahi.");
+          } finally {
+            page.off("download", onDl);
+          }
+
+          const after = await snapshotPage(page);
+          const multiFile = (await page.locator("a:has-text('File 2')").count().catch(() => 0)) > 0;
+          dbg.steps.gstr2bAfterDownload = { linkClicked, gotDownload: !!download, multiFile, url: after.url, buttons: after.buttons, bodyExcerpt: after.bodyText.slice(0, 1500) };
+
+          if (!download) {
+            // Download available nahi -> "not generated" (bilkul wait nahi), phir TCS section aage
+            const alreadyNotGen = !!(result.status.gstr2b && result.status.gstr2b.code === "gstr2b_not_generated");
+            if (!alreadyNotGen) {
+              setGstr2bNotGenerated(after.bodyText, "GSTR-2B download available nahi thi — is period ki 2B generated nahi hai (app khud generate nahi karta).");
+            }
+          } else {
+            const rawBuf = fs.readFileSync(await download.path());
+            const pack = readJsonFilesFromBuffer(rawBuf);
+            const parsedList = pack.files.map(f => JSON.parse(f.text));
+            const parsed = parsedList.find(x => x && x.data && x.data.itcsumm) || parsedList[0];
+            const sugg = download.suggestedFilename() || `GSTR2B_${result.month}${result.fy.slice(0, 4)}`;
+            if (pack.isZip && pack.files.length > 1) {
+              result.gstr2b.fileName = /\.zip$/i.test(sugg) ? sugg : sugg.replace(/\.json$/i, "") + ".zip";
+              result.gstr2b.jsonBase64 = "data:application/zip;base64," + rawBuf.toString("base64");
             } else {
-              const rawBuf = fs.readFileSync(await download.path());
-              const pack = readJsonFilesFromBuffer(rawBuf);
-              const parsedList = pack.files.map(f => JSON.parse(f.text));
-              const parsed = parsedList.find(x => x && x.data && x.data.itcsumm) || parsedList[0];
-              const sugg = download.suggestedFilename() || `GSTR2B_${result.month}${result.fy.slice(0, 4)}`;
-              if (pack.isZip && pack.files.length > 1) {
-                result.gstr2b.fileName = /\.zip$/i.test(sugg) ? sugg : sugg.replace(/\.json$/i, "") + ".zip";
-                result.gstr2b.jsonBase64 = "data:application/zip;base64," + rawBuf.toString("base64");
-              } else {
-                result.gstr2b.fileName = /\.json$/i.test(sugg) ? sugg : (pack.isZip ? safeFileName(pack.files[0].name, sugg + ".json") : sugg + ".json");
-                result.gstr2b.jsonBase64 = "data:application/json;base64," + Buffer.from(pack.files[0].text, "utf8").toString("base64");
-              }
-              const sm = summarizeGstr2B(parsed);
-              const countOf = key => parsedList.reduce((acc, x) => acc + (Array.isArray(x?.data?.docdata?.[key]) ? x.data.docdata[key].length : 0), 0);
-              sm.b2bSuppliersCount = countOf("b2b");
-              sm.cdnrCount = countOf("cdnr");
-              result.gstr2b.summary = sm;
-              result.gstr2b.b2bSellers = buildB2bSellers(parsedList);
-              if (result.gstr2b.b2bSellers.length) sm.b2bSuppliersCount = result.gstr2b.b2bSellers.length;
-              dbg.steps.gstr2bFiles = { isZip: pack.isZip, files: pack.files.map(f => f.name) };
-              dbg.steps.gstr2bItcKeys = { avl: Object.keys(parsed?.data?.itcsumm?.itcavl || {}), unavl: Object.keys(parsed?.data?.itcsumm?.itcunavl || {}) };
-              const problems = sm.warnings.slice();
-              if (multiFile && !(pack.isZip && pack.files.length > 1)) problems.push("2B ki ek se zyada file hain — sirf File 1 ka summary li gayi hai, totals adhoore ho sakte hain.");
-              if (sm.rtnprd && sm.rtnprd !== result.period) problems.push(`Download hui 2B ka period ${sm.rtnprd} hai, jabki maanga gaya ${result.period}.`);
-              if (problems.length) setStatus("gstr2b", "uncertain", problems.join(" "));
-              else setStatus("gstr2b", "ok", "GSTR-2B mil gayi.");
+              result.gstr2b.fileName = /\.json$/i.test(sugg) ? sugg : (pack.isZip ? safeFileName(pack.files[0].name, sugg + ".json") : sugg + ".json");
+              result.gstr2b.jsonBase64 = "data:application/json;base64," + Buffer.from(pack.files[0].text, "utf8").toString("base64");
             }
+            const sm = summarizeGstr2B(parsed);
+            const countOf = key => parsedList.reduce((acc, x) => acc + (Array.isArray(x?.data?.docdata?.[key]) ? x.data.docdata[key].length : 0), 0);
+            sm.b2bSuppliersCount = countOf("b2b");
+            sm.cdnrCount = countOf("cdnr");
+            result.gstr2b.summary = sm;
+            result.gstr2b.b2bSellers = buildB2bSellers(parsedList);
+            if (result.gstr2b.b2bSellers.length) sm.b2bSuppliersCount = result.gstr2b.b2bSellers.length;
+            dbg.steps.gstr2bFiles = { isZip: pack.isZip, files: pack.files.map(f => f.name) };
+            dbg.steps.gstr2bItcKeys = { avl: Object.keys(parsed?.data?.itcsumm?.itcavl || {}), unavl: Object.keys(parsed?.data?.itcsumm?.itcunavl || {}) };
+            const problems = sm.warnings.slice();
+            if (multiFile && !(pack.isZip && pack.files.length > 1)) problems.push("2B ki ek se zyada file hain — sirf File 1 ka summary li gayi hai, totals adhoore ho sakte hain.");
+            if (sm.rtnprd && sm.rtnprd !== result.period) problems.push(`Download hui 2B ka period ${sm.rtnprd} hai, jabki maanga gaya ${result.period}.`);
+            if (problems.length) setStatus("gstr2b", "uncertain", problems.join(" "));
+            else setStatus("gstr2b", "ok", "GSTR-2B mil gayi.");
           }
         }
       } catch (err) {
