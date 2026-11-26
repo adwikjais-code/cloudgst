@@ -47,6 +47,12 @@ android {
     }
 }
 
+// kotlin 1.8+ me jdk7/jdk8 stdlib ka code stdlib me hi aa gaya hai -> duplicate class error se bachne ke liye
+configurations.all {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+}
+
 dependencies {
     implementation 'androidx.webkit:webkit:1.11.0'
     implementation 'androidx.core:core:1.13.1'
