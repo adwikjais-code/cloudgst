@@ -21245,6 +21245,17 @@ function buildEtsyPdfReport(opts) {
           st.sessionId = "PHONE";
           st.captchaBase64 = "";
           st.note = "";
+          const who = gpPhoneLoginClient();
+          const mine = String(c.gstin || c.portalId || "").trim();
+          if (!who || (mine && who !== mine)) {
+            // Phone par is client ka login nahi hai -> login screen khud khule (captcha + OTP aap dalenge)
+            st.phase = "idle";
+            st.note = "🔐 Phone par login nahi — pehle ek baar login karein";
+            gpRenderSerialList();
+            gpToast("🔐 " + (c.clientName || "Client") + ": phone mode ke liye pehle ek baar portal login (captcha + OTP aap dalenge) — uske baad sab background me");
+            setTimeout(() => { try { gpNativeOpenPortal(clientKey); } catch (_) {} }, 500);
+            return;
+          }
           gpRenderSerialList();
           return gpTriggerFetchInBackground(c, st);
         }
@@ -21331,7 +21342,11 @@ function buildEtsyPdfReport(opts) {
               gpToast(_needLogin
                 ? `🔐 ${c.clientName}: ${err.message}`
                 : `❌ ${c.clientName}: ${err.message} — 90s baad dobara try karein.`);
-              if (_needLogin) gpPhoneLoginClient("");
+              if (_needLogin) {
+                gpPhoneLoginClient("");
+                // ek hi tap: login screen khud khule (captcha + OTP user dalega)
+                setTimeout(() => { try { gpNativeOpenPortal(c.clientKey); } catch (_) {} }, 700);
+              }
             }
             if (st.sessionId && st.sessionId !== "PHONE") gpCallBridge("/api/gst/logout", { sessionId: st.sessionId }).catch(() => {});
           })

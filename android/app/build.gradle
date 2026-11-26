@@ -8,8 +8,8 @@ android {
         applicationId 'com.cloudgst.app'
         minSdk 24
         targetSdk 34
-        versionCode 70
-        versionName '5.9.7'
+        versionCode 71
+        versionName '5.9.8'
     }
 
     signingConfigs {

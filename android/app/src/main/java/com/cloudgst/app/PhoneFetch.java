@@ -113,7 +113,7 @@ public class PhoneFetch {
             } else {
                 deliver(reqId, err("timeout",
                         "Phone mode: portal ne " + Math.round(HARD_TIMEOUT_MS / 1000)
-                                + "s me 2B page nahi diya (portal slow / naya login chahiye). ☁️ Cloud mode try karein."));
+                                + "s me 2B page nahi diya" + diagText() + ". ☁️ Cloud mode try karein."));
             }
         }
     };
@@ -149,13 +149,15 @@ public class PhoneFetch {
                 onClickedDownload(url, userAgent);
             }
         });
-        // screen par kuch na dikhe: 1dp, invisible, non-interactive
-        v.setAlpha(0f);
-        v.setVisibility(View.INVISIBLE);
+        // Poora size + app ke WebView ke PEECHHE (index 0) — page asli tarah render hota hai
+        // (1dp invisible WebView me Android layout/paint hi nahi karta tha, isliye page "khali" lagta tha),
+        // aur upar app ka apna WebView hai isliye user ko portal kabhi dikhta nahi.
         v.setClickable(false);
         v.setFocusable(false);
-        ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(1, 1);
-        host.addView(v, lp);
+        v.setVerticalScrollBarEnabled(false);
+        ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        host.addView(v, 0, lp);
         wv = v;
     }
 
@@ -167,13 +169,27 @@ public class PhoneFetch {
             if (finished || wv == null) return;
             ticks++;
             wv.evaluateJavascript(buildTickScript(), value -> {
-                String tok = value == null ? "" : value.replace("\"", "").trim();
+                String raw = decodeJsString(value);
+                String tok = raw;
+                try {
+                    JSONObject d = new JSONObject(raw);
+                    tok = d.optString("t", "");
+                    if (d.has("u") || d.has("b")) lastDiag = d;
+                } catch (Exception e) {
+                    tok = raw.replace("\"", "").trim();
+                }
                 lastToken = tok;
                 if (finished) return;
+                if (tok.startsWith("ERR:")) {
+                    deliver(reqId, err("script_error",
+                            "Phone mode: portal page par script error (" + tok.substring(4) + ")" + diagText()
+                                    + ". ☁️ Cloud mode try karein."));
+                    return;
+                }
                 if ("LOGIN".equals(tok)) {
                     deliver(reqId, err("login_required",
-                            "Is client ka GST portal login phone par nahi hai (session khatam / login nahi hua). "
-                                    + "Ek baar 🌐 Portal Login se login karein (captcha aap dalenge), uske baad phone mode background me chalega."));
+                            "Is client ka GST portal login phone par nahi hai — ek baar login karein "
+                                    + "(captcha + OTP aap dalenge), uske baad phone mode background me chalega."));
                     return;
                 }
                 if ("NOTGEN".equals(tok)) {
@@ -197,8 +213,8 @@ public class PhoneFetch {
                 }
                 if (ticks >= 60) {
                     deliver(reqId, err("timeout",
-                            "Phone mode: portal ne 2B card/DOWNLOAD nahi diya (aakhri page: " + lastToken + "). "
-                                    + "☁️ Cloud mode try karein."));
+                            "Phone mode: portal ne 2B card/DOWNLOAD nahi diya (aakhri: " + lastToken + ")"
+                                    + diagText() + ". ☁️ Cloud mode try karein."));
                     return;
                 }
                 h.postDelayed(tickRun, TICK_MS);
@@ -206,26 +222,51 @@ public class PhoneFetch {
         }
     };
 
-    /** Ek hi script har tick par page dekh kar sahi kadam uthati hai. */
+    private JSONObject lastDiag = null;
+
+    /** Diagnostic text (error message me) — page kya dikha raha tha, yeh pata chale. */
+    private String diagText() {
+        JSONObject d = lastDiag;
+        if (d == null) return "";
+        String u = d.optString("u", "");
+        String ti = d.optString("ti", "");
+        String b = d.optString("b", "");
+        String out = "";
+        if (!u.isEmpty()) out += " | page: " + u;
+        if (!ti.isEmpty()) out += " | " + ti;
+        if (!b.isEmpty()) out += " | text: " + b;
+        return out.length() > 320 ? out.substring(0, 320) : out;
+    }
+
+    /**
+     * Ek hi script har tick par page dekh kar sahi kadam uthati hai.
+     * Har jawab JSON hota hai: {t:"TOKEN", u:url, ti:title, b:text, sels:n}
+     * Helpers try ke BAAHAR hain — kabhi script error ho to bhi diagnostics milti rahe.
+     * Token: LOGIN | NOTGEN | CLICKED | SETTING | SEARCHED | DASH | OPENING | NONE | ERR:<msg>
+     */
     private String buildTickScript() {
-        String js = "(function(){try{"
+        String js = "(function(){"
+                + "var out=function(t){var b='';try{var el=document.body||document.documentElement;"
+                + "b=String((el&&(el.innerText||el.textContent))||'').replace(/\\s+/g,' ').trim().slice(0,150);}catch(x){}"
+                + "return JSON.stringify({t:t,u:String(location.href||'').slice(0,150),ti:String(document.title||'').slice(0,70),b:b,"
+                + "sels:(document.querySelectorAll?document.querySelectorAll('select').length:0)});};"
+                + "var vis=function(e){try{return !!(e&&(e.offsetParent!==null||(e.getClientRects&&e.getClientRects().length)));}catch(x){return false;}};"
+                + "var txt=function(e){return ((e&&(e.innerText||e.textContent))||'')+'';};"
+                + "var flat=function(e){return txt(e).replace(/\\s+/g,' ').trim();};"
+                + "try{"
                 + "var FY=" + JSONObject.quote(fyLabel) + ",MONF=" + JSONObject.quote(monFull)
                 + ",MONS=" + JSONObject.quote(monShort) + ";"
-                + "function vis(e){try{return !!(e&&e.offsetParent!==null);}catch(x){return false;}}"
-                + "function txt(e){return ((e&&(e.innerText||e.textContent))||'')+' '+'';}"
-                + "function flat(e){return txt(e).replace(/\\s+/g,' ').trim();}"
-                + "var href=(location.href||'').toLowerCase();"
-                + "var hasPw=!!document.querySelector('input[type=password]');"
-                + "if(href.indexOf('/login')>=0||hasPw) return 'LOGIN';"
+                + "var href=String(location.href||'').toLowerCase();"
+                + "if(href.indexOf('/login')>=0||document.querySelector('input[type=password]')) return out('LOGIN');"
                 + "var body=flat(document.body||document.documentElement);"
-                + "if(/not\\s+generated/i.test(body)&&/2B/i.test(body)) return 'NOTGEN';"
+                + "if(/not\\s+generated/i.test(body)&&/2B/i.test(body)) return out('NOTGEN');"
                 // ---- 2B card ka DOWNLOAD (search ke baad) ----
                 + "var btns=[].slice.call(document.querySelectorAll('button,a,input[type=button]'));"
                 + "for(var i=0;i<btns.length;i++){var b=btns[i];if(!vis(b))continue;"
                 + "if(!/DOWNLOAD/i.test(flat(b)))continue;"
                 + "var p=b.parentNode,hops=0,hit=false;"
                 + "while(p&&hops<5){if(/GSTR-?2B/i.test(flat(p))){hit=true;break;}p=p.parentNode;hops++;}"
-                + "if(hit){try{b.scrollIntoView({block:'center'});}catch(x){}b.click();return 'CLICKED';}}"
+                + "if(hit){try{b.scrollIntoView({block:'center'});}catch(x){}b.click();return out('CLICKED');}}"
                 // ---- dashboard: FY + Month select, phir SEARCH ----
                 + "var sels=[].slice.call(document.querySelectorAll('select'));"
                 + "if(sels.length){var fySet=false,monSet=false;"
@@ -235,18 +276,19 @@ public class PhoneFetch {
                 + "sels[s].dispatchEvent(new Event('change',{bubbles:true}));fySet=true;}"
                 + "else if(!monSet&&((MONF&&ot.indexOf(MONF)>=0)||(MONS.length>=3&&ot.replace(/[^A-Z]/g,'').indexOf(MONS)>=0))){"
                 + "sels[s].selectedIndex=o;sels[s].dispatchEvent(new Event('change',{bubbles:true}));monSet=true;}}}"
-                + "if(fySet||monSet) return 'SETTING';"
+                + "if(fySet||monSet) return out('SETTING');"
                 + "for(var k=0;k<btns.length;k++){var t=btns[k];if(!vis(t))continue;"
-                + "if(/^SEARCH$/i.test(flat(t))){t.click();return 'SEARCHED';}}"
-                + "return 'DASH';}"
+                + "if(/^SEARCH$/i.test(flat(t))){t.click();return out('SEARCHED');}}"
+                + "return out('DASH');}"
                 // ---- "RETURN DASHBOARD" / "RETURNS DASHBOARD" ----
                 + "var all=[].slice.call(document.querySelectorAll('a,button,span,li,div'));"
                 + "for(var m=0;m<all.length;m++){var e=all[m];if(!vis(e))continue;"
                 + "var et=flat(e).toUpperCase();"
                 + "if(et==='RETURN DASHBOARD'||et==='RETURNS DASHBOARD'||et==='RETURN DASHBOARD >'){"
-                + "var c=(e.closest?e.closest('a,button'):null)||e;try{c.click();}catch(x){}return 'OPENING';}}"
-                + "return 'NONE';"
-                + "}catch(e){return 'NONE';}})()";
+                + "var c=(e.closest?e.closest('a,button'):null)||e;try{c.click();}catch(x){}return out('OPENING');}}"
+                + "return out('NONE');"
+                + "}catch(e){return out('ERR:'+((e&&e.message)||e));}"
+                + "})()";
         return js;
     }
 
@@ -374,6 +416,16 @@ public class PhoneFetch {
         int n;
         while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
         return out.toByteArray();
+    }
+
+    /** evaluateJavascript ka jawab ek JSON string hota hai — usse theek se decode karo. */
+    private static String decodeJsString(String v) {
+        if (v == null || "null".equals(v) || v.isEmpty()) return "";
+        try {
+            return new JSONArray("[" + v + "]").getString(0);
+        } catch (Exception e) {
+            return unquote(v);
+        }
     }
 
     private static String unquote(String v) {

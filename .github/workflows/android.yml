@@ -13,7 +13,7 @@ permissions:
   issues: write
 
 env:
-  RELEASE_TAG: android-v5.9.7
+  RELEASE_TAG: android-v5.9.8
 
 jobs:
   build:
@@ -93,7 +93,7 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.9.7 — Re-Fetch par crash fix (UI thread))
+          ## CloudGST Android APK (v5.9.8 — phone mode: login pehle (captcha/OTP), page diagnostics, render fix)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
@@ -118,5 +118,5 @@ jobs:
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
           gh release create "$RELEASE_TAG" "CloudGST.apk" \
-            --title "CloudGST Android v5.9.7 (APK)" \
+            --title "CloudGST Android v5.9.8 (APK)" \
             --notes-file notes.md
