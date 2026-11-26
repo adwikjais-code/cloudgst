@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
-        <item name="android:statusBarColor">#0F172A</item>
+        <item name="android:statusBarColor">#12265C</item>
         <item name="android:navigationBarColor">#0F172A</item>
         <item name="android:windowLightStatusBar">false</item>
+        <!-- cold start me J&A logo wala navy splash (PDF letterhead jaisa) -->
+        <item name="android:windowBackground">@drawable/splash</item>
     </style>
 </resources>

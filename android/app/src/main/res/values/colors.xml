@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#0F172A</color>
+    <!-- PDF letterhead wale hi rang: navy band + gold ring -->
+    <color name="ic_launcher_background">#12265C</color>
+    <color name="splash_bg">#12265C</color>
+    <color name="gold">#C19A38</color>
 </resources>

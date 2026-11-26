@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- app build v5_8.2 (v5_8 + android portal + back gesture + fingerprint lock) -->
+<!-- app build v5_8 (json drive save/select + 2b not-generated) -->
 <html lang="hi">
 <head>
   <meta charset="UTF-8" />
@@ -219,13 +219,37 @@
       <!-- Harmonized Action Toolbar -->
       <div class="flex flex-wrap items-center gap-2">
         <!-- Primary Creation Actions -->
-        <button id="openAddModalBtn" type="button" class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs ring-1 ring-indigo-500/50 transition">
-          <span>➕ Add Client</span>
-        </button>
-        <label for="quickHeaderCertInput" class="cursor-pointer inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs ring-1 ring-emerald-500/40 transition">
-          <span>📄 GST Paper Auto-Add</span>
-          <input id="quickHeaderCertInput" type="file" accept=".pdf,image/*" class="hidden" />
-        </label>
+        <div class="relative" id="addClientMenuWrap">
+          <button id="addClientMenuBtn" type="button" aria-haspopup="true" aria-expanded="false" class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs ring-1 ring-indigo-500/50 transition">
+            <span>➕ Client</span>
+            <svg class="w-3 h-3 opacity-80" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M5.5 7.5 10 12l4.5-4.5H5.5Z"/></svg>
+          </button>
+          <div id="addClientMenu" class="hidden absolute right-0 mt-2 w-72 origin-top-right rounded-xl bg-white shadow-xl ring-1 ring-slate-200 p-1.5 z-50">
+            <button id="openAddModalBtn" type="button" data-add-opt="manual" class="w-full flex items-start gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-slate-50 transition">
+              <span class="text-base leading-none mt-0.5">✍️</span>
+              <span>
+                <span class="block text-[12px] font-semibold text-slate-800">Manually add karein</span>
+                <span class="block text-[10.5px] text-slate-500">Poori details khud bhariye</span>
+              </span>
+            </button>
+            <label for="quickHeaderCertInput" data-add-opt="file" class="w-full flex items-start gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-slate-50 transition cursor-pointer">
+              <span class="text-base leading-none mt-0.5">📄</span>
+              <span>
+                <span class="block text-[12px] font-semibold text-slate-800">GST paper se (ek file)</span>
+                <span class="block text-[10.5px] text-slate-500">PDF/photo upload — details khud bhar jayengi</span>
+              </span>
+              <input id="quickHeaderCertInput" type="file" accept=".pdf,image/*" class="hidden" />
+            </label>
+            <div class="my-1 h-px bg-slate-100"></div>
+            <button id="scanDriveCertsBtn" type="button" data-add-opt="drive" class="w-full flex items-start gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-indigo-50/60 transition">
+              <span class="text-base leading-none mt-0.5">☁️</span>
+              <span>
+                <span class="block text-[12px] font-semibold text-indigo-700">Drive folder se naye clients</span>
+                <span class="block text-[10.5px] text-slate-500">"GST Certificates" folder scan — sirf naye GSTIN, purane skip</span>
+              </span>
+            </button>
+          </div>
+        </div>
 
         <span class="hidden sm:inline-block h-5 w-px bg-slate-700/80 mx-0.5"></span>
 
@@ -2970,7 +2994,7 @@
         <button id="closeModalBtn" type="button" class="text-indigo-200 hover:text-white text-sm font-bold px-2 py-1 rounded">✕</button>
       </div>
 
-      <form id="clientForm" class="p-5 space-y-4 text-xs sm:text-sm max-h-[82vh] overflow-y-auto">
+      <form id="clientForm" novalidate class="p-5 space-y-4 text-xs sm:text-sm max-h-[82vh] overflow-y-auto">
         <input type="hidden" id="formClientSr" value="" />
 
         <div>
@@ -3052,11 +3076,11 @@
           </div>
           <div>
             <label for="formDueMon" class="block text-xs font-bold text-slate-700 mb-1">Due Months</label>
-            <input id="formDueMon" type="number" min="0" max="36" value="0" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-indigo-500" />
+            <input id="formDueMon" type="text" inputmode="numeric" autocomplete="off" placeholder="0" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-indigo-500" />
           </div>
           <div>
             <label for="formRov" class="block text-xs font-bold text-slate-700 mb-1">ROV (₹)</label>
-            <input id="formRov" type="number" step="0.01" min="0" value="0" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-mono font-bold focus:ring-2 focus:ring-indigo-500" />
+            <input id="formRov" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 2500" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-mono font-bold focus:ring-2 focus:ring-indigo-500" />
           </div>
         </div>
 
@@ -3103,6 +3127,7 @@
         <div class="space-y-1.5">
           <div class="flex items-center justify-between">
             <span class="text-xs font-bold text-slate-700">AppSync.gs Code (Sheet ke Extensions &gt; Apps Script me dalein):</span>
+            <span class="ml-1 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-bold align-middle">NEW · Drive client scan</span>
             <button id="copyAppsScriptBtn" type="button" class="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition">📋 Copy Code</button>
           </div>
           <pre id="appsScriptCodeBlock" class="bg-slate-900 text-slate-100 p-3.5 rounded-xl text-[11px] font-mono overflow-x-auto leading-relaxed select-all">// =====================================================================
@@ -3137,7 +3162,7 @@ function getTabCols(sheet) {
     portalPeriod: 0, portalNoticesCount: 0, portalNotices: 0,
     gstr2bIgst: 0, gstr2bCgst: 0, gstr2bSgst: 0, gstr2bCess: 0, gstr2bIneligible: 0, gstr2bSuppliers: 0,
     ecomGross: 0, ecomNet: 0, ecomTcs: 0, ecomPlatforms: 0, b2bSellersJson: 0, ecoListJson: 0,
-    gstr2bDriveLink: 0, portalUpdatedAt: 0, docCollected: 0, maxCol: 20
+    gstr2bDriveLink: 0, portalUpdatedAt: 0, docCollected: 0, gstr2bStatus: 0, maxCol: 20
   };
   if (!sheet) return cols;
   var lastC = Math.max(sheet.getLastColumn(), 23);
@@ -3189,6 +3214,7 @@ function getTabCols(sheet) {
     else if (!cols.gstr2bDriveLink &amp;&amp; k === 'gstr2bdrivelink') { cols.gstr2bDriveLink = col1; recognized++; }
     else if (!cols.portalUpdatedAt &amp;&amp; k === 'portalupdatedat') { cols.portalUpdatedAt = col1; recognized++; }
     else if (!cols.docCollected &amp;&amp; k === 'doccollected') { cols.docCollected = col1; recognized++; }
+    else if (!cols.gstr2bStatus &amp;&amp; k === 'gstr2bstatus') { cols.gstr2bStatus = col1; recognized++; }
   }
 
   if (recognized &lt; 3) {
@@ -3256,7 +3282,8 @@ function ensurePortalColumns(sheet, cols) {
     ['ecoListJson', 'ECom_List_JSON'],
     ['gstr2bDriveLink', 'GSTR2B_Drive_Link'],
     ['portalUpdatedAt', 'Portal_Updated_At'],
-    ['docCollected', 'Doc_Collected']
+    ['docCollected', 'Doc_Collected'],
+    ['gstr2bStatus', 'GSTR2B_Status']
   ];
   var nextCol = Math.max(sheet.getLastColumn(), cols.maxCol || 0);
   for (var i = 0; i &lt; defs.length; i++) {
@@ -3314,6 +3341,400 @@ function getClientFolder(clientName, category, createIfMissing) {
   }
   if (folder &amp;&amp; loc &amp;&amp; loc.cols.folderId &gt; 0) loc.sheet.getRange(loc.row, loc.cols.folderId).setValue(folder.getId());
   return folder;
+}
+
+/* ===================== GST CERTIFICATE FOLDER → NAYE CLIENTS (one click) =====================
+ * Folder: My Drive me "GST Certificates" (ya Script Property GST_CERT_FOLDER_ID).
+ * GSTIN: pehle FILE NAME se (100% sahi), na mile to Drive OCR se PDF/photo ke andar se.
+ * Jo GSTIN pehle se Sheet (PAID CLINTS / Apne) me hai use SKIP kiya jata hai.
+ * Sirf padhta hai — koi client apne aap add nahi hota; app preview dikha kar Add dabati hai.
+ */
+var GST_CERT_FOLDER_NAME = 'GST Certificates';
+
+var GST_STATE_NAMES = {
+  '01': 'Jammu &amp; Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh', '05': 'Uttarakhand',
+  '06': 'Haryana', '07': 'Delhi', '08': 'Rajasthan', '09': 'Uttar Pradesh', '10': 'Bihar', '11': 'Sikkim',
+  '12': 'Arunachal Pradesh', '13': 'Nagaland', '14': 'Manipur', '15': 'Mizoram', '16': 'Tripura', '17': 'Meghalaya',
+  '18': 'Assam', '19': 'West Bengal', '20': 'Jharkhand', '21': 'Odisha', '22': 'Chhattisgarh', '23': 'Madhya Pradesh',
+  '24': 'Gujarat', '25': 'Daman &amp; Diu', '26': 'Dadra &amp; Nagar Haveli', '27': 'Maharashtra', '28': 'Andhra Pradesh (old)',
+  '29': 'Karnataka', '30': 'Goa', '31': 'Lakshadweep', '32': 'Kerala', '33': 'Tamil Nadu', '34': 'Puducherry',
+  '35': 'Andaman &amp; Nicobar', '36': 'Telangana', '37': 'Andhra Pradesh', '38': 'Ladakh', '97': 'Other Territory'
+};
+
+// SIRF EK FIXED FOLDER — kisi doosre folder me jhaankte hi nahi.
+//   1) Script Property GST_CERT_FOLDER_ID (ek baar set ho gaya to hamesha wahi)
+//   2) warna My Drive me exact naam "GST Certificates"
+// Milne par ID yaad rakh li jati hai (agli baar seedha wahi, naam badle to bhi chalega).
+function gstCertFolderIdFromLink_(v) {
+  var str = String(v || '').trim();
+  if (!str) return '';
+  var m = str.match(/[-_A-Za-z0-9]{25,}/);
+  return m ? m[0] : '';
+}
+
+function gstCertFolder_() {
+  var props = null;
+  try { props = PropertiesService.getScriptProperties(); } catch (e) {}
+
+  var savedId = '';
+  if (props) { try { savedId = String(props.getProperty('GST_CERT_FOLDER_ID') || '').trim(); } catch (e) {} }
+  if (savedId) {
+    try { var f = DriveApp.getFolderById(savedId); if (f &amp;&amp; !f.isTrashed()) return { folder: f, how: 'saved id' }; } catch (e) {}
+  }
+
+  try {
+    var it = DriveApp.getFoldersByName(GST_CERT_FOLDER_NAME);
+    while (it.hasNext()) {
+      var f2 = it.next();
+      if (f2.isTrashed()) continue;
+      if (props) { try { props.setProperty('GST_CERT_FOLDER_ID', f2.getId()); } catch (e) {} }
+      return { folder: f2, how: 'naam se mila' };
+    }
+  } catch (e) {}
+
+  // JSON folder ki tarah — na mile to KHUD bana deta hai (user ko kuch karna hi nahi padta)
+  try {
+    var made = DriveApp.createFolder(GST_CERT_FOLDER_NAME);
+    if (props) { try { props.setProperty('GST_CERT_FOLDER_ID', made.getId()); } catch (e) {} }
+    return { folder: made, how: 'khud bana diya', created: true };
+  } catch (e2) {
+    return { folder: null, how: '', error: String(e2) };
+  }
+}
+
+// App se folder ka link/ID set karna (Shared Drive ka folder ho to yahi rasta)
+function setGstCertFolder(data) {
+  var id = gstCertFolderIdFromLink_((data &amp;&amp; (data.folderLink || data.folderId || data.folder)) || '');
+  if (!id) return { status: 'error', message: "Folder ka link ya ID samajh nahi aaya. Drive me folder kholiye → link copy kariye → dobara try kariye." };
+  var f = null;
+  try { f = DriveApp.getFolderById(id); } catch (e) {}
+  if (!f || f.isTrashed()) return { status: 'error', message: "Is link ka folder nahi mila. Check kariye ki folder aapke hi Drive me hai (Shared Drive ho to bhi chalega)." };
+  try { PropertiesService.getScriptProperties().setProperty('GST_CERT_FOLDER_ID', f.getId()); } catch (e) {}
+  return { status: 'ok', folder: f.getName(), folderId: f.getId(), folderUrl: f.getUrl(), message: "Folder set ho gaya: " + f.getName() };
+}
+
+function gstCertFiles_(folder) {
+  var out = [];
+  var files = folder.getFiles();
+  while (files.hasNext()) {
+    var f = files.next();
+    var nm = String(f.getName() || '');
+    var mt = String(f.getMimeType() || '');
+    if (mt === 'application/pdf' || /\.pdf$/i.test(nm) || /^image\//.test(mt) || /\.(jpe?g|png)$/i.test(nm)) out.push(f);
+  }
+  return out;
+}
+
+function gstGstinClean_(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+
+function gstGstinFromText_(text) {
+  var m = String(text || '').toUpperCase().match(/\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/);
+  return m ? m[0] : '';
+}
+
+function gstGstinChecksumOk_(gstin) {
+  var g = gstGstinClean_(gstin);
+  if (g.length !== 15) return false;
+  var code = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  var sum = 0;
+  for (var i = 0; i &lt; 14; i++) {
+    var v = code.indexOf(g.charAt(i));
+    if (v &lt; 0) return false;
+    var f = v * ((i % 2 === 0) ? 1 : 2);
+    sum += Math.floor(f / 36) + (f % 36);
+  }
+  return code.charAt((36 - (sum % 36)) % 36) === g.charAt(14);
+}
+
+function gstCertOcrAvailable_() {
+  return !!(typeof Drive !== 'undefined' &amp;&amp; Drive &amp;&amp; Drive.Files &amp;&amp; Drive.Files.copy);
+}
+
+// PDF/photo ko Google Doc me convert + OCR. Do raste:
+//   1) Drive advanced service (agar on hai) — sabse simple
+//   2) OAuth token + Drive v2 REST — koi service enable karne ki zaroorat NAHI (default me chalta hai)
+function gstCertCopyToDocWithOcr_(fileId) {
+  var title = 'gst_ocr_' + fileId + '_' + Date.now();
+  if (gstCertOcrAvailable_()) {
+    try {
+      var created = Drive.Files.copy({ title: title }, fileId, { convert: true, ocr: true });
+      if (created &amp;&amp; created.id) return created.id;
+    } catch (e) {}
+  }
+  try {
+    var url = 'https://www.googleapis.com/drive/v2/files/' + encodeURIComponent(fileId) + '/copy?convert=true&amp;ocr=true&amp;fields=id';
+    var res = UrlFetchApp.fetch(url, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify({ title: title }),
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() === 200) {
+      var j = JSON.parse(res.getContentText() || '{}');
+      if (j &amp;&amp; j.id) return j.id;
+    }
+  } catch (e) {}
+  return '';
+}
+
+function gstCertDeleteQuietly_(docId) {
+  if (!docId) return;
+  try { DriveApp.getFileById(docId).setTrashed(true); return; } catch (e) {}
+  try { Drive.Files.remove(docId); return; } catch (e2) {}
+  try {
+    UrlFetchApp.fetch('https://www.googleapis.com/drive/v2/files/' + encodeURIComponent(docId), {
+      method: 'delete',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+  } catch (e3) {}
+}
+
+function gstCertTextByOcr_(fileId) {
+  var docId = gstCertCopyToDocWithOcr_(fileId);
+  if (!docId) return '';
+  try {
+    var doc = DocumentApp.openById(docId);
+    var txt = doc.getBody().getText() || '';
+    try { doc.saveAndClose(); } catch (e) {}
+    return txt;
+  } catch (e) {
+    return '';
+  } finally {
+    gstCertDeleteQuietly_(docId);
+  }
+}
+
+function gstCertMonthName_(m) {
+  var names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var i = Number(m) - 1;
+  return (i &gt;= 0 &amp;&amp; i &lt; 12) ? names[i] : '';
+}
+
+function gstCertDate_(text) {
+  var t = String(text || '');
+  var m = t.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/);
+  if (m) {
+    var mon = gstCertMonthName_(m[2]);
+    if (mon) return ('0' + m[1]).slice(-2) + '-' + mon + '-' + m[3];
+  }
+  var m2 = t.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (m2) {
+    var mon2 = gstCertMonthName_(m2[2]);
+    if (mon2) return ('0' + m2[3]).slice(-2) + '-' + mon2 + '-' + m2[1];
+  }
+  return '';
+}
+
+// "Legal Name" ke aage wali value (same line ya agli line)
+function gstCertLineAfter_(lines, re) {
+  for (var i = 0; i &lt; lines.length; i++) {
+    if (re.test(lines[i])) {
+      var after = String(lines[i]).replace(re, '').replace(/^[\s:.\-]+/, '').trim();
+      if (after.length &gt;= 2 &amp;&amp; !/^(name|of|business)$/i.test(after)) return after;
+      for (var j = i + 1; j &lt; Math.min(lines.length, i + 4); j++) {
+        var nxt = String(lines[j] || '').trim();
+        if (nxt) return nxt;
+      }
+    }
+  }
+  return '';
+}
+
+function gstCertCleanName_(v) {
+  return String(v || '').replace(/[|]/g, ' ').replace(/\s+/g, ' ').replace(/^[\s:.,\-]+|[\s:.,\-]+$/g, '').slice(0, 80);
+}
+
+function parseGstCertText_(text) {
+  var raw = String(text || '');
+  var lines = raw.split(/\r?\n/).map(function (x) { return String(x).replace(/\s+/g, ' ').trim(); }).filter(function (x) { return !!x; });
+  var legal = gstCertCleanName_(gstCertLineAfter_(lines, /legal\s*name(\s*of\s*business)?/i));
+  var trade = gstCertCleanName_(gstCertLineAfter_(lines, /trade\s*name/i));
+  if (/^[-–—.]+$/.test(trade)) trade = '';
+
+  // Address: "Principal Place of Business" ke baad ki 2-3 lines
+  var addr = '';
+  for (var i = 0; i &lt; lines.length; i++) {
+    if (/principal\s+place\s+of\s+business/i.test(lines[i])) {
+      var parts = [];
+      var same = lines[i].replace(/principal\s+place\s+of\s+business/i, '').replace(/^[\s:.\-]+/, '').trim();
+      if (same) parts.push(same);
+      for (var j = i + 1; j &lt; Math.min(lines.length, i + 5) &amp;&amp; parts.join(' ').length &lt; 160; j++) {
+        var L = lines[j];
+        if (/^(date|period|valid|gstin|registration|type\s+of\s+registration|particulars|address\s+of)/i.test(L)) break;
+        parts.push(L);
+      }
+      addr = gstCertCleanName_(parts.join(', ')).slice(0, 200);
+      break;
+    }
+  }
+
+  var regDate = gstCertDate_(gstCertLineAfter_(lines, /(date\s+of\s+registration|registration\s+date)/i)) || gstCertDate_(raw);
+  var gstin = gstGstinFromText_(raw);
+  return {
+    gstin: gstin,
+    client: legal || trade,
+    firm: trade || legal,
+    address: addr,
+    rDate: regDate
+  };
+}
+
+// Filename se client/firm ka andaza (GSTIN hata kar)
+function gstCertNameFromFileName_(name) {
+  var n = String(name || '').replace(/\.(pdf|jpe?g|png)$/i, '');
+  // pehle separators normalise karo (underscore ki wajah se \b word-boundary fail hota tha)
+  n = n.replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ');
+  n = n.replace(/\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/ig, ' ');
+  n = n.replace(/\b(gst|certificate|certificates|certficate|registration|reg|regn|copy|new|final|scan|scanned|paper|document|doc|pdf|jpg|jpeg|png)\b/ig, ' ');
+  n = n.replace(/\b\d{2,}\b/g, ' ');
+  n = n.replace(/\s+/g, ' ').trim();
+  return gstCertCleanName_(n).toUpperCase();
+}
+
+function existingClientKeys_(ss) {
+  var gstins = {}, names = {};
+  ['PAID CLINTS', 'Apne'].forEach(function (tabName) {
+    var sh = ss.getSheetByName(tabName);
+    if (!sh || sh.getLastRow() &lt; 2) return;
+    var cols = getTabCols(sh);
+    var vals = sh.getDataRange().getDisplayValues();
+    for (var i = 1; i &lt; vals.length; i++) {
+      if (cols.gstin &gt; 0) {
+        var g = gstGstinClean_(vals[i][cols.gstin - 1]);
+        if (g) gstins[g] = true;
+      }
+      if (cols.client &gt; 0) {
+        var nm = cleanClientName(vals[i][cols.client - 1]);
+        if (nm) names[nm] = true;
+      }
+      if (cols.firm &gt; 0) {
+        var fm = cleanClientName(vals[i][cols.firm - 1]);
+        if (fm) names[fm] = true;
+      }
+    }
+  });
+  return { gstins: gstins, names: names };
+}
+
+function scanGstCertFolder(data) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var resolved = gstCertFolder_();
+  var folder = resolved.folder;
+  if (!folder) {
+    return {
+      status: 'error',
+      code: 'folder_not_found',
+      message: "Folder khud bana nahi paya (" + (resolved.error || 'permission') + "). My Drive me ek baar '" + GST_CERT_FOLDER_NAME + "' folder bana lijiye, ya folder ka link paste kar dein — uske baad hamesha wahi use hoga."
+    };
+  }
+  var folderUrl = '';
+  try { folderUrl = folder.getUrl(); } catch (e) {}
+  if (resolved.created) {
+    return {
+      status: 'ok',
+      created: true,
+      folder: folder.getName(),
+      folderId: folder.getId(),
+      folderUrl: folderUrl,
+      total: 0,
+      scanned: 0,
+      ocrAvailable: true,
+      driveServiceOn: gstCertOcrAvailable_(),
+      ocrTried: 0,
+      ocrUsed: 0,
+      candidates: [],
+      skipped: [],
+      errors: [],
+      message: "Drive me '" + folder.getName() + "' folder khud ban gaya. Ab isme GST certificates daal dein — agli baar seedha isi folder me dekhega."
+    };
+  }
+  var existing = existingClientKeys_(ss);
+  var files = gstCertFiles_(folder);
+  var candidates = [], skipped = [], errors = [];
+  var ocrUsed = 0, ocrTried = 0;
+  var seenGstin = {};
+  var max = Math.min(files.length, 300);
+
+  for (var i = 0; i &lt; max; i++) {
+    var f = files[i];
+    var fileName = f.getName();
+    try {
+      var gstin = gstGstinFromText_(fileName);
+      var source = gstin ? 'filename' : '';
+      var parsed = { gstin: gstin, client: '', firm: '', address: '', rDate: '' };
+
+      // File name me GSTIN hai to naam bhi wahin se; warna OCR
+      if (gstin) {
+        var guess = gstCertNameFromFileName_(fileName);
+        if (guess) { parsed.client = guess; parsed.firm = guess; }
+        // naam nahi mila to OCR se naam nikalne ki koshish
+        if (!parsed.client &amp;&amp; gstCertOcrAvailable_()) {
+          ocrTried++;
+          var t0 = gstCertTextByOcr_(f.getId());
+          if (t0) { ocrUsed++; var p0 = parseGstCertText_(t0); parsed.client = p0.client; parsed.firm = p0.firm; parsed.address = p0.address; parsed.rDate = parsed.rDate || p0.rDate; }
+        }
+      } else if (gstCertOcrAvailable_()) {
+        ocrTried++;
+        var txt = gstCertTextByOcr_(f.getId());
+        if (txt) {
+          ocrUsed++;
+          parsed = parseGstCertText_(txt);
+          gstin = parsed.gstin;
+          if (gstin &amp;&amp; !source) source = 'ocr';
+        }
+      }
+
+      gstin = gstGstinClean_(gstin);
+      if (!gstin) {
+        skipped.push({ fileName: fileName, reason: 'GSTIN nahi mila — file ka naam GSTIN se rakhein (jaise 09FNZPM7904J1ZY_Nam.pdf), ya OCR wali file saaf scan karein' });
+        continue;
+      }
+      if (existing.gstins[gstin] || seenGstin[gstin]) {
+        skipped.push({ fileName: fileName, gstin: gstin, reason: 'Pehle se list me hai' });
+        continue;
+      }
+      seenGstin[gstin] = true;
+
+      var nameKey = cleanClientName(parsed.client || parsed.firm || '');
+      var warn = '';
+      if (!gstGstinChecksumOk_(gstin)) warn = 'GSTIN ka check digit match nahi hua — ek baar verify karein.';
+      if (!parsed.client) { parsed.client = nameKey || gstin; parsed.firm = parsed.firm || parsed.client; warn = warn || 'Naam file se nahi mila — app me edit kar lein.'; }
+      if (nameKey &amp;&amp; existing.names[nameKey] &amp;&amp; !existing.gstins[gstin]) warn = 'Is naam ka client pehle se hai (GSTIN naya hai) — check karein.';
+
+      candidates.push({
+        fileId: f.getId(),
+        fileName: fileName,
+        gstin: gstin,
+        client: parsed.client,
+        firm: parsed.firm || parsed.client,
+        address: parsed.address || '',
+        state: GST_STATE_NAMES[gstin.substring(0, 2)] || '',
+        rDate: parsed.rDate || '',
+        source: source || 'filename',
+        warn: warn
+      });
+    } catch (err) {
+      errors.push({ fileName: fileName, error: String(err) });
+    }
+  }
+
+  return {
+    status: 'ok',
+    folder: folder.getName(),
+    folderId: folder.getId(),
+    folderUrl: folderUrl,
+    total: files.length,
+    scanned: max,
+    ocrAvailable: true, // OCR ab default chalta hai (OAuth REST fallback) — Drive service on karna optional
+    driveServiceOn: gstCertOcrAvailable_(),
+    ocrTried: ocrTried,
+    ocrUsed: ocrUsed,
+    candidates: candidates,
+    skipped: skipped,
+    errors: errors
+  };
 }
 
 // Menu: saare clients ke FOLDER ID aur STATEMENT ID header ke hisab se bhar do (aur Active month me galti se aaye Folder ID saaf kare)
@@ -4447,12 +4868,14 @@ function doGet(e) {
           var b2bArr = []; try { if (pB2bJ) b2bArr = JSON.parse(pB2bJ); } catch (_) {}
           var ecoArr = []; try { if (pEcoJ) ecoArr = JSON.parse(pEcoJ); } catch (_) {}
           var pDocC = cols.docCollected &gt; 0 ? (rawValues[i][cols.docCollected - 1] === true || String(r[cols.docCollected - 1] || '').toUpperCase() === 'TRUE') : false;
+          var p2bSt = cols.gstr2bStatus &gt; 0 ? (r[cols.gstr2bStatus - 1] || '').toString().trim().toUpperCase() : '';
           if (!pPer &amp;&amp; !pUpd &amp;&amp; !pIgst &amp;&amp; !pCgst &amp;&amp; !pSgst &amp;&amp; !pEGrs &amp;&amp; !pNotC &amp;&amp; !pDrv) return null;
           return {
             period: pPer, noticesCount: pNotC, noticesSummary: pNotS,
             igst: pIgst, cgst: pCgst, sgst: pSgst, cess: pCess, ineligible: pInel, suppliers: pSupp,
             ecomGross: pEGrs, ecomNet: pENet, ecomTcs: pETcs, ecomPlatforms: pEPlt,
-            driveLink: pDrv, updatedAt: pUpd, b2bSellers: b2bArr, ecoList: ecoArr, docCollected: pDocC
+            driveLink: pDrv, updatedAt: pUpd, b2bSellers: b2bArr, ecoList: ecoArr, docCollected: pDocC,
+            gstr2bNotGenerated: p2bSt.indexOf('NOT') === 0
           };
         })()
       });
@@ -4468,6 +4891,8 @@ function doGet(e) {
 
 // 4. handleSyncAction: Header-aware Sahi Column par likhna (Formulas preserve rakhna) + PIN save karna
 function handleSyncAction(ss, data) {
+  if (data &amp;&amp; data.action === 'scanGstCerts') { return scanGstCertFolder(data); }
+  if (data &amp;&amp; data.action === 'setGstCertFolder') { return setGstCertFolder(data); }
   if (!data) return { status: 'error', message: 'Empty or invalid payload' };
 
   if (data.action === 'savePin' &amp;&amp; data.pin) {
@@ -4603,6 +5028,7 @@ function handleSyncAction(ss, data) {
       if (targetCols.ecoListJson &gt; 0) targetSheet.getRange(targetRow, targetCols.ecoListJson).setValue(String(data.ecoListJson || ''));
       targetSheet.getRange(targetRow, targetCols.gstr2bDriveLink).setValue(driveLink);
       targetSheet.getRange(targetRow, targetCols.portalUpdatedAt).setValue(nowStr);
+      if (targetCols.gstr2bStatus &gt; 0) targetSheet.getRange(targetRow, targetCols.gstr2bStatus).setValue(String(data.gstr2bStatus || ''));
       if (targetCols.docCollected &gt; 0 &amp;&amp; data.docCollected !== undefined) {
         var pDocCell = targetSheet.getRange(targetRow, targetCols.docCollected);
         pDocCell.insertCheckboxes();
@@ -5303,8 +5729,7 @@ function doPost(e) {
   if (data.action === 'listGstr1Json') { return jsonOut(listGstr1Json(data)); }
   if (data.action === 'readGstr1Json') { return jsonOut(readGstr1Json(data)); }
   return jsonOut(handleSyncAction(ss, data));
-}
-</pre>
+}</pre>
         </div>
 
         <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
@@ -9056,6 +9481,19 @@ function buildEtsyPdfReport(opts) {
 
     }
 
+    // Browser ki chhupi hui validation ("Please fill out this field") ki jagah apna saaf message
+    (function setupClientFormValidationHints() {
+      const form = document.getElementById("clientForm");
+      if (!form) return;
+      form.addEventListener("invalid", (ev) => {
+        const el = ev.target;
+        if (!el) return;
+        const label = el.id ? el.id.replace(/^form/, "") : "field";
+        showToast(`⚠️ ${label} sahi nahi hai — ek baar check karein`);
+        try { el.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {}
+      }, true);
+    })();
+
     function openAddModal() {
       updateReferenceSuggestions();
       document.getElementById("modalTitle").textContent = "+ Add New GST Client";
@@ -9114,6 +9552,10 @@ function buildEtsyPdfReport(opts) {
     }
 
     document.getElementById("openAddModalBtn").addEventListener("click", openAddModal);
+    {
+      const scanBtn = document.getElementById("scanDriveCertsBtn");
+      if (scanBtn) scanBtn.addEventListener("click", scanDriveGstCerts);
+    }
     document.getElementById("formCategory").addEventListener("change", e => {
       if (e.target.value === "Apne" && Number(defaultFeeRates.apne || 0) === 0) {
         document.getElementById("formPtDate").value = "FREE";
@@ -9127,6 +9569,9 @@ function buildEtsyPdfReport(opts) {
 
     document.getElementById("clientForm").addEventListener("submit", async e => {
       e.preventDefault();
+      const saveBtnEl = document.getElementById("saveClientBtn");
+      if (saveBtnEl && saveBtnEl.disabled) return; // double click se do save na jaye
+
       const srVal = document.getElementById("formClientSr").value;
       const category = document.getElementById("formCategory").value;
       const clientType = document.getElementById("formClientType").value;
@@ -9146,17 +9591,43 @@ function buildEtsyPdfReport(opts) {
       const rawPtDate = document.getElementById("formPtDate").value.trim();
       const isApneFreeSubmit = category === "Apne" && Number(defaultFeeRates.apne || 0) === 0;
       const ptDate = isApneFreeSubmit ? "FREE" : rawPtDate;
-      const dueMon = isApneFreeSubmit ? 0 : Math.max(0, parseInt(document.getElementById("formDueMon").value || "0", 10));
-      const rov = Math.max(0, parseFloat(document.getElementById("formRov").value || "0"));
+      // Number input me comma / space / khaali value aane par browser chup-chaap submit rok deta tha —
+      // isliye ab khud saaf karte hain ("1,200" bhi 1200)
+      const numOf = (v) => {
+        const n = Number(String(v == null ? "" : v).replace(/[^0-9.\-]/g, ""));
+        return isFinite(n) ? n : 0;
+      };
+      const dueMon = isApneFreeSubmit ? 0 : Math.min(36, Math.max(0, Math.round(numOf(document.getElementById("formDueMon").value))));
+      const rov = Math.max(0, numOf(document.getElementById("formRov").value));
       const address = document.getElementById("formAddress").value.trim();
       const driveUrl = document.getElementById("formDriveFolder").value.trim();
+
+      if (!clientName) {
+        showToast("⚠️ Client ka naam khaali hai — naam bharein");
+        const el = document.getElementById("formClientName");
+        if (el) { el.focus(); el.classList.add("ring-2", "ring-rose-400"); setTimeout(() => el.classList.remove("ring-2", "ring-rose-400"), 2500); }
+        return;
+      }
+      if (!firm) {
+        showToast("⚠️ Firm ka naam khaali hai — firm bharein");
+        const el = document.getElementById("formFirm");
+        if (el) { el.focus(); el.classList.add("ring-2", "ring-rose-400"); setTimeout(() => el.classList.remove("ring-2", "ring-rose-400"), 2500); }
+        return;
+      }
+      if (saveBtnEl) { saveBtnEl.disabled = true; saveBtnEl.dataset.oldText = saveBtnEl.textContent; saveBtnEl.textContent = "Saving…"; }
 
       let pendingPushAction = null;
       let pendingPushObj = null;
       let okMsg = "";
 
       if (srVal) {
-        const target = clients.find(c => c.sr === parseInt(srVal, 10));
+        // sr kabhi string hota hai (Sheet se aane par), isliye Number() se compare — pehle yahan silent fail hota tha
+        const target = clients.find(c => Number(c.sr) === Number(srVal));
+        if (!target) {
+          showToast("⚠️ Ye client record nahi mila (list refresh ho gayi hogi) — modal band karke dobara Edit dabayein");
+          if (saveBtnEl) { saveBtnEl.disabled = false; saveBtnEl.textContent = saveBtnEl.dataset.oldText || "Save Changes"; }
+          return;
+        }
         if (target) {
           const oldKey = getClientKey(target);
           target.category = category;
@@ -9219,17 +9690,22 @@ function buildEtsyPdfReport(opts) {
         okMsg = `Naya client ${clientName} Sheet me add ho gaya!`;
       }
 
-      saveClients();
-      closeClientModal();
-      renderApp();
-      if (typeof renderPortalPage === "function") renderPortalPage();
-      if (pendingPushAction && pendingPushObj) {
-        const syncRes = await pushClientToSheet(pendingPushAction, pendingPushObj, { silent: true });
-        if (syncRes.ok) {
-          showToast(`✅ ${okMsg}`);
+      try {
+        saveClients();
+        closeClientModal();
+        renderApp();
+        if (typeof renderPortalPage === "function") renderPortalPage();
+        if (pendingPushAction && pendingPushObj) {
+          const syncRes = await pushClientToSheet(pendingPushAction, pendingPushObj, { silent: true });
+          if (syncRes.ok) showToast(`✅ ${okMsg}`);
+          else showToast(`⚠️ ${clientName} browser me save hua, par Sheet Sync FAIL (${syncRes.message})!`);
         } else {
-          showToast(`⚠️ ${clientName} browser me save hua, par Sheet Sync FAIL (${syncRes.message})!`);
+          showToast("✅ Save ho gaya");
         }
+      } catch (err) {
+        showToast("❌ Save me error: " + ((err && err.message) || "unknown") + " — dobara try karein");
+      } finally {
+        if (saveBtnEl) { saveBtnEl.disabled = false; saveBtnEl.textContent = saveBtnEl.dataset.oldText || "Save Changes"; }
       }
     });
 
@@ -9411,6 +9887,310 @@ function buildEtsyPdfReport(opts) {
       showToast(`✅ Naya Client '${clientName}' (${firm}) list me sabse upar jud gaya!`);
       e.target.value = "";
     });
+
+    /* ===== ➕ Client dropdown — 3 options ek saaf button me (manual / 1 file / Drive scan) ===== */
+    (function setupAddClientMenu() {
+      const wrap = document.getElementById("addClientMenuWrap");
+      const btn = document.getElementById("addClientMenuBtn");
+      const menu = document.getElementById("addClientMenu");
+      if (!wrap || !btn || !menu) return;
+      const closeMenu = () => { menu.classList.add("hidden"); btn.setAttribute("aria-expanded", "false"); };
+      const openMenu = () => { menu.classList.remove("hidden"); btn.setAttribute("aria-expanded", "true"); };
+      btn.addEventListener("click", ev => {
+        ev.stopPropagation();
+        if (menu.classList.contains("hidden")) openMenu(); else closeMenu();
+      });
+      document.addEventListener("click", ev => { if (!wrap.contains(ev.target)) closeMenu(); });
+      document.addEventListener("keydown", ev => { if (ev.key === "Escape") closeMenu(); });
+      wrap.querySelectorAll("[data-add-opt]").forEach(el => el.addEventListener("click", () => setTimeout(closeMenu, 80)));
+    })();
+
+    /* ===== ☁️ Drive "GST Certificates" folder scan → preview → ek click me add ===== */
+    function driveCertNormGstin(v) { return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+
+    async function scanDriveGstCerts() {
+      if (!scriptUrl) { showToast("⚠️ Pehle ⚙️ Setup me Apps Script URL daalein"); return; }
+      const btn = document.getElementById("scanDriveCertsBtn");
+      const old = btn ? btn.innerHTML : "";
+      if (btn) { btn.disabled = true; btn.style.opacity = "0.6"; }
+      showToast("⏳ Drive folder scan ho raha hai… pehli baar OCR me 1-2 min lag sakte hain");
+      let res = null;
+      try {
+        const r = await fetch(scriptUrl, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ action: "scanGstCerts" })
+        });
+        res = JSON.parse(await r.text());
+      } catch (err) {
+        showToast("❌ Scan fail: " + ((err && err.message) || "network error"));
+      }
+      if (btn) { btn.disabled = false; btn.style.opacity = ""; btn.innerHTML = old; }
+      if (!res) return;
+      if (res.status !== "ok") {
+        if (res.code === "folder_not_found" || /folder nahi mila/i.test(String(res.message || ""))) { showDriveFolderMissing(res); return; }
+        const msg = String(res.message || "Scan fail");
+        if (/unknown\s*action/i.test(msg)) {
+          showToast("⚠️ Apps Script purani hai — app me ⚙️ Setup → 📋 Copy Code dabayein, Sheet ke Apps Script me paste karke Deploy (Manage deployments → ✏️ → New version) karein");
+        } else {
+          showToast("❌ " + msg);
+        }
+        return;
+      }
+      if (res.created) { showDriveFolderCreated(res); return; }
+      if (res.code === "folder_not_found") { showDriveFolderMissing(res); return; }
+      openDriveCertModal(res);
+    }
+
+    // Folder khud ban gaya (json folder ki tarah) — seedha link dikhate hain
+    function showDriveFolderCreated(res) {
+      const prev = document.getElementById("driveCertOverlay");
+      if (prev) prev.remove();
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+      const wrap = document.createElement("div");
+      wrap.id = "driveCertOverlay";
+      wrap.className = "fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4";
+      wrap.innerHTML = `
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+          <div class="px-5 py-4 border-b border-slate-200">
+            <div class="text-sm font-bold text-slate-900">📁 Folder ban gaya</div>
+          </div>
+          <div class="px-5 py-4 text-[12.5px] text-slate-600 leading-relaxed">
+            Drive me <b>${esc(res.folder)}</b> folder khud ban gaya hai — aapko kuch karne ki zaroorat nahi.
+            Ab isme GST certificates (PDF/photo) daal dein, phir dobara scan karein. Agli baar seedha isi folder me dekhega.
+          </div>
+          <div class="px-5 py-3 bg-slate-50/70 border-t border-slate-200 flex items-center justify-end gap-2">
+            <button id="driveCertCreatedClose" type="button" class="px-3 py-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-200/70 transition">Band karein</button>
+            ${res.folderUrl ? `<a href="${esc(res.folderUrl)}" target="_blank" rel="noopener" class="px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs transition">📂 Folder kholein</a>` : ""}
+          </div>
+        </div>`;
+      document.body.appendChild(wrap);
+      const close = () => wrap.remove();
+      wrap.addEventListener("click", ev => { if (ev.target === wrap) close(); });
+      const b = document.getElementById("driveCertCreatedClose");
+      if (b) b.addEventListener("click", close);
+    }
+
+    // Folder na mile to: 2 raste — folder banaiye, ya ek baar folder ka link paste kar dijiye (hamesha wahi use hoga)
+    function showDriveFolderMissing(res) {
+      const prev = document.getElementById("driveCertOverlay");
+      if (prev) prev.remove();
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+      const wrap = document.createElement("div");
+      wrap.id = "driveCertOverlay";
+      wrap.className = "fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4";
+      wrap.innerHTML = `
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+          <div class="px-5 py-4 border-b border-slate-200">
+            <div class="text-sm font-bold text-slate-900">📁 GST Certificates folder</div>
+            <div class="text-[11px] text-slate-500 mt-0.5">App sirf isi ek folder me dekhta hai — kisi doosre folder me nahi.</div>
+          </div>
+          <div class="px-5 py-4 space-y-3">
+            <div class="text-[12.5px] text-slate-600 leading-relaxed">
+              <b>Rasta 1:</b> My Drive me folder banaiye — naam bilkul <b>GST Certificates</b> — phir dobara scan karein.
+            </div>
+            <div class="rounded-xl bg-slate-50 ring-1 ring-slate-200 p-3">
+              <div class="text-[12px] font-semibold text-slate-700">Rasta 2: folder ka link paste karein (ek baar)</div>
+              <div class="text-[10.5px] text-slate-500 mt-0.5">Drive me folder kholein → link copy kariye → yahan paste → Set. Iske baad hamesha yahi folder use hoga.</div>
+              <div class="mt-2 flex items-center gap-2">
+                <input id="driveCertFolderInput" type="text" placeholder="https://drive.google.com/drive/folders/..." class="flex-1 rounded-lg border border-slate-300 px-2.5 py-2 text-[11.5px] font-mono focus:ring-2 focus:ring-indigo-500" />
+                <button id="driveCertFolderSave" type="button" class="px-3 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition">Set</button>
+              </div>
+              <div id="driveCertFolderMsg" class="text-[10.5px] mt-1.5 text-slate-500"></div>
+            </div>
+          </div>
+          <div class="px-5 py-3 bg-slate-50/70 border-t border-slate-200 flex items-center justify-end gap-2">
+            <button id="driveCertMissingClose" type="button" class="px-3 py-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-200/70 transition">Band karein</button>
+            <button id="driveCertRescan" type="button" class="px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white transition">🔄 Dobara scan</button>
+          </div>
+        </div>`;
+      document.body.appendChild(wrap);
+
+      const close = () => wrap.remove();
+      wrap.addEventListener("click", ev => { if (ev.target === wrap) close(); });
+      document.getElementById("driveCertMissingClose").addEventListener("click", close);
+      document.getElementById("driveCertRescan").addEventListener("click", () => { close(); scanDriveGstCerts(); });
+
+      const saveBtn = document.getElementById("driveCertFolderSave");
+      const inp = document.getElementById("driveCertFolderInput");
+      const msg = document.getElementById("driveCertFolderMsg");
+      saveBtn.addEventListener("click", async () => {
+        const link = (inp.value || "").trim();
+        if (!link) { msg.textContent = "Pehle link paste kariye."; msg.className = "text-[10.5px] mt-1.5 text-amber-600"; return; }
+        saveBtn.disabled = true; saveBtn.textContent = "…";
+        msg.textContent = "Set ho raha hai…"; msg.className = "text-[10.5px] mt-1.5 text-slate-500";
+        try {
+          const r = await fetch(scriptUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "setGstCertFolder", folderLink: link }) });
+          const out = JSON.parse(await r.text());
+          if (out && out.status === "ok") {
+            msg.textContent = `✅ Folder set: ${out.folder}`;
+            msg.className = "text-[10.5px] mt-1.5 text-emerald-600";
+            close();
+            scanDriveGstCerts();
+            return;
+          }
+          msg.textContent = "❌ " + ((out && out.message) || "Set nahi hua");
+          msg.className = "text-[10.5px] mt-1.5 text-rose-600";
+        } catch (err) {
+          msg.textContent = "❌ " + ((err && err.message) || "network error");
+          msg.className = "text-[10.5px] mt-1.5 text-rose-600";
+        }
+        saveBtn.disabled = false; saveBtn.textContent = "Set";
+      });
+      setTimeout(() => inp && inp.focus(), 120);
+    }
+
+    function openDriveCertModal(res) {
+      const prev = document.getElementById("driveCertOverlay");
+      if (prev) prev.remove();
+
+      const localGstins = new Set((clients || []).map(c => driveCertNormGstin(c.gstin)).filter(Boolean));
+      const all = (res.candidates || []).map(c => Object.assign({}, c, {
+        dupLocal: localGstins.has(driveCertNormGstin(c.gstin))
+      }));
+      const fresh = all.filter(c => !c.dupLocal);
+      const skipped = res.skipped || [];
+
+      if (!fresh.length) {
+        showToast(`✅ Koi naya GSTIN nahi mila — ${skipped.length} pehle se hain, ${all.length} local me maujood`);
+        return;
+      }
+
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+      const rows = fresh.map((c, i) => `
+        <label class="flex items-start gap-3 px-4 py-2.5 hover:bg-slate-50 cursor-pointer">
+          <input type="checkbox" class="driveCertPick mt-1 accent-indigo-600" data-idx="${i}" checked />
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-1.5 flex-wrap">
+              <span class="text-[12.5px] font-bold text-slate-900">${esc(c.client)}</span>
+              ${c.firm && c.firm !== c.client ? `<span class="text-[10.5px] text-slate-500">· ${esc(c.firm)}</span>` : ""}
+              <span class="px-1.5 py-0.5 rounded bg-slate-100 text-[10px] font-mono text-slate-600">${esc(c.gstin)}</span>
+            </div>
+            <div class="text-[10.5px] text-slate-500 mt-0.5">
+              ${esc(c.state || "")}${c.state && c.rDate ? " · " : ""}${esc(c.rDate || "")}${c.address ? " · " + esc(c.address).slice(0, 90) : ""}
+            </div>
+            ${c.warn ? `<div class="text-[10px] text-amber-600 mt-0.5">⚠️ ${esc(c.warn)}</div>` : ""}
+          </div>
+          <span class="text-[9.5px] uppercase tracking-wide text-slate-300">${esc(c.source === "ocr" ? "OCR" : "file")}</span>
+        </label>`).join("");
+
+      const ocrNote = res.ocrAvailable === false
+        ? `<span class="text-amber-600">· OCR service off (file name me GSTIN hona chahiye)</span>`
+        : (res.ocrUsed ? `<span class="text-slate-400">· ${res.ocrUsed} file OCR se padhi</span>` : "");
+
+      const wrap = document.createElement("div");
+      wrap.id = "driveCertOverlay";
+      wrap.className = "fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4";
+      wrap.innerHTML = `
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[88vh] flex flex-col overflow-hidden">
+          <div class="px-4 sm:px-5 py-3.5 border-b border-slate-200 flex items-start justify-between gap-3">
+            <div>
+              <div class="text-sm font-bold text-slate-900">☁️ Drive folder se naye clients</div>
+              <div class="text-[11px] text-slate-500 mt-0.5">
+                Folder <b>${esc(res.folder)}</b> · ${Number(res.total) || 0} file · <b class="text-emerald-600">${fresh.length} naye</b> ·
+                ${skipped.length} skip (pehle se hain) ${ocrNote}
+              </div>
+            </div>
+            <button id="driveCertClose" type="button" class="shrink-0 w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition">✕</button>
+          </div>
+          <div class="flex-1 overflow-auto divide-y divide-slate-100">${rows}</div>
+          <div class="px-4 sm:px-5 py-3 border-t border-slate-200 flex items-center justify-between gap-3 bg-slate-50/70">
+            <label class="inline-flex items-center gap-2 text-[11.5px] font-medium text-slate-600 cursor-pointer">
+              <input type="checkbox" id="driveCertAll" class="accent-indigo-600" checked /> Sab select
+            </label>
+            <div class="flex items-center gap-2">
+              <button id="driveCertCancel" type="button" class="px-3 py-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-200/70 transition">Cancel</button>
+              <button id="driveCertAdd" type="button" class="px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs transition">
+                ➕ Add selected (<span id="driveCertCount">${fresh.length}</span>)
+              </button>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(wrap);
+
+      const picks = Array.from(wrap.querySelectorAll(".driveCertPick"));
+      const countEl = document.getElementById("driveCertCount");
+      const syncCount = () => {
+        const n = picks.filter(p => p.checked).length;
+        if (countEl) countEl.textContent = String(n);
+        const addBtn = document.getElementById("driveCertAdd");
+        if (addBtn) addBtn.disabled = n === 0;
+      };
+      picks.forEach(p => p.addEventListener("change", syncCount));
+      const allBox = document.getElementById("driveCertAll");
+      if (allBox) allBox.addEventListener("change", () => { picks.forEach(p => { p.checked = allBox.checked; }); syncCount(); });
+
+      const close = () => wrap.remove();
+      document.getElementById("driveCertClose").addEventListener("click", close);
+      document.getElementById("driveCertCancel").addEventListener("click", close);
+      wrap.addEventListener("click", ev => { if (ev.target === wrap) close(); });
+
+      const addBtn = document.getElementById("driveCertAdd");
+      if (addBtn) addBtn.addEventListener("click", () => {
+        const chosen = picks.filter(p => p.checked).map(p => fresh[Number(p.dataset.idx)]);
+        close();
+        addDriveCertClients(chosen);
+      });
+      syncCount();
+    }
+
+    function addDriveCertClients(list) {
+      let added = 0;
+      const failed = [];
+      (list || []).forEach(c => {
+        const gstin = driveCertNormGstin(c.gstin);
+        if (gstin && clients.some(x => driveCertNormGstin(x.gstin) === gstin)) return; // double safety
+        const clientName = String(c.client || c.firm || gstin || "Client").trim();
+        const firm = String(c.firm || clientName).trim();
+        const firstWord = clientName.split(" ")[0].replace(/[^A-Za-z]/g, "");
+        const cleanWord = firstWord ? firstWord.charAt(0).toUpperCase() + firstWord.slice(1).toLowerCase() : "Client";
+        const maxSr = clients.reduce((m, x) => Math.max(m, Number(x.sr) || 0), 0);
+        const catCount = clients.filter(x => x.category === "PAID CLINTS").length;
+        const addrParts = [];
+        if (c.state) addrParts.push(c.state);
+        if (c.address) addrParts.push(c.address);
+        const newClient = {
+          sr: maxSr + 1,
+          sheetSr: catCount + 1,
+          category: "PAID CLINTS",
+          clientType: /RUGS|CARPET/i.test(firm) ? "Etsy Client" : "Regular Client",
+          status: "Active",
+          client: clientName,
+          id: `Ad${cleanWord}${new Date().getFullYear()}`,
+          password: "",
+          gstin: gstin,
+          firm: firm,
+          mobile: "",
+          rDate: c.rDate || formatDdmmyyyyMon(new Date()),
+          filed: false,
+          ptDate: getDefaultMonthEndPtDate(new Date()),
+          dueMon: 0,
+          noticeStatus: "",
+          noticeDate: "",
+          rov: 0,
+          activeM: "",
+          reference: "",
+          address: addrParts.join(" · "),
+          driveUrl: ""
+        };
+        clients.unshift(newClient);
+        added++;
+        pushClientToSheet("add", newClient, { silent: true }).then(sr => {
+          if (!sr.ok) failed.push(clientName);
+        });
+      });
+      saveClients();
+      searchQuery = "";
+      const si = document.getElementById("searchInput");
+      if (si) si.value = "";
+      activeStatusFilter = "ALL";
+      renderApp();
+      if (added) {
+        showToast(`✅ ${added} naye client add ho gaye${failed.length ? ` (${failed.length} ka Sheet sync fail — Sync Sheet dabayein)` : ""}`);
+      } else {
+        showToast("⚠️ Kuch add nahi hua — sab pehle se list me hain");
+      }
+    }
 
     // Inactive CL button
     document.getElementById("inactiveClBtn").addEventListener("click", () => {
@@ -11776,36 +12556,6 @@ function buildEtsyPdfReport(opts) {
       c.dueMon = prof.sixMonthPaid ? 0 : Math.max(0, ptDelay !== null ? ptDelay : Number(prof.nilDueMon || 0));
       c.activeM = prof.activeDueMon > 0 ? String(prof.activeDueMon) : "";
     }
-
-    // ===== Android back / swipe gesture: pehle modal band, phir pichhla page, phir app =====
-    window.cloudGstHandleBack = function () {
-      try {
-        const modalIds = ["syncSetupModalOverlay", "clientModalOverlay", "feePaymentModalOverlay",
-          "gpWaDocModalOverlay", "orderWiseModalOverlay", "pdfActionModalOverlay",
-          "quickPresetModalOverlay", "changePinModalOverlay"];
-        for (const id of modalIds) {
-          const el = document.getElementById(id);
-          if (el && !el.classList.contains("hidden") && el.style.display !== "none") {
-            el.classList.add("hidden");
-            return true;
-          }
-        }
-        if (window.__gpPageStack && window.__gpPageStack.length) {
-          const prev = window.__gpPageStack.pop();
-          window.__gpBackNav = true;
-          switchAppPage(prev);
-          return true;
-        }
-        if (currentAppPage !== "tracker") {
-          window.__gpBackNav = true;
-          switchAppPage("tracker");
-          return true;
-        }
-        return false;
-      } catch (e) {
-        return false;
-      }
-    };
 
     function switchAppPage(pageName) {
       if (!["tracker", "fees", "json", "master", "portal"].includes(pageName)) pageName = "tracker";
@@ -17288,7 +18038,7 @@ function buildEtsyPdfReport(opts) {
       showToast(ok ? "📋 GSTR-1 JSON clipboard me copy ho gaya!" : "❌ Copy fail hua");
     });
 
-    // Naya tareeka: seedha Google Drive ke "json" folder me save
+    // JSON download ki jagah: seedha Google Drive ke "json" folder me save (file chooser/download khatam)
     document.getElementById("saveGstr1JsonBtn").addEventListener("click", async () => {
       if (!confirmJsonExportDespiteErrors("save karein")) return;
       const btn = document.getElementById("saveGstr1JsonBtn");
@@ -19523,6 +20273,10 @@ function buildEtsyPdfReport(opts) {
             gstr2b: !!(data.partial && data.partial.gstr2b) && !(_pt.gstr2b && _prevPd),
             tcs: !!(data.partial && data.partial.tcs) && !(_pt.tcs && _prevPd)
           },
+          gstr2bNotGenerated: !!(
+            (data.status && data.status.gstr2b && data.status.gstr2b.code === "gstr2b_not_generated") ||
+            data.notGenerated2b === true
+          ),
           docCollected: prevDocCol,
           driveLink: prevDrive,
           updatedAt: new Date().toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })
@@ -19558,6 +20312,7 @@ function buildEtsyPdfReport(opts) {
           b2bJsonNote: _b2bPack.note,
           ecoListJson: JSON.stringify(ecoList),
           docCollected: prevDocCol,
+          gstr2bStatus: localPortalObj.gstr2bNotGenerated ? "NOT_GENERATED" : "",
           saveDrive: !!saveDrive,
           gstr2bFileName: data.gstr2b?.fileName || "",
           gstr2bJsonBase64: saveDrive ? (data.gstr2b?.jsonBase64 || "") : ""
@@ -19776,7 +20531,7 @@ function buildEtsyPdfReport(opts) {
         }, 1000);
       }
 
-      // ===== Android APK: app ke andar portal kholein, ID/password pehle se bhare (sirf captcha dalna) =====
+      // ===== Android APK: app ke andar portal khulein, ID/password pehle se bhare (sirf captcha dalna) =====
       function gpNativePortalBtn(c) {
         if (!window.CloudGSTNative || !c.portalId || !c.rawPassword) return "";
         return `<div class="mb-1"><button type="button" class="gp-native-portal-btn px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold w-full" data-k="${gpEsc(c.clientKey)}" title="App ke andar GST portal khulega, ID/password pehle se bhare hue — aapko sirf captcha dalna hai">🌐 Portal Login</button></div>`;
@@ -19974,7 +20729,12 @@ function buildEtsyPdfReport(opts) {
                     <div class="text-[11px] text-slate-500 mt-0.5">${c.firm ? gpEsc(c.firm) + " • " : ""}<span class="font-mono text-slate-400">${gpEsc(c.gstin || "No GSTIN")}</span></div>
                     ${mjBadge}
                   </td>
-                  <td class="py-3 px-3 align-middle text-right tabular-nums">${pd ? (pd.missing && pd.missing.gstr2b ? `<div class="font-bold text-amber-600 text-[13px]" title="GSTR-2B is baar portal se nahi mila (purana data bhi nahi tha)">—</div><div class="text-[10px] text-amber-600">2B nahi mila</div>` : `<div class="font-bold text-slate-900 text-[13px]">${gpFmtInr(itcSum)}</div><div class="text-[10px] text-slate-400">I ${gpFmtInr(pd.igst)} · C ${gpFmtInr(pd.cgst)}</div>`) : '<span class="text-slate-300">—</span>'}</td>
+                  <td class="py-3 px-3 align-middle text-right tabular-nums">${pd ? (pd.gstr2bNotGenerated
+                    ? `<div class="text-[11px] font-semibold text-slate-500 italic leading-tight" title="Portal ne is month ki GSTR-2B generate hi nahi ki (koi record nahi / pichhli 3B pending / QRMP quarter month) — IMS Dashboard se manual compute karna hoga">not generated this month</div>`
+                    : (pd.missing && pd.missing.gstr2b
+                      ? `<div class="font-bold text-amber-600 text-[13px]" title="GSTR-2B is baar portal se nahi mila (purana data bhi nahi tha)">—</div><div class="text-[10px] text-amber-600">2B nahi mila</div>`
+                      : `<div class="font-bold text-slate-900 text-[13px]">${gpFmtInr(itcSum)}</div><div class="text-[10px] text-slate-400">I ${gpFmtInr(pd.igst)} · C ${gpFmtInr(pd.cgst)}</div>`)
+                  ) : '<span class="text-slate-300">—</span>'}</td>
                   <td class="py-3 px-3 align-middle text-right tabular-nums">${pd ? (pd.missing && pd.missing.tcs ? `<div class="font-bold text-amber-600 text-[13px]" title="E-Com / TCS is baar portal se nahi mila">—</div><div class="text-[10px] text-amber-600">TCS nahi mila</div>` : `<div class="font-bold ${hasEcom ? "text-emerald-700" : "text-slate-400"} text-[13px]">${gpFmtInr(pd.ecomGross)}</div><div class="text-[10px] text-slate-400">TCS ${gpFmtInr(pd.ecomTcs)}</div>`) : '<span class="text-slate-300">—</span>'}</td>
                   <td class="py-3 px-3 align-middle text-center">${docCellHtml}</td>
                   <td class="py-3 px-3 align-middle text-center">${statusBadge}</td>
@@ -20854,7 +21614,41 @@ function buildEtsyPdfReport(opts) {
         a.click();
       });
 
-      // Fingerprint app-lock toggle (sirf Android APK me)
+      // ===== Android back / swipe gesture: pehle modal band, phir pichhla page, phir app =====
+      window.cloudGstHandleBack = function () {
+        try {
+          // 1) sabse upar wala khula modal/popup band karo (jo bhi ho)
+          const overlays = Array.prototype.slice.call(document.querySelectorAll('[id$="Overlay"]'));
+          for (let i = overlays.length - 1; i >= 0; i--) {
+            const el = overlays[i];
+            const hidden = el.classList.contains("hidden") || (el.style && el.style.display === "none");
+            if (!hidden) {
+              el.classList.add("hidden");
+              if (el.style) el.style.display = "";
+              try { document.body.style.overflow = ""; } catch (_) {}
+              return true;
+            }
+          }
+          // 2) pichhla page
+          if (window.__gpPageStack && window.__gpPageStack.length) {
+            const prev = window.__gpPageStack.pop();
+            window.__gpBackNav = true;
+            switchAppPage(prev);
+            return true;
+          }
+          // 3) kisi bhi dusre page se tracker par
+          if (currentAppPage && currentAppPage !== "tracker") {
+            window.__gpBackNav = true;
+            switchAppPage("tracker");
+            return true;
+          }
+          return false;
+        } catch (e) {
+          return false;
+        }
+      };
+
+      // ===== Fingerprint app-lock toggle (sirf Android APK me) =====
       (function gpInitBioLock() {
         const row = document.getElementById("gpBioLockRow");
         const btn = document.getElementById("gpBioLockBtn");
