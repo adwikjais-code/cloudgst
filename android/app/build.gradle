@@ -1,0 +1,61 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.cloudgst.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.cloudgst.app'
+        minSdk 24
+        targetSdk 34
+        versionCode 77
+        versionName '5.9.14'
+    }
+
+    signingConfigs {
+        // repo me hai taaki har build SAME key se sign ho -> naya APK purane ke upar seedha install ho jaye
+        release {
+            storeFile file('../keystore.p12')
+            storePassword 'cloudgst2026'
+            keyAlias 'cloudgst'
+            keyPassword 'cloudgst2026'
+            storeType 'PKCS12'
+            enableV1Signing true
+            enableV2Signing true
+            enableV3Signing true
+            enableV4Signing false
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix ''
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        resources.excludes += ['META-INF/*.kotlin_module']
+    }
+}
+
+// kotlin 1.8+ me jdk7/jdk8 stdlib ka code stdlib me hi aa gaya hai -> duplicate class error se bachne ke liye
+configurations.all {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.11.0'
+    implementation 'androidx.core:core:1.13.1'
+    // Android 7 (API 24) se hi fingerprint / device-PIN lock
+    implementation 'androidx.biometric:biometric:1.1.0'
+}

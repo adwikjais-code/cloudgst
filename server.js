@@ -1143,7 +1143,7 @@ function startServer() {
   app.use(cors({
     origin: (origin, cb) => {
       if (!origin || ALLOWED_ORIGIN === "*") return cb(null, true);
-      if (allowedList.includes(origin) || /^https:\/\/[a-z0-9.-]+\.workers\.dev$/i.test(origin)) return cb(null, true);
+      if (allowedList.includes(origin) || /^https:\/\/[a-z0-9.-]+\.(workers|pages)\.dev$/i.test(origin)) return cb(null, true);
       return cb(null, false);
     },
     methods: ["GET", "POST", "OPTIONS"],
@@ -1167,6 +1167,7 @@ function startServer() {
   const sessions = new Map();
   // Ek hi shared Chromium (RAM bachane ke liye); har login ka alag context
   let sharedBrowser = null;
+  let lastBrowserCrashAt = null;
   async function ensureBrowser() {
     if (sharedBrowser && sharedBrowser.isConnected()) return sharedBrowser;
     sharedBrowser = await chromium.launch({
@@ -1174,7 +1175,11 @@ function startServer() {
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-extensions",
         "--disable-background-networking", "--no-zygote", "--disable-blink-features=AutomationControlled"]
     });
-    sharedBrowser.on("disconnected", () => { lastDebug = { message: "Chromium band/crash hua (aksar RAM kam padne se)", at: new Date().toISOString() }; sharedBrowser = null; });
+    sharedBrowser.on("disconnected", () => {
+      lastBrowserCrashAt = new Date().toISOString();
+      lastDebug = { message: "Chromium band/crash hua (aksar RAM kam padne se)", at: lastBrowserCrashAt };
+      sharedBrowser = null;
+    });
     return sharedBrowser;
   }
   // Ek time par sirf ek fetch chalta hai (baaki line me wait karte hain) — RAM safe
@@ -1200,6 +1205,29 @@ function startServer() {
     for (const [id, s] of sessions.entries()) if (now - s.lastActive > SESSION_TTL_MS && !s.busy) closeSession(id);
   }, 60 * 1000);
 
+  // ===== Memory watchdog: RAM bharte hi purane session/Chromium chhod do (server girne se pehle) =====
+  const MEM_LIMIT_MB = Number(process.env.MEM_LIMIT_MB || 1200);
+  const MAX_SESSIONS = Number(process.env.MAX_SESSIONS || 6);
+  setInterval(async () => {
+    let rssMB = 0;
+    try { rssMB = Math.round(process.memoryUsage().rss / 1048576); } catch (_) {}
+    // Bahut zyada sessions -> sabse purane idle band karo
+    if (sessions.size > MAX_SESSIONS) {
+      const idle = [...sessions.entries()].filter(([, x]) => !x.busy).sort((a, b) => a[1].lastActive - b[1].lastActive);
+      while (sessions.size > MAX_SESSIONS && idle.length) {
+        const [id] = idle.shift();
+        await closeSession(id);
+      }
+      lastDebug = { message: `Session cap: ${sessions.size} sessions (max ${MAX_SESSIONS})`, at: new Date().toISOString() };
+    }
+    if (rssMB > MEM_LIMIT_MB) {
+      for (const [id] of sessions.entries()) { const x = sessions.get(id); if (x && !x.busy) await closeSession(id); }
+      try { if (sharedBrowser) { await sharedBrowser.close(); sharedBrowser = null; } } catch (_) {}
+      lastDebug = { message: `RAM ${rssMB}MB > ${MEM_LIMIT_MB}MB — sessions + Chromium band kiye (agla fetch naya Chromium banayega)`, at: new Date().toISOString() };
+      console.warn("[bridge] memory watchdog:", lastDebug.message);
+    }
+  }, 45 * 1000);
+
   function getSession(sessionId) {
     const s = sessions.get(sessionId);
     if (!s) return null;
@@ -1213,8 +1241,24 @@ function startServer() {
     sess.progress = { key, message, at: Date.now() };
   };
 
+  // Uptime + memory + Chromium status — isse pata chalta hai server restart hua ya Chromium gir gaya.
+  // (Ye public hai, koi private data nahi — app isse "bridge zinda hai?" check karta hai.)
   app.get("/health", (req, res) => {
-    res.json({ ok: true, service: "gst-cloud-bridge", version: VERSION, secretConfigured: !!API_SECRET, activeSessions: sessions.size, timestamp: new Date().toISOString() });
+    let mem = {};
+    try { mem = process.memoryUsage(); } catch (_) {}
+    res.json({
+      ok: true,
+      service: "gst-cloud-bridge",
+      version: VERSION,
+      secretConfigured: !!API_SECRET,
+      uptimeSec: Math.round(process.uptime()),
+      memMB: Math.round((mem.rss || 0) / 1048576),
+      heapMB: Math.round((mem.heapUsed || 0) / 1048576),
+      chromiumUp: !!(sharedBrowser && typeof sharedBrowser.isConnected === "function" && sharedBrowser.isConnected()),
+      lastBrowserCrashAt,
+      activeSessions: sessions.size,
+      timestamp: new Date().toISOString()
+    });
   });
   // Save & Test ke liye: secret sahi hai ya nahi, ye wahi batata hai
   app.get("/api/gst/ping", (req, res) => res.json({ ok: true, version: VERSION }));
@@ -1895,13 +1939,30 @@ function startServer() {
   app.use((req, res) => {
     res.status(404).json({ ok: false, error: `Endpoint nahi mila: ${req.method} ${req.path}` });
   });
+  const BROWSER_CRASH_RE = /target\s+(page|closed)|browser has been closed|browser was closed|has been closed|session closed|protocol error|crash/i;
   app.use((err, req, res, next) => {
     if (res.headersSent) return next(err);
+    if (err && BROWSER_CRASH_RE.test(String(err.message || ""))) {
+      lastBrowserCrashAt = new Date().toISOString();
+      lastDebug = { message: "Chromium crash: " + String(err.message || "").slice(0, 300), at: lastBrowserCrashAt };
+      try { if (sharedBrowser) { sharedBrowser.close().catch(() => {}); sharedBrowser = null; } } catch (_) {}
+      return res.status(503).json({ ok: false, code: "browser_crashed", error: "Server ka Chromium crash ho gaya (aksar RAM kam padne se). App dobara try karega — agar baar-baar ho to Railway me memory badhayein (1GB+)." });
+    }
     const status = err && err.status >= 400 && err.status < 500 ? err.status : 500;
     const msg = err && err.type === "entity.too.large"
       ? "Request body 25MB limit se bada hai."
       : (err && err.type === "entity.parse.failed" ? "Request body valid JSON nahi hai." : (err && err.message) || "Server error");
     res.status(status).json({ ok: false, error: msg });
+  });
+
+  // Crash ka asli reason /debug me dikhe (Railway logs me dhoondhna na pade)
+  process.on("unhandledRejection", (e) => {
+    lastDebug = { message: "unhandledRejection: " + ((e && e.message) || String(e)), at: new Date().toISOString() };
+    console.error("[bridge] unhandledRejection:", (e && e.stack) || e);
+  });
+  process.on("uncaughtException", (e) => {
+    lastDebug = { message: "uncaughtException: " + ((e && e.message) || String(e)), at: new Date().toISOString() };
+    console.error("[bridge] uncaughtException:", (e && e.stack) || e);
   });
 
   app.listen(PORT, () => console.log(`GST Cloud Bridge v${VERSION} running on port ${PORT}`));
