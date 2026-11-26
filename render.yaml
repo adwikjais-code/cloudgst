@@ -1,0 +1,19 @@
+# Backup bridge host (Render) — Railway down ho to 3 click me yahi chala lein.
+# App me Settings -> Bridge URL me is service ka URL daal dein (ya "☁️ Cloud" ki jagah manual).
+services:
+  - type: web
+    name: cloudgst-bridge
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter          # free plan par service so jati hai; starter 24x7 chalta hai
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: API_SECRET
+        sync: false        # Render dashboard me apna secret daalein (Railway wala hi chalega)
+      - key: ALLOWED_ORIGIN
+        value: https://still-flower-aeed.taxandgstconsultancy.workers.dev,https://rough-sunset-e174.adwikjais.workers.dev,https://adwikjais-code.github.io
+      - key: ALLOW_NO_SECRET
+        value: "false"
+      - key: NODE_ENV
+        value: production

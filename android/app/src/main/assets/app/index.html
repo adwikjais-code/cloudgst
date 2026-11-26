@@ -2434,6 +2434,10 @@
             <button id="gpSaveSettingsBtn" type="button" class="w-full px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold">Save &amp; Test</button>
           </div>
         </div>
+        <div class="px-4 sm:px-5 pb-3 flex flex-wrap items-center gap-2">
+          <button id="gpBridgeTestBtn" type="button" class="px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-semibold border border-sky-200 transition">🩺 Bridge test</button>
+          <span id="gpBridgeInfo" class="text-[11px] text-slate-500 font-mono break-all">—</span>
+        </div>
         <div id="gpBioLockRow" class="hidden px-4 sm:px-5 pb-3.5">
           <button id="gpBioLockBtn" type="button" class="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold border border-slate-300 transition">🔒 App lock (fingerprint): —</button>
         </div>
@@ -2459,6 +2463,16 @@
     <!-- ==================== SUB-TAB 1: PRO TABLE & CARDS ==================== -->
     <div id="gp-tab-serial" class="space-y-4">
       <!-- New Month Blank Banner (Shows when selected FY/Month has 0 fetched rows) -->
+      <div id="gpBridgeOfflineBanner" class="hidden bg-rose-50 border border-rose-200 rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div class="flex items-center gap-2.5">
+          <span class="text-base">☁️</span>
+          <div>
+            <div class="font-bold text-rose-900">Bridge server se connection nahi hai</div>
+            <div id="gpBridgeOfflineSub" class="text-[11px] text-rose-800/90">Server jawab nahi de raha — app apne aap dobara try karta rahega.</div>
+          </div>
+        </div>
+        <button id="gpBridgeRetryBtn" type="button" class="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition">🔄 Abhi check karein</button>
+      </div>
       <div id="gpNewMonthBanner" class="hidden bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
         <div class="flex items-center gap-2.5 text-amber-900">
           <span class="text-base">🗓️</span>
@@ -20058,7 +20072,13 @@ function buildEtsyPdfReport(opts) {
       const gpToast = (msg) => {
         if (typeof showToast === "function") showToast(msg);
       };
-      const gpGetBridgeUrl = () => (localStorage.getItem(K_BRIDGE) || "").trim().replace(/\/+$/, "");
+      // Naya browser / cleared storage: khaali chhodo to Cloud (Railway) par hi jao — "URL set karein" wali dead-end na aaye
+      const gpGetBridgeUrl = () => {
+        let u = (localStorage.getItem(K_BRIDGE) || "").trim();
+        if (!u) u = (localStorage.getItem(K_CLOUD) || "").trim();
+        if (!u) u = "https://cloudgst-production.up.railway.app";
+        return u.replace(/\/+$/, "");
+      };
       const gpGetBridgeSec = () => (localStorage.getItem(K_SECRET) || "").trim();
 
       function gpEsc(v) {
@@ -20145,7 +20165,103 @@ function buildEtsyPdfReport(opts) {
         return { ok: !!val, reason: val ? "ok" : "empty", pw: val };
       }
 
+      // ===== Bridge health / auto-retry (v5.9.14) =====
+      // Net error par (Load failed / Failed to fetch) hi retry — HTTP error/CORS par nahi, warna bekar spam hoga.
+      let gpBridgeOffline = false;
+      function gpBridgeMark(up) {
+        const was = gpBridgeOffline;
+        gpBridgeOffline = !up;
+        if (was !== gpBridgeOffline) { try { gpRenderSerialList(); } catch (_) {} }
+      }
+      function gpBridgeOrigin() { try { return (window.location && window.location.origin) || "-"; } catch (_) { return "-"; } }
+      const GP_IDEMPOTENT_RE = /\/api\/gst\/(ping|health|fetch-status)$/;
       async function gpCallBridge(endpoint, bodyObj, callOpts) {
+        const o = callOpts || {};
+        const idem = bodyObj === null || GP_IDEMPOTENT_RE.test(endpoint) || /\/api\/gst\/init-login$/.test(endpoint);
+        const waits = (o.retry === false || !idem) ? [0] : [0, 1800, 4500];
+        let lastErr = null;
+        for (let i = 0; i < waits.length; i++) {
+          if (waits[i]) await new Promise(r => setTimeout(r, waits[i]));
+          if (o.signal && o.signal.aborted) { const e = new Error("Aapne cancel kiya."); e.aborted = true; throw e; }
+          try {
+            const res = await gpCallBridgeOnce(endpoint, bodyObj, callOpts);
+            gpBridgeMark(true);
+            return res;
+          } catch (e) {
+            lastErr = e;
+            if (!(e && e.network)) throw e;
+            gpBridgeMark(false);
+            if (i < waits.length - 1 && typeof o.onRetry === "function") {
+              try { o.onRetry(i + 1, waits[i + 1]); } catch (_) {}
+            }
+          }
+        }
+        throw lastErr;
+      }
+      // /health me secret nahi chahiye — isliye CORS/auth ka panga nahi
+      async function gpBridgeHealth(timeoutMs) {
+        const base = gpGetBridgeUrl();
+        if (!base) return { ok: false, reason: "Bridge URL set nahi hai" };
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), Math.max(2000, Number(timeoutMs) || 6000));
+        const t0 = Date.now();
+        try {
+          const r = await fetch(base + "/health", { method: "GET", signal: ctrl.signal, cache: "no-store" });
+          const txt = await r.text();
+          let d = null; try { d = JSON.parse(txt); } catch (_) {}
+          const ms = Date.now() - t0;
+          if (r.ok && d && d.ok) { gpBridgeMark(true); return { ok: true, ms, data: d, url: base }; }
+          gpBridgeMark(false);
+          return { ok: false, ms, http: r.status, reason: "HTTP " + r.status, url: base };
+        } catch (e) {
+          gpBridgeMark(false);
+          const msg = (e && e.message) ? e.message : "network error";
+          return { ok: false, ms: Date.now() - t0, reason: /abort/i.test(msg) ? "timeout" : msg, url: base };
+        } finally { clearTimeout(timer); }
+      }
+      // Bridge down ho to chup-chaap fail na karo — thodi der khud intezaar karo
+      async function gpWaitBridgeUp(maxMs, onTick) {
+        const t0 = Date.now();
+        let attempt = 0;
+        while (true) {
+          attempt++;
+          const h = await gpBridgeHealth(6000);
+          if (h.ok) return h;
+          if (typeof onTick === "function") { try { onTick(attempt, Math.round((Date.now() - t0) / 1000), h); } catch (_) {} }
+          if (Date.now() - t0 >= Math.max(0, Number(maxMs) || 0)) return { ok: false, last: h };
+          await new Promise(r => setTimeout(r, 2500));
+        }
+      }
+      // ===== GSTR-2B / E-Com options: yaad rakho + dono off par rok =====
+      const K_OPT2B = "gst_opt_2b_v1", K_OPT_TCS = "gst_opt_tcs_v1";
+      function gpReadOptions() {
+        const a = document.getElementById("gpOpt2b"), b = document.getElementById("gpOptTcs");
+        return { gstr2b: !!(a && a.checked), tcs: !!(b && b.checked), notices: false };
+      }
+      function gpSaveOptions() {
+        try {
+          localStorage.setItem(K_OPT2B, document.getElementById("gpOpt2b")?.checked ? "1" : "0");
+          localStorage.setItem(K_OPT_TCS, document.getElementById("gpOptTcs")?.checked ? "1" : "0");
+        } catch (_) {}
+      }
+      function gpInitOptions() {
+        const apply = () => {
+          try {
+            const a = localStorage.getItem(K_OPT2B), b = localStorage.getItem(K_OPT_TCS);
+            const ea = document.getElementById("gpOpt2b"), eb = document.getElementById("gpOptTcs");
+            if (ea && a !== null) ea.checked = a === "1";
+            if (eb && b !== null) eb.checked = b === "1";
+          } catch (_) {}
+        };
+        apply();
+        // Safari/iOS reload par form-state restore hota hai — uske baad phir apni saved value lagao
+        try { window.addEventListener("pageshow", () => setTimeout(apply, 50)); } catch (_) {}
+        try { window.addEventListener("pageshow", () => setTimeout(apply, 400)); } catch (_) {}
+        document.getElementById("gpOpt2b")?.addEventListener("change", gpSaveOptions);
+        document.getElementById("gpOptTcs")?.addEventListener("change", gpSaveOptions);
+      }
+
+      async function gpCallBridgeOnce(endpoint, bodyObj, callOpts) {
         const base = gpGetBridgeUrl();
         if (!base) {
           document.getElementById("gpSettingsDrawer")?.classList.remove("hidden");
@@ -20182,7 +20298,13 @@ function buildEtsyPdfReport(opts) {
             e.aborted = true;
             throw e;
           }
-          throw new Error("Bridge se connect nahi ho paya (" + ((err && err.message) ? err.message : "network error") + "). Internet / Bridge URL check karein.");
+          const _msg = (err && err.message) ? err.message : "network error";
+          const _origin = (() => { try { return (window.location && window.location.origin) || "-"; } catch (_) { return "-"; } })();
+          const e2 = new Error(`Bridge se connect nahi ho paya (${_msg}) — URL: ${base} · origin: ${_origin}. Internet / Bridge URL / CORS check karein.`);
+          e2.network = true;
+          e2.bridgeUrl = base;
+          e2.origin = _origin;
+          throw e2;
         }
         clearTimeout(timer);
         if (o.signal) o.signal.removeEventListener("abort", onOuterAbort);
@@ -20725,6 +20847,12 @@ function buildEtsyPdfReport(opts) {
       }
 
       function gpRenderSerialList(focusKey) {
+        try {
+          const _bb = document.getElementById("gpBridgeOfflineBanner");
+          if (_bb) _bb.classList.toggle("hidden", !gpBridgeOffline);
+          const _bs = document.getElementById("gpBridgeOfflineSub");
+          if (_bs && gpBridgeOffline) _bs.textContent = "Bridge server jawab nahi de raha (" + (gpGetBridgeUrl() || "URL set nahi") + ") — app apne aap dobara try karta rahega.";
+        } catch (_) {}
         gpUpdateBadgesAndProgress();
         const list = gpGetFilteredClients();
         const thead = document.getElementById("gpSerialTableHead");
@@ -21299,6 +21427,16 @@ function buildEtsyPdfReport(opts) {
       }
 
       function gpTriggerFetchInBackground(c, st) {
+        // Dono option OFF = kuchh fetch hi nahi hoga -> chup-chaap khaali save mat karo
+        const _opts = gpReadOptions();
+        if (!_opts.gstr2b && !_opts.tcs) {
+          st.phase = "error";
+          st.note = "⚠️ GSTR-2B aur E-Com dono OFF hain — upar kam se kam ek tick karein, phir Re-Fetch. (Kuchh save nahi kiya.)";
+          gpErrLogAdd(c.clientKey, "2B + E-Com dono OFF the — fetch nahi chala");
+          gpRenderSerialList();
+          gpToast("⚠️ " + (c.clientName || "Client") + ": GSTR-2B aur E-Com dono OFF hain — pehle ek ON karein.");
+          return;
+        }
         st.phase = "fetching";
         st.note = "";
         st.partialNote = "";
@@ -21322,16 +21460,30 @@ function buildEtsyPdfReport(opts) {
 
         const fy = document.getElementById("gpFySel").value;
         const month = document.getElementById("gpMonSel").value;
-        const options = {
-          gstr2b: document.getElementById("gpOpt2b").checked,
-          tcs: document.getElementById("gpOptTcs").checked,
-          notices: false
-        };
+        const options = gpReadOptions();
         const wantDrive = !!document.getElementById("gpAutoDriveChk")?.checked;
 
-        (_phoneMode
-          ? gpPhoneFetch2b(fy, (typeof gpGetSelectedMonthDisplay === "function" ? gpGetSelectedMonthDisplay() : ""))
-          : gpCallBridge("/api/gst/fetch-all", { sessionId: st.sessionId, fy, month, autoClose: true, options }, { signal: ctrl.signal, timeoutMs: 900000 }))
+        const _runFetch = async () => {
+          if (!_phoneMode) {
+            // Cloud: pehle dekho bridge zinda hai — down ho to 60s tak khud intezaar, phir saaf message
+            const up = await gpWaitBridgeUp(60000, (n, secs) => {
+              st.progressText = `⏳ Bridge server jawab nahi de raha — dobara jud rahe hain (${secs}s)…`;
+              gpRenderSerialList();
+            });
+            if (!up.ok) {
+              const e = new Error("Bridge server down hai (60s tak jawab nahi aaya: " + ((up.last && up.last.reason) || "no response") + "). Server up hote hi Re-Fetch karein — kuchh save nahi hua.");
+              e.code = "bridge_down";
+              throw e;
+            }
+          }
+          return _phoneMode
+            ? gpPhoneFetch2b(fy, (typeof gpGetSelectedMonthDisplay === "function" ? gpGetSelectedMonthDisplay() : ""))
+            : gpCallBridge("/api/gst/fetch-all", { sessionId: st.sessionId, fy, month, autoClose: true, options }, {
+                signal: ctrl.signal, timeoutMs: 900000, retry: false,
+                onRetry: (n) => { st.progressText = `⏳ Connection toota — retry ${n}…`; gpRenderSerialList(); }
+              });
+        };
+        _runFetch()
           .then(async (data) => {
             st.liveRawData = data;
             st.phase = "saving";
@@ -21356,11 +21508,15 @@ function buildEtsyPdfReport(opts) {
               st.note = err.message;
               gpErrLogAdd(c.clientKey, err.message);
               const _needLogin = err && err.code === "login_required";
-              st.cooldownUntil = _needLogin ? 0 : Date.now() + 90000;
+              const _bridgeDown = err && err.code === "bridge_down";
+              st.cooldownUntil = (_needLogin || _bridgeDown) ? 0 : Date.now() + 90000;
+              if (_bridgeDown) gpBridgeMark(false);
               if (!_needLogin) gpEnsureCooldownTicker();
-              gpToast(_needLogin
-                ? `🔐 ${c.clientName}: ${err.message}`
-                : `❌ ${c.clientName}: ${err.message} — 90s baad dobara try karein.`);
+              gpToast(_bridgeDown
+                ? `☁️ ${c.clientName}: ${err.message}`
+                : (_needLogin
+                  ? `🔐 ${c.clientName}: ${err.message}`
+                  : `❌ ${c.clientName}: ${err.message} — 90s baad dobara try karein.`));
               gpPhoneDbg("fetch error: " + (err && err.message));
               if (_needLogin) {
                 gpPhoneLoginClient("");
@@ -22229,6 +22385,28 @@ function buildEtsyPdfReport(opts) {
       if (bInp) bInp.value = gpGetBridgeUrl() || "https://cloudgst-production.up.railway.app";
       if (sInp) sInp.value = gpGetBridgeSec();
       gpUpdateQuickButtons();
+      gpInitOptions();
+      document.getElementById("gpBridgeTestBtn")?.addEventListener("click", async () => {
+        const info = document.getElementById("gpBridgeInfo");
+        if (info) info.textContent = "checking…";
+        const h = await gpBridgeHealth(8000);
+        if (info) {
+          info.textContent = h.ok
+            ? `✅ v${(h.data && h.data.version) || "?"} · ${h.ms}ms · uptime ${(h.data && h.data.uptimeSec != null) ? h.data.uptimeSec + "s" : "-"} · ${h.url}`
+            : `❌ ${h.reason || "fail"} · ${h.url}`;
+        }
+        gpToast(h.ok ? `✅ Bridge theek (v${(h.data && h.data.version) || "?"}, ${h.ms}ms)` : `❌ Bridge: ${h.reason || "fail"} — ${h.url}`);
+      });
+      document.getElementById("gpBridgeRetryBtn")?.addEventListener("click", async () => {
+        gpToast("🔄 Bridge dobara check kar rahe hain…");
+        const up = await gpWaitBridgeUp(20000, (n, secs) => {
+          const sub = document.getElementById("gpBridgeOfflineSub");
+          if (sub) sub.textContent = "Check ho raha hai… (" + secs + "s)";
+        });
+        if (up.ok) { gpBridgeMark(true); gpToast("✅ Bridge wapas aa gaya (v" + ((up.data && up.data.version) || "?") + ") — ab Re-Fetch karein."); }
+        else { gpBridgeMark(false); gpToast("❌ Bridge abhi bhi down: " + ((up.last && up.last.reason) || "no response")); }
+      });
+      gpBridgeHealth(6000);
       window.renderPortalPage();
     })();
   </script>

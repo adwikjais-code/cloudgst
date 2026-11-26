@@ -13,7 +13,7 @@ permissions:
   issues: write
 
 env:
-  RELEASE_TAG: android-v5.9.13
+  RELEASE_TAG: android-v5.9.14
 
 jobs:
   build:
@@ -97,7 +97,7 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.9.13 — cloud default (kaam ruke nahi) + phone-mode debug report)
+          ## CloudGST Android APK (v5.9.14 — bridge down par auto-retry + banner, error me URL/origin, 2B/E-Com yaad + dono-off guard)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
@@ -122,5 +122,5 @@ jobs:
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
           gh release create "$RELEASE_TAG" "CloudGST.apk" \
-            --title "CloudGST Android v5.9.13 (APK)" \
+            --title "CloudGST Android v5.9.14 (APK)" \
             --notes-file notes.md

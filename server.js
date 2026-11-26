@@ -1143,7 +1143,7 @@ function startServer() {
   app.use(cors({
     origin: (origin, cb) => {
       if (!origin || ALLOWED_ORIGIN === "*") return cb(null, true);
-      if (allowedList.includes(origin) || /^https:\/\/[a-z0-9.-]+\.workers\.dev$/i.test(origin)) return cb(null, true);
+      if (allowedList.includes(origin) || /^https:\/\/[a-z0-9.-]+\.(workers|pages)\.dev$/i.test(origin)) return cb(null, true);
       return cb(null, false);
     },
     methods: ["GET", "POST", "OPTIONS"],
@@ -1167,6 +1167,7 @@ function startServer() {
   const sessions = new Map();
   // Ek hi shared Chromium (RAM bachane ke liye); har login ka alag context
   let sharedBrowser = null;
+  let lastBrowserCrashAt = null;
   async function ensureBrowser() {
     if (sharedBrowser && sharedBrowser.isConnected()) return sharedBrowser;
     sharedBrowser = await chromium.launch({
@@ -1174,7 +1175,11 @@ function startServer() {
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-extensions",
         "--disable-background-networking", "--no-zygote", "--disable-blink-features=AutomationControlled"]
     });
-    sharedBrowser.on("disconnected", () => { lastDebug = { message: "Chromium band/crash hua (aksar RAM kam padne se)", at: new Date().toISOString() }; sharedBrowser = null; });
+    sharedBrowser.on("disconnected", () => {
+      lastBrowserCrashAt = new Date().toISOString();
+      lastDebug = { message: "Chromium band/crash hua (aksar RAM kam padne se)", at: lastBrowserCrashAt };
+      sharedBrowser = null;
+    });
     return sharedBrowser;
   }
   // Ek time par sirf ek fetch chalta hai (baaki line me wait karte hain) — RAM safe
@@ -1213,8 +1218,24 @@ function startServer() {
     sess.progress = { key, message, at: Date.now() };
   };
 
+  // Uptime + memory + Chromium status — isse pata chalta hai server restart hua ya Chromium gir gaya.
+  // (Ye public hai, koi private data nahi — app isse "bridge zinda hai?" check karta hai.)
   app.get("/health", (req, res) => {
-    res.json({ ok: true, service: "gst-cloud-bridge", version: VERSION, secretConfigured: !!API_SECRET, activeSessions: sessions.size, timestamp: new Date().toISOString() });
+    let mem = {};
+    try { mem = process.memoryUsage(); } catch (_) {}
+    res.json({
+      ok: true,
+      service: "gst-cloud-bridge",
+      version: VERSION,
+      secretConfigured: !!API_SECRET,
+      uptimeSec: Math.round(process.uptime()),
+      memMB: Math.round((mem.rss || 0) / 1048576),
+      heapMB: Math.round((mem.heapUsed || 0) / 1048576),
+      chromiumUp: !!(sharedBrowser && typeof sharedBrowser.isConnected === "function" && sharedBrowser.isConnected()),
+      lastBrowserCrashAt,
+      activeSessions: sessions.size,
+      timestamp: new Date().toISOString()
+    });
   });
   // Save & Test ke liye: secret sahi hai ya nahi, ye wahi batata hai
   app.get("/api/gst/ping", (req, res) => res.json({ ok: true, version: VERSION }));
@@ -1902,6 +1923,16 @@ function startServer() {
       ? "Request body 25MB limit se bada hai."
       : (err && err.type === "entity.parse.failed" ? "Request body valid JSON nahi hai." : (err && err.message) || "Server error");
     res.status(status).json({ ok: false, error: msg });
+  });
+
+  // Crash ka asli reason /debug me dikhe (Railway logs me dhoondhna na pade)
+  process.on("unhandledRejection", (e) => {
+    lastDebug = { message: "unhandledRejection: " + ((e && e.message) || String(e)), at: new Date().toISOString() };
+    console.error("[bridge] unhandledRejection:", (e && e.stack) || e);
+  });
+  process.on("uncaughtException", (e) => {
+    lastDebug = { message: "uncaughtException: " + ((e && e.message) || String(e)), at: new Date().toISOString() };
+    console.error("[bridge] uncaughtException:", (e && e.stack) || e);
   });
 
   app.listen(PORT, () => console.log(`GST Cloud Bridge v${VERSION} running on port ${PORT}`));
