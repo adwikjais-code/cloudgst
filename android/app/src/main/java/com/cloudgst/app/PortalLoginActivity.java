@@ -313,41 +313,7 @@ public class PortalLoginActivity extends Activity {
                 + "}catch(e){return 'NONE';}})()";
     }
 
-    /** Login page ke fields dhoondh kar ID/password bharta hai; har 1.2s me 10 baar tak retry. */
-    private void fillLoginFields() {
-        if (web == null) return;
-        final String js = buildFillScript();
-        web.evaluateJavascript(js, value -> {
-            boolean ok = value != null && value.startsWith("true");
-            if (ok) {
-                injected = true;
-                Toast.makeText(PortalLoginActivity.this,
-                        "ID/password bhar diye — ab sirf captcha dalein", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            if (tries < 10) {
-                tries++;
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        fillLoginFields();
-                    }
-                }, 1200);
-            }
-        });
-    }
-
-    // ================= GSTR-1 "Prepare Online" shortcut =================
-
-    /** Login ke baad: portal ke apne buttons dabakar us month ka GSTR-1 Prepare Online page kholta hai. */
-
-
-    /**
-     * Portal ke DOM me text dhoondh kar uske button/link dabata hai (submit kuch nahi karta):
-     * dashboard -> GSTR-1 -> PREPARE ONLINE, aur prepare page par us month ka period select karta hai.
-     */
-
-    /** Login page ke fields dhoondh kar ID/password bharta hai; har 1.2s me 10 baar tak retry. */
+    /** Login page ke fields dhoondh kar ID/password bharta hai. */
     private String buildFillScript() {
         String u = JSONObject.quote(username);
         String p = JSONObject.quote(password);
