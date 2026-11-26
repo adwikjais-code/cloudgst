@@ -13,7 +13,7 @@ permissions:
   issues: write
 
 env:
-  RELEASE_TAG: android-v5.9.6
+  RELEASE_TAG: android-v5.9.7
 
 jobs:
   build:
@@ -80,6 +80,7 @@ jobs:
             echo "js source switch: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpSrcSwitch || true)"
             echo "js phone fetch: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpPhoneFetch2b || true)"
             echo "dex phone fetch: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac phoneFetch2b || true)"
+            echo "dex ui-thread start: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac startPhoneFetch || true)"
             echo "js native portal: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativePortalBtn || true)"
             echo "dex openPortal: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac openPortal || true)"
             echo "dex CloudGSTNative: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac CloudGSTNative || true)"
@@ -92,7 +93,7 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.9.6 — 📱 Phone / ☁️ Cloud switch (phone mode background me, bina cloud))
+          ## CloudGST Android APK (v5.9.7 — Re-Fetch par crash fix (UI thread))
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
@@ -117,5 +118,5 @@ jobs:
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
           gh release create "$RELEASE_TAG" "CloudGST.apk" \
-            --title "CloudGST Android v5.9.6 (APK)" \
+            --title "CloudGST Android v5.9.7 (APK)" \
             --notes-file notes.md

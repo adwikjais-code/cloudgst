@@ -21325,10 +21325,13 @@ function buildEtsyPdfReport(opts) {
               st.phase = "error";
               st.note = err.message;
               gpErrLogAdd(c.clientKey, err.message);
-              st.cooldownUntil = Date.now() + 90000;
-              gpEnsureCooldownTicker();
-              gpToast(`❌ ${c.clientName}: ${err.message} — 90s baad dobara try karein.`);
-              if (err.code === "login_required") gpPhoneLoginClient("");
+              const _needLogin = err && err.code === "login_required";
+              st.cooldownUntil = _needLogin ? 0 : Date.now() + 90000;
+              if (!_needLogin) gpEnsureCooldownTicker();
+              gpToast(_needLogin
+                ? `🔐 ${c.clientName}: ${err.message}`
+                : `❌ ${c.clientName}: ${err.message} — 90s baad dobara try karein.`);
+              if (_needLogin) gpPhoneLoginClient("");
             }
             if (st.sessionId && st.sessionId !== "PHONE") gpCallBridge("/api/gst/logout", { sessionId: st.sessionId }).catch(() => {});
           })

@@ -61,7 +61,7 @@ import java.util.concurrent.Executor;
 public class MainActivity extends FragmentActivity {
 
     public static final String APP_URL = "https://appassets.androidplatform.net/assets/app/index.html";
-    public static final String APP_VERSION = "android-5.9.6";
+    public static final String APP_VERSION = "android-5.9.7";
 
     private static final int REQ_FILE = 1001;
     private static final int REQ_STORAGE = 1002;
@@ -548,28 +548,55 @@ public class MainActivity extends FragmentActivity {
     /** JS se bulane wala bridge: window.CloudGSTNative.* */
     // ================= Phone mode: bina cloud, background (invisible) fetch =================
 
-    String startPhoneFetch(String fyLabel, String monLabel) {
-        if (phoneFetch == null) {
-            phoneFetch = new PhoneFetch(this, (id, payload) -> runOnUiThread(() -> {
-                phonePayload = payload == null ? "" : payload;
-                phonePayloadId = id;
-                if (web == null) return;
-                web.evaluateJavascript(
-                        "(function(){try{if(window.gpPhoneFetchReady)window.gpPhoneFetchReady("
-                                + org.json.JSONObject.quote(id) + ");}catch(e){}})()", null);
-            }));
-        }
-        String id = "pf" + System.currentTimeMillis();
-        phoneFetch.start(id, fyLabel, monLabel, rootView);
+    /**
+     * JS bridge thread se bulaya jata hai — isliye WebView/View ka poora kaam UI thread par.
+     * (v5.9.6 me yahi galti thi: non-UI thread se WebView banane par app turant band ho jata tha.)
+     */
+    String startPhoneFetch(final String fyLabel, final String monLabel) {
+        final String id = "pf" + System.currentTimeMillis();
+        final String fy = fyLabel == null ? "" : fyLabel;
+        final String mon = monLabel == null ? "" : monLabel;
+        runOnUiThread(() -> {
+            try {
+                if (phoneFetch == null) {
+                    phoneFetch = new PhoneFetch(this, (rid, payload) -> runOnUiThread(
+                            () -> deliverPhonePayload(rid, payload)));
+                }
+                phoneFetch.start(id, fy, mon, rootView);
+            } catch (Throwable t) {
+                Log.e(TAG, "phone fetch start fail", t);
+                deliverPhonePayload(id, "{\"ok\":false,\"source\":\"phone\",\"code\":\"start_failed\","
+                        + "\"error\":\"Phone mode start nahi ho paya (" + String.valueOf(t.getMessage())
+                        + "). ☁️ Cloud mode try karein.\"}");
+            }
+        });
         return id;
     }
 
+    /** Phone-mode result app JS ko deta hai (chunks me, kyunki 2B JSON bada hota hai). */
+    void deliverPhonePayload(String id, String payload) {
+        try {
+            phonePayload = payload == null ? "" : payload;
+            phonePayloadId = id == null ? "" : id;
+            if (web == null) return;
+            web.evaluateJavascript(
+                    "(function(){try{if(window.gpPhoneFetchReady)window.gpPhoneFetchReady("
+                            + org.json.JSONObject.quote(phonePayloadId) + ");}catch(e){}})()", null);
+        } catch (Throwable t) {
+            Log.e(TAG, "deliverPhonePayload fail", t);
+        }
+    }
+
     String phonePayloadChunk(String id, int offset, int len) {
+        try {
         if (id == null || !id.equals(phonePayloadId) || phonePayload == null) return "";
         int L = Math.max(1, Math.min(len, 400000));
         if (offset < 0 || offset >= phonePayload.length()) return "";
         int end = Math.min(phonePayload.length(), offset + L);
         return phonePayload.substring(offset, end);
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     public static class NativeBridge {
