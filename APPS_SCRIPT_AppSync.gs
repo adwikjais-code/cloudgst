@@ -229,59 +229,49 @@ var GST_STATE_NAMES = {
   '35': 'Andaman & Nicobar', '36': 'Telangana', '37': 'Andhra Pradesh', '38': 'Ladakh', '97': 'Other Territory'
 };
 
-// Folder dhoondhna: (1) saved ID (2) exact naam (3) milta-julta naam ("GST Certificate", "GST Papers"…)
-// (4) Clients folder ke andar (5) kuch na mile to KHUD bana deta hai — user ko dead-end nahi milta.
-function gstCertFolder_(preferredId) {
+// SIRF EK FIXED FOLDER — kisi doosre folder me jhaankte hi nahi.
+//   1) Script Property GST_CERT_FOLDER_ID (ek baar set ho gaya to hamesha wahi)
+//   2) warna My Drive me exact naam "GST Certificates"
+// Milne par ID yaad rakh li jati hai (agli baar seedha wahi, naam badle to bhi chalega).
+function gstCertFolderIdFromLink_(v) {
+  var str = String(v || '').trim();
+  if (!str) return '';
+  var m = str.match(/[-_A-Za-z0-9]{25,}/);
+  return m ? m[0] : '';
+}
+
+function gstCertFolder_() {
   var props = null;
   try { props = PropertiesService.getScriptProperties(); } catch (e) {}
 
-  var ids = [];
-  if (preferredId) ids.push(String(preferredId).trim());
-  if (props) ids.push(String(props.getProperty('GST_CERT_FOLDER_ID') || '').trim());
-  for (var i = 0; i < ids.length; i++) {
-    if (!ids[i]) continue;
-    try { var f = DriveApp.getFolderById(ids[i]); if (f && !f.isTrashed()) return f; } catch (e) {}
+  var savedId = '';
+  if (props) { try { savedId = String(props.getProperty('GST_CERT_FOLDER_ID') || '').trim(); } catch (e) {} }
+  if (savedId) {
+    try { var f = DriveApp.getFolderById(savedId); if (f && !f.isTrashed()) return { folder: f, how: 'saved id' }; } catch (e) {}
   }
 
-  var exact = [], fuzzy = [];
   try {
-    var all = DriveApp.getFolders();
-    while (all.hasNext()) {
-      var fo = all.next();
-      if (fo.isTrashed()) continue;
-      var nm = String(fo.getName() || '').toLowerCase().replace(/\s+/g, ' ').trim();
-      if (!nm) continue;
-      if (nm === 'gst certificates' || nm === 'gst certificate' || nm === 'gst certs' || nm === 'gst cert') exact.push(fo);
-      else if (/gst/.test(nm) && /(cert|paper|registration|reg\b)/.test(nm)) fuzzy.push(fo);
+    var it = DriveApp.getFoldersByName(GST_CERT_FOLDER_NAME);
+    while (it.hasNext()) {
+      var f2 = it.next();
+      if (f2.isTrashed()) continue;
+      if (props) { try { props.setProperty('GST_CERT_FOLDER_ID', f2.getId()); } catch (e) {} }
+      return { folder: f2, how: 'naam se mila' };
     }
   } catch (e) {}
 
-  var pick = exact.length ? exact[0] : (fuzzy.length ? fuzzy[0] : null);
-  if (!pick) {
-    // Clients folder ke andar bhi dekh lete hain
-    try {
-      var kids = DriveApp.getFolderById(CLIENTS_FOLDER_ID).getFolders();
-      while (kids.hasNext()) {
-        var k = kids.next();
-        var kn = String(k.getName() || '').toLowerCase();
-        if (!k.isTrashed() && /gst/.test(kn) && /(cert|paper|registration)/.test(kn)) { pick = k; break; }
-      }
-    } catch (e) {}
-  }
-  if (pick && props) { try { props.setProperty('GST_CERT_FOLDER_ID', pick.getId()); } catch (e) {} }
-  return pick;
+  return { folder: null, how: '' };
 }
 
-function gstCertFolderEnsure_(preferredId) {
-  var folder = gstCertFolder_(preferredId);
-  if (folder) return { folder: folder, created: false };
-  try {
-    var made = DriveApp.createFolder(GST_CERT_FOLDER_NAME);
-    try { PropertiesService.getScriptProperties().setProperty('GST_CERT_FOLDER_ID', made.getId()); } catch (e) {}
-    return { folder: made, created: true };
-  } catch (e) {
-    return { folder: null, created: false, error: String(e) };
-  }
+// App se folder ka link/ID set karna (Shared Drive ka folder ho to yahi rasta)
+function setGstCertFolder(data) {
+  var id = gstCertFolderIdFromLink_((data && (data.folderLink || data.folderId || data.folder)) || '');
+  if (!id) return { status: 'error', message: "Folder ka link ya ID samajh nahi aaya. Drive me folder kholiye → link copy kariye → dobara try kariye." };
+  var f = null;
+  try { f = DriveApp.getFolderById(id); } catch (e) {}
+  if (!f || f.isTrashed()) return { status: 'error', message: "Is link ka folder nahi mila. Check kariye ki folder aapke hi Drive me hai (Shared Drive ho to bhi chalega)." };
+  try { PropertiesService.getScriptProperties().setProperty('GST_CERT_FOLDER_ID', f.getId()); } catch (e) {}
+  return { status: 'ok', folder: f.getName(), folderId: f.getId(), folderUrl: f.getUrl(), message: "Folder set ho gaya: " + f.getName() };
 }
 
 function gstCertFiles_(folder) {
@@ -491,35 +481,17 @@ function existingClientKeys_(ss) {
 
 function scanGstCertFolder(data) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var resolved = gstCertFolderEnsure_(data && data.folderId);
+  var resolved = gstCertFolder_();
   var folder = resolved.folder;
   if (!folder) {
     return {
       status: 'error',
-      message: "Drive me folder na mila aur bana bhi nahi paya (" + (resolved.error || 'permission') + "). My Drive me '" + GST_CERT_FOLDER_NAME + "' folder khud bana lijiye."
+      code: 'folder_not_found',
+      message: "My Drive me '" + GST_CERT_FOLDER_NAME + "' folder nahi mila. Ek baar folder bana lijiye (naam bilkul '" + GST_CERT_FOLDER_NAME + "'), ya folder ka link paste kar dein — phir hamesha wahi folder use hoga, kisi doosre folder me nahi dekhega."
     };
   }
   var folderUrl = '';
   try { folderUrl = folder.getUrl(); } catch (e) {}
-  if (resolved.created) {
-    return {
-      status: 'ok',
-      created: true,
-      folder: folder.getName(),
-      folderId: folder.getId(),
-      folderUrl: folderUrl,
-      total: 0,
-      scanned: 0,
-      ocrAvailable: true,
-      driveServiceOn: gstCertOcrAvailable_(),
-      ocrTried: 0,
-      ocrUsed: 0,
-      candidates: [],
-      skipped: [],
-      errors: [],
-      message: "Drive me '" + folder.getName() + "' folder bana diya. Ab isme GST certificates daalein, phir dobara scan karein."
-    };
-  }
   var existing = existingClientKeys_(ss);
   var files = gstCertFiles_(folder);
   var candidates = [], skipped = [], errors = [];
@@ -1762,6 +1734,7 @@ function doGet(e) {
 // 4. handleSyncAction: Header-aware Sahi Column par likhna (Formulas preserve rakhna) + PIN save karna
 function handleSyncAction(ss, data) {
   if (data && data.action === 'scanGstCerts') { return scanGstCertFolder(data); }
+  if (data && data.action === 'setGstCertFolder') { return setGstCertFolder(data); }
   if (!data) return { status: 'error', message: 'Empty or invalid payload' };
 
   if (data.action === 'savePin' && data.pin) {
