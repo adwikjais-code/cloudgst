@@ -211,6 +211,301 @@ function getClientFolder(clientName, category, createIfMissing) {
   return folder;
 }
 
+/* ===================== GST CERTIFICATE FOLDER → NAYE CLIENTS (one click) =====================
+ * Folder: My Drive me "GST Certificates" (ya Script Property GST_CERT_FOLDER_ID).
+ * GSTIN: pehle FILE NAME se (100% sahi), na mile to Drive OCR se PDF/photo ke andar se.
+ * Jo GSTIN pehle se Sheet (PAID CLINTS / Apne) me hai use SKIP kiya jata hai.
+ * Sirf padhta hai — koi client apne aap add nahi hota; app preview dikha kar Add dabati hai.
+ */
+var GST_CERT_FOLDER_NAME = 'GST Certificates';
+
+var GST_STATE_NAMES = {
+  '01': 'Jammu & Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh', '05': 'Uttarakhand',
+  '06': 'Haryana', '07': 'Delhi', '08': 'Rajasthan', '09': 'Uttar Pradesh', '10': 'Bihar', '11': 'Sikkim',
+  '12': 'Arunachal Pradesh', '13': 'Nagaland', '14': 'Manipur', '15': 'Mizoram', '16': 'Tripura', '17': 'Meghalaya',
+  '18': 'Assam', '19': 'West Bengal', '20': 'Jharkhand', '21': 'Odisha', '22': 'Chhattisgarh', '23': 'Madhya Pradesh',
+  '24': 'Gujarat', '25': 'Daman & Diu', '26': 'Dadra & Nagar Haveli', '27': 'Maharashtra', '28': 'Andhra Pradesh (old)',
+  '29': 'Karnataka', '30': 'Goa', '31': 'Lakshadweep', '32': 'Kerala', '33': 'Tamil Nadu', '34': 'Puducherry',
+  '35': 'Andaman & Nicobar', '36': 'Telangana', '37': 'Andhra Pradesh', '38': 'Ladakh', '97': 'Other Territory'
+};
+
+function gstCertFolder_(preferredId) {
+  var id = String(preferredId || '').trim();
+  if (!id) {
+    try { id = String(PropertiesService.getScriptProperties().getProperty('GST_CERT_FOLDER_ID') || '').trim(); } catch (e) {}
+  }
+  if (id) {
+    try { var f = DriveApp.getFolderById(id); if (f && !f.isTrashed()) return f; } catch (e) {}
+  }
+  var it = DriveApp.getFoldersByName(GST_CERT_FOLDER_NAME);
+  while (it.hasNext()) {
+    var f2 = it.next();
+    if (!f2.isTrashed()) return f2;
+  }
+  return null;
+}
+
+function gstCertFiles_(folder) {
+  var out = [];
+  var files = folder.getFiles();
+  while (files.hasNext()) {
+    var f = files.next();
+    var nm = String(f.getName() || '');
+    var mt = String(f.getMimeType() || '');
+    if (mt === 'application/pdf' || /\.pdf$/i.test(nm) || /^image\//.test(mt) || /\.(jpe?g|png)$/i.test(nm)) out.push(f);
+  }
+  return out;
+}
+
+function gstGstinClean_(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+
+function gstGstinFromText_(text) {
+  var m = String(text || '').toUpperCase().match(/\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/);
+  return m ? m[0] : '';
+}
+
+function gstGstinChecksumOk_(gstin) {
+  var g = gstGstinClean_(gstin);
+  if (g.length !== 15) return false;
+  var code = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  var sum = 0;
+  for (var i = 0; i < 14; i++) {
+    var v = code.indexOf(g.charAt(i));
+    if (v < 0) return false;
+    var f = v * ((i % 2 === 0) ? 1 : 2);
+    sum += Math.floor(f / 36) + (f % 36);
+  }
+  return code.charAt((36 - (sum % 36)) % 36) === g.charAt(14);
+}
+
+function gstCertOcrAvailable_() {
+  return !!(typeof Drive !== 'undefined' && Drive && Drive.Files && Drive.Files.copy);
+}
+
+function gstCertTextByOcr_(fileId) {
+  if (!gstCertOcrAvailable_()) return '';
+  var tmp = null;
+  try {
+    tmp = Drive.Files.copy({ title: 'gst_ocr_' + fileId + '_' + Date.now() }, fileId, { convert: true, ocr: true });
+    var doc = DocumentApp.openById(tmp.id);
+    var txt = doc.getBody().getText() || '';
+    try { doc.saveAndClose(); } catch (e) {}
+    return txt;
+  } catch (e) {
+    return '';
+  } finally {
+    if (tmp && tmp.id) {
+      try { Drive.Files.remove(tmp.id); } catch (e2) { try { DriveApp.getFileById(tmp.id).setTrashed(true); } catch (e3) {} }
+    }
+  }
+}
+
+function gstCertMonthName_(m) {
+  var names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var i = Number(m) - 1;
+  return (i >= 0 && i < 12) ? names[i] : '';
+}
+
+function gstCertDate_(text) {
+  var t = String(text || '');
+  var m = t.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/);
+  if (m) {
+    var mon = gstCertMonthName_(m[2]);
+    if (mon) return ('0' + m[1]).slice(-2) + '-' + mon + '-' + m[3];
+  }
+  var m2 = t.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (m2) {
+    var mon2 = gstCertMonthName_(m2[2]);
+    if (mon2) return ('0' + m2[3]).slice(-2) + '-' + mon2 + '-' + m2[1];
+  }
+  return '';
+}
+
+// "Legal Name" ke aage wali value (same line ya agli line)
+function gstCertLineAfter_(lines, re) {
+  for (var i = 0; i < lines.length; i++) {
+    if (re.test(lines[i])) {
+      var after = String(lines[i]).replace(re, '').replace(/^[\s:.\-]+/, '').trim();
+      if (after.length >= 2 && !/^(name|of|business)$/i.test(after)) return after;
+      for (var j = i + 1; j < Math.min(lines.length, i + 4); j++) {
+        var nxt = String(lines[j] || '').trim();
+        if (nxt) return nxt;
+      }
+    }
+  }
+  return '';
+}
+
+function gstCertCleanName_(v) {
+  return String(v || '').replace(/[|]/g, ' ').replace(/\s+/g, ' ').replace(/^[\s:.,\-]+|[\s:.,\-]+$/g, '').slice(0, 80);
+}
+
+function parseGstCertText_(text) {
+  var raw = String(text || '');
+  var lines = raw.split(/\r?\n/).map(function (x) { return String(x).replace(/\s+/g, ' ').trim(); }).filter(function (x) { return !!x; });
+  var legal = gstCertCleanName_(gstCertLineAfter_(lines, /legal\s*name(\s*of\s*business)?/i));
+  var trade = gstCertCleanName_(gstCertLineAfter_(lines, /trade\s*name/i));
+  if (/^[-–—.]+$/.test(trade)) trade = '';
+
+  // Address: "Principal Place of Business" ke baad ki 2-3 lines
+  var addr = '';
+  for (var i = 0; i < lines.length; i++) {
+    if (/principal\s+place\s+of\s+business/i.test(lines[i])) {
+      var parts = [];
+      var same = lines[i].replace(/principal\s+place\s+of\s+business/i, '').replace(/^[\s:.\-]+/, '').trim();
+      if (same) parts.push(same);
+      for (var j = i + 1; j < Math.min(lines.length, i + 5) && parts.join(' ').length < 160; j++) {
+        var L = lines[j];
+        if (/^(date|period|valid|gstin|registration|type\s+of\s+registration|particulars|address\s+of)/i.test(L)) break;
+        parts.push(L);
+      }
+      addr = gstCertCleanName_(parts.join(', ')).slice(0, 200);
+      break;
+    }
+  }
+
+  var regDate = gstCertDate_(gstCertLineAfter_(lines, /(date\s+of\s+registration|registration\s+date)/i)) || gstCertDate_(raw);
+  var gstin = gstGstinFromText_(raw);
+  return {
+    gstin: gstin,
+    client: legal || trade,
+    firm: trade || legal,
+    address: addr,
+    rDate: regDate
+  };
+}
+
+// Filename se client/firm ka andaza (GSTIN hata kar)
+function gstCertNameFromFileName_(name) {
+  var n = String(name || '').replace(/\.(pdf|jpe?g|png)$/i, '');
+  // pehle separators normalise karo (underscore ki wajah se \b word-boundary fail hota tha)
+  n = n.replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ');
+  n = n.replace(/\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/ig, ' ');
+  n = n.replace(/\b(gst|certificate|certificates|certficate|registration|reg|regn|copy|new|final|scan|scanned|paper|document|doc|pdf|jpg|jpeg|png)\b/ig, ' ');
+  n = n.replace(/\b\d{2,}\b/g, ' ');
+  n = n.replace(/\s+/g, ' ').trim();
+  return gstCertCleanName_(n).toUpperCase();
+}
+
+function existingClientKeys_(ss) {
+  var gstins = {}, names = {};
+  ['PAID CLINTS', 'Apne'].forEach(function (tabName) {
+    var sh = ss.getSheetByName(tabName);
+    if (!sh || sh.getLastRow() < 2) return;
+    var cols = getTabCols(sh);
+    var vals = sh.getDataRange().getDisplayValues();
+    for (var i = 1; i < vals.length; i++) {
+      if (cols.gstin > 0) {
+        var g = gstGstinClean_(vals[i][cols.gstin - 1]);
+        if (g) gstins[g] = true;
+      }
+      if (cols.client > 0) {
+        var nm = cleanClientName(vals[i][cols.client - 1]);
+        if (nm) names[nm] = true;
+      }
+      if (cols.firm > 0) {
+        var fm = cleanClientName(vals[i][cols.firm - 1]);
+        if (fm) names[fm] = true;
+      }
+    }
+  });
+  return { gstins: gstins, names: names };
+}
+
+function scanGstCertFolder(data) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var folder = gstCertFolder_(data && data.folderId);
+  if (!folder) {
+    return {
+      status: 'error',
+      message: "Drive me '" + GST_CERT_FOLDER_NAME + "' naam ka folder nahi mila. My Drive me isi naam ka folder banaiye aur GST certificates usme daaliye."
+    };
+  }
+  var existing = existingClientKeys_(ss);
+  var files = gstCertFiles_(folder);
+  var candidates = [], skipped = [], errors = [];
+  var ocrUsed = 0, ocrTried = 0;
+  var seenGstin = {};
+  var max = Math.min(files.length, 300);
+
+  for (var i = 0; i < max; i++) {
+    var f = files[i];
+    var fileName = f.getName();
+    try {
+      var gstin = gstGstinFromText_(fileName);
+      var source = gstin ? 'filename' : '';
+      var parsed = { gstin: gstin, client: '', firm: '', address: '', rDate: '' };
+
+      // File name me GSTIN hai to naam bhi wahin se; warna OCR
+      if (gstin) {
+        var guess = gstCertNameFromFileName_(fileName);
+        if (guess) { parsed.client = guess; parsed.firm = guess; }
+        // naam nahi mila to OCR se naam nikalne ki koshish
+        if (!parsed.client && gstCertOcrAvailable_()) {
+          ocrTried++;
+          var t0 = gstCertTextByOcr_(f.getId());
+          if (t0) { ocrUsed++; var p0 = parseGstCertText_(t0); parsed.client = p0.client; parsed.firm = p0.firm; parsed.address = p0.address; parsed.rDate = parsed.rDate || p0.rDate; }
+        }
+      } else if (gstCertOcrAvailable_()) {
+        ocrTried++;
+        var txt = gstCertTextByOcr_(f.getId());
+        if (txt) {
+          ocrUsed++;
+          parsed = parseGstCertText_(txt);
+          gstin = parsed.gstin;
+          if (gstin && !source) source = 'ocr';
+        }
+      }
+
+      gstin = gstGstinClean_(gstin);
+      if (!gstin) {
+        skipped.push({ fileName: fileName, reason: 'GSTIN nahi mila (file ka naam GSTIN se rakhein, ya Drive OCR service on karein)' });
+        continue;
+      }
+      if (existing.gstins[gstin] || seenGstin[gstin]) {
+        skipped.push({ fileName: fileName, gstin: gstin, reason: 'Pehle se list me hai' });
+        continue;
+      }
+      seenGstin[gstin] = true;
+
+      var nameKey = cleanClientName(parsed.client || parsed.firm || '');
+      var warn = '';
+      if (!gstGstinChecksumOk_(gstin)) warn = 'GSTIN ka check digit match nahi hua — ek baar verify karein.';
+      if (!parsed.client) { parsed.client = nameKey || gstin; parsed.firm = parsed.firm || parsed.client; warn = warn || 'Naam file se nahi mila — app me edit kar lein.'; }
+      if (nameKey && existing.names[nameKey] && !existing.gstins[gstin]) warn = 'Is naam ka client pehle se hai (GSTIN naya hai) — check karein.';
+
+      candidates.push({
+        fileId: f.getId(),
+        fileName: fileName,
+        gstin: gstin,
+        client: parsed.client,
+        firm: parsed.firm || parsed.client,
+        address: parsed.address || '',
+        state: GST_STATE_NAMES[gstin.substring(0, 2)] || '',
+        rDate: parsed.rDate || '',
+        source: source || 'filename',
+        warn: warn
+      });
+    } catch (err) {
+      errors.push({ fileName: fileName, error: String(err) });
+    }
+  }
+
+  return {
+    status: 'ok',
+    folder: folder.getName(),
+    folderId: folder.getId(),
+    total: files.length,
+    scanned: max,
+    ocrAvailable: gstCertOcrAvailable_(),
+    ocrTried: ocrTried,
+    ocrUsed: ocrUsed,
+    candidates: candidates,
+    skipped: skipped,
+    errors: errors
+  };
+}
+
 // Menu: saare clients ke FOLDER ID aur STATEMENT ID header ke hisab se bhar do (aur Active month me galti se aaye Folder ID saaf kare)
 function fillAllClientIds() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1365,6 +1660,7 @@ function doGet(e) {
 
 // 4. handleSyncAction: Header-aware Sahi Column par likhna (Formulas preserve rakhna) + PIN save karna
 function handleSyncAction(ss, data) {
+  if (data && data.action === 'scanGstCerts') { return scanGstCertFolder(data); }
   if (!data) return { status: 'error', message: 'Empty or invalid payload' };
 
   if (data.action === 'savePin' && data.pin) {
