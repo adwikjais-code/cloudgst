@@ -21260,12 +21260,12 @@ function buildEtsyPdfReport(opts) {
             if (!st.captchaBase64) st.note = "Phone login: captcha nahi mila";
           } catch (e) {
             if (e && (e.code === "manual_login" || e.code === "captcha_missing")) {
-              // login page auto-pehchana nahi gaya -> ek baar seedha login screen (captcha/OTP aap dalenge)
-              st.phase = "idle";
-              st.note = "🔐 Ek baar login screen khul rahi hai — login ke baad phone mode background me chalega";
+              // Portal screen par bhejne ke bajaye app ke andar hi login dikhata hai
+              st.phase = "loading_cap";
+              st.note = "🔐 App ke andar login — captcha/OTP daalein, phir apne aap aage";
               gpRenderSerialList(clientKey);
-              gpToast("🔐 " + (c.clientName || "Client") + ": ek baar login screen khol rahe hain (captcha/OTP aap dalenge) — uske baad sab background me");
-              setTimeout(() => { try { gpNativeOpenPortal(clientKey); } catch (_) {} }, 600);
+              try { window.CloudGSTNative.phoneLoginVisible(true); } catch (_) {}
+              gpToast("🔐 " + (c.clientName || "Client") + ": login page app ke andar khul gayi — captcha/OTP daalein, baaki kaam apne aap");
               return;
             }
             st.phase = "error";
@@ -21968,7 +21968,7 @@ function buildEtsyPdfReport(opts) {
         }
       };
       // Native se jawab POLL karke lo (push miss ho jaye to bhi jawab milta hai) — stage bhi dikhta hai
-      function gpNativePoll(id, label, timeoutMs) {
+      function gpNativePoll(id, label, timeoutMs, onStage) {
         return new Promise((resolve, reject) => {
           const started = Date.now();
           let lastStage = "";
@@ -21976,6 +21976,7 @@ function buildEtsyPdfReport(opts) {
             let raw = "";
             try { raw = String(window.CloudGSTNative.phonePayloadFor(String(id)) || ""); } catch (_) { raw = ""; }
             try { lastStage = String(window.CloudGSTNative.phoneStage() || lastStage || ""); } catch (_) { }
+            try { if (onStage) onStage(lastStage); } catch (_) { }
             if (raw) {
               clearInterval(timer);
               try {
@@ -22007,7 +22008,22 @@ function buildEtsyPdfReport(opts) {
           try { id = String(window.CloudGSTNative.phoneLoginStart(String(c.portalId || "").trim(), String(pw || "")) || ""); } catch (e) { id = ""; }
           if (!id) return reject(new Error("Phone login start nahi ho paya."));
           gpPhoneLoginId = id;
-          gpNativePoll(id, "Phone login", 160000).then(resolve, reject);
+          let shownOverlay = false;
+          const onStage = (stage) => {
+            if (shownOverlay) return;
+            if (stage && stage.indexOf("manual-wait") >= 0) {
+              shownOverlay = true;
+              try { window.CloudGSTNative.phoneLoginVisible(true); } catch (_) {}
+              gpToast("🔐 Login page app ke andar hi khul gaya — captcha/OTP daalein, login hote hi aage chala jayega");
+            }
+          };
+          gpNativePoll(id, "Phone login", 320000, onStage).then((r) => {
+            try { window.CloudGSTNative.phoneLoginVisible(false); } catch (_) {}
+            resolve(r);
+          }, (e) => {
+            try { window.CloudGSTNative.phoneLoginVisible(false); } catch (_) {}
+            reject(e);
+          });
         });
       }
       function gpPhoneLoginCaptcha(cap) {

@@ -13,7 +13,7 @@ permissions:
   issues: write
 
 env:
-  RELEASE_TAG: android-v5.9.11
+  RELEASE_TAG: android-v5.9.12
 
 jobs:
   build:
@@ -83,6 +83,7 @@ jobs:
             echo "dex ui-thread start: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac startPhoneFetch || true)"
             echo "dex phone login: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac phoneLoginStart || true)"
             echo "dex phone poll: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac phonePayloadFor || true)"
+            echo "dex inapp login overlay: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac phoneLoginVisible || true)"
             echo "js phone poll: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativePoll || true)"
             echo "js native portal: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativePortalBtn || true)"
             echo "dex openPortal: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac openPortal || true)"
@@ -96,7 +97,7 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.9.11 — phone login page detection (flexible) + manual-login fallback)
+          ## CloudGST Android APK (v5.9.12 — login app ke andar (overlay), portal par redirect nahi)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
@@ -121,5 +122,5 @@ jobs:
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
           gh release create "$RELEASE_TAG" "CloudGST.apk" \
-            --title "CloudGST Android v5.9.11 (APK)" \
+            --title "CloudGST Android v5.9.12 (APK)" \
             --notes-file notes.md

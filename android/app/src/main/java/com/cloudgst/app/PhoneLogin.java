@@ -56,6 +56,7 @@ public class PhoneLogin {
     private boolean finished = false;
     private boolean otpMode = false;
     private volatile String stage = "idle";
+    private boolean manual = false;
 
     private static final int PHASE_IDLE = 0;
     private static final int PHASE_FIND_CAPTCHA = 1;
@@ -67,6 +68,11 @@ public class PhoneLogin {
     }
 
     // ======================= start =======================
+
+    /** Chhupa WebView (overlay me dikhane ke liye). */
+    public WebView web() {
+        return wv;
+    }
 
     /** App ko progress dikhane / debug ke liye (screen par status). */
     public String stage() {
@@ -82,6 +88,7 @@ public class PhoneLogin {
         tries = 0;
         captchaSrc = "";
         phase = PHASE_FIND_CAPTCHA;
+        manual = false;
         ensureWeb(host);
         // Pehle network check — DNS/internet dikkat ho to saaf message mile
         new Thread(() -> {
@@ -193,7 +200,7 @@ public class PhoneLogin {
                 stage = "poll:" + (t.isEmpty() ? "wait" : t);
                 if ("CLICKLOGIN".equals(t)) {
                     if (clicks < 2) { clicks++; stage = "click-login"; h.postDelayed(tickRun, 2500); }
-                    else if (tries >= 12) { deliverManualLogin(d); }
+                    else if (tries >= 12) { if (!manual) { manual = true; stage = "manual-wait"; } h.postDelayed(tickRun, 1800); }
                     else h.postDelayed(tickRun, 1800);
                     return;
                 }
@@ -202,7 +209,12 @@ public class PhoneLogin {
                     deliver(err("captcha_missing", "Login page par captcha image nahi mila (form mila). ☁️ Cloud mode try karein."));
                     return;
                 }
-                if ("WAIT".equals(t) && tries >= 12) { deliverManualLogin(d); return; }
+                if ("WAIT".equals(t) && tries >= 12) {
+                    // Page pehchana nahi gaya -> app ke andar hi portal dikha dete hain (alag screen nahi),
+                    // user captcha/OTP dalega, phir wahi flow aage badhega.
+                    if (!manual) { manual = true; stage = "manual-wait"; }
+                    if (wv != null) { wv.setAlpha(1f); wv.setClickable(true); wv.setFocusable(true); }
+                }
                 if ("CAPTCHA".equals(t)) {
                     captchaSrc = d.optString("src", "");
                     grabCaptcha();
@@ -230,7 +242,7 @@ public class PhoneLogin {
                             "Portal ne login rok diya: " + d.optString("msg", "wajah pata nahi chali")));
                     return;
                 }
-                if (tries >= 40) {
+                if (tries >= (manual ? 220 : 40)) {
                     deliver(err("login_timeout",
                             "Phone login: portal ne form/Dashboard hi nahi diya (aakhri: " + (raw.length() > 160 ? raw.substring(0, 160) : raw)
                                     + "). ☁️ Cloud mode try karein."));
