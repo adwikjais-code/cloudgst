@@ -61,7 +61,7 @@ import java.util.concurrent.Executor;
 public class MainActivity extends FragmentActivity {
 
     public static final String APP_URL = "https://appassets.androidplatform.net/assets/app/index.html";
-    public static final String APP_VERSION = "android-5.9.3";
+    public static final String APP_VERSION = "android-5.9.4";
 
     private static final int REQ_FILE = 1001;
     private static final int REQ_STORAGE = 1002;
@@ -264,19 +264,32 @@ public class MainActivity extends FragmentActivity {
 
     // ================= fingerprint / Touch ID lock =================
 
-    /** Android 7+ par fingerprint; na ho to device PIN/pattern — dono chalta hai. */
-    private boolean biometricSupported() {
+    /**
+     * "fingerprint" = phone me fingerprint enrolled hai (best),
+     * "device_pin"  = fingerprint nahi, par screen lock (PIN/pattern) set hai,
+     * "none"        = phone me koi lock set nahi (lock option kaam nahi karega).
+     */
+    private String bioStatusText() {
         try {
             BiometricManager bm = BiometricManager.from(this);
-            int ok = bm.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK);
-            if (ok == BiometricManager.BIOMETRIC_SUCCESS) return true;
-            // fingerprint nahi, lekin phone me PIN/pattern set hai -> wo bhi lock ke liye kaafi hai
+            if (bm.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK)
+                    == BiometricManager.BIOMETRIC_SUCCESS) return "fingerprint";
+        } catch (Throwable t) {
+            Log.w(TAG, "biometric check fail", t);
+        }
+        try {
             android.app.KeyguardManager km =
                     (android.app.KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
-            return km != null && km.isDeviceSecure();
+            if (km != null && km.isDeviceSecure()) return "device_pin";
         } catch (Throwable t) {
-            return false;
+            Log.w(TAG, "keyguard check fail", t);
         }
+        return "none";
+    }
+
+    /** Android 7+ par fingerprint; na ho to device PIN/pattern — dono chalta hai. */
+    private boolean biometricSupported() {
+        return !"none".equals(bioStatusText());
     }
 
     private boolean needsLock() {
@@ -551,6 +564,12 @@ public class MainActivity extends FragmentActivity {
             return act.biometricSupported();
         }
 
+        /** "fingerprint" | "device_pin" | "none" — app isi se button ka text/message banati hai. */
+        @JavascriptInterface
+        public String bioStatus() {
+            return act.bioStatusText();
+        }
+
         @JavascriptInterface
         public boolean isBioLockEnabled() {
             return act.prefs.getBoolean(PREF_BIO_LOCK, false);
@@ -565,7 +584,8 @@ public class MainActivity extends FragmentActivity {
                     return;
                 }
                 if (!act.biometricSupported()) {
-                    Toast.makeText(act, "Is phone me fingerprint/PIN set nahi hai",
+                    Toast.makeText(act,
+                            "Phone Settings → Security me pehle Fingerprint ya PIN set karein, phir try karein",
                             Toast.LENGTH_LONG).show();
                     return;
                 }

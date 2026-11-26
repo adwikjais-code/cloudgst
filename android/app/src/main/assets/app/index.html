@@ -21705,25 +21705,77 @@ function buildEtsyPdfReport(opts) {
         const row = document.getElementById("gpBioLockRow");
         const btn = document.getElementById("gpBioLockBtn");
         if (!row || !btn || !window.CloudGSTNative) return;
-        let hasBio = false;
-        try { hasBio = !!window.CloudGSTNative.hasBiometric(); } catch (_) {}
-        if (!hasBio) return;
-        row.classList.remove("hidden");
+        row.classList.remove("hidden");            // option HAMESHA dikhega (pehle chhup jata tha)
         const paint = () => {
-          let on = false;
+          let on = false, canLock = true;
           try { on = !!window.CloudGSTNative.isBioLockEnabled(); } catch (_) {}
-          btn.textContent = `🔒 App lock (fingerprint): ${on ? "ON" : "OFF"}`;
-          btn.className = "px-3 py-2 rounded-xl text-xs font-semibold border transition " + (on
-            ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700"
-            : "bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300");
+          try { canLock = !window.CloudGSTNative.bioStatus || window.CloudGSTNative.bioStatus() !== "none"; }
+          catch (_) { canLock = true; }
+          btn.textContent = canLock
+            ? `🔒 App lock (fingerprint): ${on ? "ON" : "OFF"}`
+            : "🔒 App lock: phone me fingerprint/PIN set nahi hai";
+          btn.className = "px-3 py-2 rounded-xl text-xs font-semibold border transition " + (!canLock
+            ? "bg-amber-50 text-amber-800 border-amber-300"
+            : (on ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700"
+                  : "bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300"));
         };
+        window.__gpPaintBioLock = paint;
         paint();
         btn.addEventListener("click", () => {
+          if (typeof window.gpToggleNativeBio === "function") { window.gpToggleNativeBio(); return; }
           let on = false;
           try { on = !!window.CloudGSTNative.isBioLockEnabled(); } catch (_) {}
           try { window.CloudGSTNative.setBioLock(!on); } catch (_) {}
           setTimeout(paint, 400);
         });
+      })();
+
+      // ===== APK: header me seedha 👆 Fingerprint button (option dhoondhna na pade) =====
+      (function gpInitNativeBioHeader() {
+        const native = window.CloudGSTNative;
+        if (!native) return;
+        const lockBtn = document.getElementById("lockAppBtn");
+        if (!lockBtn || document.getElementById("gpNativeBioBtn")) return;
+
+        const btn = document.createElement("button");
+        btn.id = "gpNativeBioBtn";
+        btn.type = "button";
+        btn.className = "inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-100 transition";
+        btn.innerHTML = "<span>👆 Fingerprint: —</span>";
+        lockBtn.insertAdjacentElement("afterend", btn);
+
+        const status = () => {
+          try { if (native.bioStatus) return String(native.bioStatus()); } catch (_) {}
+          try { return native.hasBiometric() ? "ok" : "none"; } catch (_) { return "none"; }
+        };
+        const isOn = () => { try { return !!native.isBioLockEnabled(); } catch (_) { return false; } };
+
+        const paint = () => {
+          const st = status();
+          if (st === "none") {
+            btn.innerHTML = "<span>👆 Fingerprint: set nahi</span>";
+            btn.className = "inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border border-amber-500/40 bg-amber-500/15 text-amber-200 transition";
+          } else if (isOn()) {
+            btn.innerHTML = "<span>👆 Fingerprint: ON</span>";
+            btn.className = "inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border border-emerald-400/50 bg-emerald-500 text-white transition";
+          } else {
+            btn.innerHTML = "<span>👆 Fingerprint: OFF</span>";
+            btn.className = "inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-100 transition";
+          }
+        };
+
+        btn.addEventListener("click", () => {
+          if (status() === "none") {
+            if (window.showToast) showToast("⚠️ Phone Settings → Security → Fingerprint / Screen lock (PIN) set karein, phir yeh dabayein");
+            return;
+          }
+          try { native.setBioLock(!isOn()); } catch (_) {}
+          setTimeout(() => { paint(); if (window.__gpPaintBioLock) window.__gpPaintBioLock(); }, 400);
+        });
+
+        window.gpToggleNativeBio = () => btn.click();
+        paint();
+        window.__gpPaintNativeBioHeader = paint;
       })();
 
       document.getElementById("gpSavedJsonSel")?.addEventListener("change", (e) => {
