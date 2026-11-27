@@ -641,11 +641,12 @@
         if (st.phase === "loading_cap") return '<span class="text-xs font-semibold text-indigo-600">⏳ Captcha...</span>';
         if (st.phase === "captcha") {
           const isUp = st.pendingAction === "UPLOAD";
+          const sub = !!st._submittingCap;
           return `<div class="inline-flex flex-wrap items-center gap-1.5 justify-end">
             <span class="text-[10px] font-bold px-1.5 py-0.5 rounded ${isUp ? "bg-purple-100 text-purple-800" : "bg-slate-200 text-slate-700"}">${isUp ? "GSTR-1" : "Fetch"}</span>
             <img src="${st.captchaBase64}" alt="Captcha" class="h-9 rounded-lg border border-slate-300 bg-white px-1 object-contain" />
-            <input type="text" autocomplete="off" placeholder="Code" class="gp-cap-inp w-20 px-2 py-1.5 rounded-lg border ${isUp ? "border-purple-400" : "border-indigo-400"} text-xs font-mono bg-white outline-none" data-k="${gpEsc(c.clientKey)}" />
-            <button type="button" class="gp-cap-submit-btn px-2.5 py-1.5 rounded-lg ${isUp ? "bg-purple-600 hover:bg-purple-700" : "bg-emerald-600 hover:bg-emerald-700"} text-white text-[11px] font-semibold" data-k="${gpEsc(c.clientKey)}">${isUp ? "Upload" : "Go"}</button>
+            <input type="text" autocomplete="off" placeholder="Code" value="${gpEsc(st._capDraft || "")}" ${sub ? "disabled" : ""} class="gp-cap-inp w-20 px-2 py-1.5 rounded-lg border ${isUp ? "border-purple-400" : "border-indigo-400"} text-xs font-mono bg-white outline-none" data-k="${gpEsc(c.clientKey)}" />
+            <button type="button" ${sub ? "disabled" : ""} class="gp-cap-submit-btn px-2.5 py-1.5 rounded-lg ${isUp ? "bg-purple-600 hover:bg-purple-700" : "bg-emerald-600 hover:bg-emerald-700"} text-white text-[11px] font-semibold" data-k="${gpEsc(c.clientKey)}">${sub ? "⏳" : (isUp ? "Upload" : "Go")}</button>
             <button type="button" class="gp-cap-reload-btn px-1.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-[11px]" data-k="${gpEsc(c.clientKey)}" title="Refresh Captcha">🔄</button>
             <button type="button" class="gp-cap-cancel-btn px-2 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-[11px] font-bold" data-k="${gpEsc(c.clientKey)}" title="Cancel Captcha">✕</button>
           </div>`;
@@ -686,6 +687,20 @@
       }
 
       function gpRenderSerialList(focusKey) {
+        let _activeInp = null;
+        try {
+          const ae = document.activeElement;
+          if (ae && ae.closest && ae.closest("#pagePortalMain")) {
+            const k = ae.getAttribute("data-k");
+            if (k && ae.classList.contains("gp-cap-inp")) {
+              gpGetState(k)._capDraft = ae.value;
+              _activeInp = { sel: `.gp-cap-inp[data-k="${CSS.escape(k)}"]`, pos: ae.selectionStart };
+            } else if (k && ae.classList.contains("gp-otp-inp")) {
+              gpGetState(k)._otpDraft = ae.value;
+              _activeInp = { sel: `.gp-otp-inp[data-k="${CSS.escape(k)}"]`, pos: ae.selectionStart };
+            }
+          }
+        } catch (_) {}
         try {
           const _bb = document.getElementById("gpBridgeOfflineBanner");
           if (_bb) _bb.classList.toggle("hidden", !gpBridgeOffline);
@@ -907,12 +922,15 @@
           const k = b.getAttribute("data-k");
           const st = gpGetState(k);
           if (st.sessionId) gpCallBridge("/api/gst/logout", { sessionId: st.sessionId }).catch(() => {});
-          st.phase = "idle"; st.sessionId = null; st.captchaBase64 = ""; st.note = "";
+          st.phase = "idle"; st.sessionId = null; st.captchaBase64 = ""; st.note = ""; st._capDraft = ""; st._submittingCap = false;
           gpRenderSerialList();
         }));
-        document.querySelectorAll("#pagePortalMain .gp-cap-inp").forEach(inp => inp.addEventListener("keydown", (ev) => {
-          if (ev.key === "Enter") { ev.preventDefault(); gpSubmitCaptchaForClient(inp.getAttribute("data-k")); }
-        }));
+        document.querySelectorAll("#pagePortalMain .gp-cap-inp").forEach(inp => {
+          inp.addEventListener("input", () => { gpGetState(inp.getAttribute("data-k"))._capDraft = inp.value; });
+          inp.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter") { ev.preventDefault(); gpSubmitCaptchaForClient(inp.getAttribute("data-k")); }
+          });
+        });
         document.querySelectorAll("#pagePortalMain .gp-otp-submit-btn").forEach(b => b.addEventListener("click", () => {
           gpSubmitOtpForClient(b.getAttribute("data-k"));
         }));
@@ -931,6 +949,14 @@
         if (focusKey) {
           const inp = document.querySelector(`#pagePortalMain .gp-cap-inp[data-k="${CSS.escape(focusKey)}"]`);
           if (inp) { inp.focus(); inp.scrollIntoView({ behavior: "smooth", block: "center" }); }
+        } else if (_activeInp) {
+          const inp = document.querySelector(`#pagePortalMain ${_activeInp.sel}`);
+          if (inp && !inp.disabled) {
+            try {
+              inp.focus({ preventScroll: true });
+              if (typeof _activeInp.pos === "number") inp.setSelectionRange(_activeInp.pos, _activeInp.pos);
+            } catch (_) {}
+          }
         }
       }
 
@@ -1247,6 +1273,8 @@
         }
         st.phase = "loading_cap";
         st.note = "";
+        st._capDraft = "";
+        st._submittingCap = false;
         gpRenderSerialList();
         try {
           const res = await gpCallBridge("/api/gst/init-login", { username: c.portalId, keepOthers: true });
@@ -1619,74 +1647,90 @@
         const c = gpGetAppClients().find(x => x.clientKey === clientKey);
         if (!c) return;
         const st = gpGetState(clientKey);
+        if (st._submittingCap) return;
         const inp = document.querySelector(`#pagePortalMain .gp-cap-inp[data-k="${CSS.escape(clientKey)}"]`);
-        const cap = (inp?.value || "").trim();
+        const cap = (inp?.value || st._capDraft || "").trim();
         if (!cap) return gpToast("⚠️ Captcha dalein.");
-        const pwRes = await gpResolvePassword(c);
-        if (!pwRes.ok || !pwRes.pw || pwRes.pw.startsWith("enc:")) {
-          return gpToast("⚠️ Password encrypted hai ya decrypt nahi hua — ✏️ se plain password save karein.");
-        }
-
+        st._submittingCap = true;
+        st._capDraft = cap;
         const btn = document.querySelector(`#pagePortalMain .gp-cap-submit-btn[data-k="${CSS.escape(clientKey)}"]`);
         if (btn) { btn.disabled = true; btn.textContent = "⏳"; }
+        if (inp) inp.disabled = true;
 
-        if (gpPhoneModeNow() && gpPhoneLoginAvailable()) {
-          // 📱 Phone mode: captcha chhupe WebView ke login page me jata hai (cloud ki zaroorat nahi)
-          try {
-            const pres = await gpPhoneLoginCaptcha(cap);
-            if (pres && pres.otpRequired) {
-              st.phase = "otp";
+        try {
+          const pwRes = await gpResolvePassword(c);
+          if (!pwRes.ok || !pwRes.pw || pwRes.pw.startsWith("enc:")) {
+            return gpToast("⚠️ Password encrypted hai ya decrypt nahi hua — ✏️ se plain password save karein.");
+          }
+
+          if (gpPhoneModeNow() && gpPhoneLoginAvailable()) {
+            // 📱 Phone mode: captcha chhupe WebView ke login page me jata hai (cloud ki zaroorat nahi)
+            try {
+              const pres = await gpPhoneLoginCaptcha(cap);
+              st._capDraft = "";
+              if (pres && pres.otpRequired) {
+                st.phase = "otp";
+                gpRenderSerialList(clientKey);
+              } else {
+                st.phase = "idle";
+                st.note = "";
+                gpRenderSerialList();
+                gpTriggerFetchInBackground(c, st);
+                gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
+              }
+            } catch (e) {
+              st._capDraft = "";
+              if (e && e.data && e.data.captchaBase64) {
+                st.captchaBase64 = e.data.captchaBase64;
+                st.phase = "captcha";
+                st.note = "";
+              } else {
+                st.phase = "error";
+                st.note = e.message;
+                gpErrLogAdd(clientKey, e.message);
+              }
               gpRenderSerialList(clientKey);
-            } else {
-              st.phase = "idle";
-              st.note = "";
+              gpToast("❌ " + e.message);
+            }
+            return;
+          }
+
+          try {
+            const res = await gpCallBridge("/api/gst/submit-login", {
+              sessionId: st.sessionId,
+              username: String(c.portalId || "").trim(),
+              password: String(pwRes.pw || "").trim(),
+              captcha: cap
+            });
+            st._capDraft = "";
+            if (res.status === "otp_required") {
+              st.phase = "otp";
               gpRenderSerialList();
+            } else if (st.pendingAction === "UPLOAD") {
+              gpTriggerGstr1UploadInBackground(c, st);
+              gpAutoOpenNextSerialCaptcha(clientKey, "UPLOAD");
+            } else {
               gpTriggerFetchInBackground(c, st);
               gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
             }
           } catch (e) {
-            if (e && e.data && e.data.captchaBase64) {
+            st._capDraft = "";
+            if (e.data?.captchaBase64) {
               st.captchaBase64 = e.data.captchaBase64;
               st.phase = "captcha";
-              st.note = "";
+              gpRenderSerialList(clientKey);
             } else {
-              st.phase = "error";
               st.note = e.message;
-              gpErrLogAdd(clientKey, e.message);
+              gpRenderSerialList();
             }
-            gpRenderSerialList(clientKey);
             gpToast("❌ " + e.message);
           }
-          return;
-        }
-
-        try {
-          const res = await gpCallBridge("/api/gst/submit-login", {
-            sessionId: st.sessionId,
-            username: String(c.portalId || "").trim(),
-            password: String(pwRes.pw || "").trim(),
-            captcha: cap
-          });
-          if (res.status === "otp_required") {
-            st.phase = "otp";
-            gpRenderSerialList();
-          } else if (st.pendingAction === "UPLOAD") {
-            gpTriggerGstr1UploadInBackground(c, st);
-            gpAutoOpenNextSerialCaptcha(clientKey, "UPLOAD");
-          } else {
-            gpTriggerFetchInBackground(c, st);
-            gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
-          }
-        } catch (e) {
-          if (e.data?.captchaBase64) {
-            st.captchaBase64 = e.data.captchaBase64;
-            st.phase = "captcha";
-            gpRenderSerialList(clientKey);
-          } else {
-            st.note = e.message;
-            gpRenderSerialList();
-          }
-          gpToast("❌ " + e.message);
+        } finally {
+          st._submittingCap = false;
+          const bNow = document.querySelector(`#pagePortalMain .gp-cap-submit-btn[data-k="${CSS.escape(clientKey)}"]`);
+          if (bNow) { bNow.disabled = false; bNow.textContent = st.pendingAction === "UPLOAD" ? "Upload" : "Go"; }
+          const iNow = document.querySelector(`#pagePortalMain .gp-cap-inp[data-k="${CSS.escape(clientKey)}"]`);
+          if (iNow) iNow.disabled = false;
         }
       }
 
@@ -1694,38 +1738,48 @@
         const c = gpGetAppClients().find(x => x.clientKey === clientKey);
         if (!c) return;
         const st = gpGetState(clientKey);
+        if (st._submittingOtp) return;
         const inp = document.querySelector(`#pagePortalMain .gp-otp-inp[data-k="${CSS.escape(clientKey)}"]`);
         const otp = (inp?.value || "").trim();
         if (!otp) return gpToast("⚠️ OTP dalein.");
-
-        if (gpPhoneModeNow() && gpPhoneLoginAvailable()) {
-          try {
-            await gpPhoneLoginOtp(otp);
-            st.phase = "idle";
-            st.note = "";
-            gpRenderSerialList();
-            gpTriggerFetchInBackground(c, st);
-            gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
-          } catch (e) {
-            st.phase = "error";
-            st.note = e.message;
-            gpRenderSerialList(clientKey);
-            gpToast("❌ " + e.message);
-          }
-          return;
-        }
+        st._submittingOtp = true;
+        const btn = document.querySelector(`#pagePortalMain .gp-otp-submit-btn[data-k="${CSS.escape(clientKey)}"]`);
+        if (btn) { btn.disabled = true; btn.textContent = "⏳"; }
 
         try {
-          await gpCallBridge("/api/gst/submit-otp", { sessionId: st.sessionId, otp });
-          if (st.pendingAction === "UPLOAD") {
-            gpTriggerGstr1UploadInBackground(c, st);
-            gpAutoOpenNextSerialCaptcha(clientKey, "UPLOAD");
-          } else {
-            gpTriggerFetchInBackground(c, st);
-            gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
+          if (gpPhoneModeNow() && gpPhoneLoginAvailable()) {
+            try {
+              await gpPhoneLoginOtp(otp);
+              st.phase = "idle";
+              st.note = "";
+              gpRenderSerialList();
+              gpTriggerFetchInBackground(c, st);
+              gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
+            } catch (e) {
+              st.phase = "error";
+              st.note = e.message;
+              gpRenderSerialList(clientKey);
+              gpToast("❌ " + e.message);
+            }
+            return;
           }
-        } catch (e) {
-          gpToast("❌ " + e.message);
+
+          try {
+            await gpCallBridge("/api/gst/submit-otp", { sessionId: st.sessionId, otp });
+            if (st.pendingAction === "UPLOAD") {
+              gpTriggerGstr1UploadInBackground(c, st);
+              gpAutoOpenNextSerialCaptcha(clientKey, "UPLOAD");
+            } else {
+              gpTriggerFetchInBackground(c, st);
+              gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
+            }
+          } catch (e) {
+            gpToast("❌ " + e.message);
+          }
+        } finally {
+          st._submittingOtp = false;
+          const bNow = document.querySelector(`#pagePortalMain .gp-otp-submit-btn[data-k="${CSS.escape(clientKey)}"]`);
+          if (bNow) { bNow.disabled = false; bNow.textContent = "Verify"; }
         }
       }
 

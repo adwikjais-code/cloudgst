@@ -1,4 +1,4 @@
-/* GST Cloud Bridge — version dynamically read from package.json (currently v1.29.3)
+/* GST Cloud Bridge — version dynamically read from package.json (currently v1.29.4)
  * Recent fixes: strict ALLOWED_ORIGIN CORS, busy-safe memory watchdog, serialized upload-gstr1,
  * ZIP method/bomb bounds, graceful SIGTERM/SIGINT shutdown, and updated Railway/Render env hints.
  * Historical notes (v1.9.6 - v1.20.0):
@@ -754,7 +754,7 @@ function classifyStuckPage(snap) {
         "Portal par purana session logout karke (ya 5-10 min baad) dobara Fetch karein."
     };
   }
-  if (/already\s*logged\s*in|logged\s*in\s*from|another\s+(device|session|browser|system)/i.test(all)) {
+  if (/already\s*logged\s*in|logged\s*in\s*from\s+(another|different|other)|another\s+(device|session|browser|system)/i.test(all)) {
     return {
       kind: "concurrent_session",
       hint: "Is GSTIN ka session portal par pehle se khula hai (doosra device/browser). Portal par 'Logout' karke ya 10 min baad dobara Fetch karein."
@@ -810,6 +810,23 @@ async function waitForLoginForm(page, timeoutMs) {
 // In wajahon par login page khud theek ho sakta hai (portal downtime/WAF) -> thoda ruk kar ek aur koshish
 const LOGIN_RETRY_KINDS = ["portal_down", "blank_page"];
 
+function isAuthLoggedInUrl(url) {
+  const u = String(url || "");
+  return (/\/auth\/|fowelcome|\/returns\/auth\/|\/auth\/dashboard/i.test(u)) && !/accessdenied|\/error\//i.test(u);
+}
+
+function isUsableAuthWelcomePage(snap) {
+  const url = String((snap && snap.url) || "");
+  if (!isAuthLoggedInUrl(url)) return false;
+  const text = String((snap && snap.text) || "");
+  const btns = Array.isArray(snap && snap.buttons) ? snap.buttons.join(" ") : "";
+  const combined = text + " " + btns;
+  const hasConcurrentBlock = /already\s*logged\s*in|logged\s*in\s*from\s+(another|different|other)|another\s+(device|session|browser|system)/i.test(text);
+  if (!hasConcurrentBlock) return true;
+  // Agar dashboard/navigation buttons (Return Dashboard / File Returns / Services) dikh rahe hain to session valid hai
+  return /return\s*dashboard|file\s*returns|\bservices\b|my\s+saved\s+applications/i.test(combined) || Number(snap && snap.visibleSelects) > 0;
+}
+
 // Login page ki jagah portal ne kya dikhaya — user ko exact wajah batane ke liye
 function classifyLoginPage(snap) {
   const base = classifyStuckPage(snap);
@@ -818,7 +835,7 @@ function classifyLoginPage(snap) {
   const title = String((snap && snap.title) || "");
   const text = String((snap && snap.text) || "");
   const all = url + " " + title + " " + text;
-  if (/\/auth\/dashboard|\/returns\/auth\//i.test(url) || /returns\s+dashboard/i.test(all)) {
+  if (/\/auth\/(dashboard|fowelcome)|\/returns\/auth\//i.test(url) || /returns\s+dashboard/i.test(all)) {
     return {
       kind: "already_logged_in",
       hint: "Portal is browser ko pehle se logged in maan raha hai (login page ki jagah dashboard dikha) — us client ka purana session logout karein ya 10 min ruk kar dobara Fetch karein."
@@ -1589,6 +1606,21 @@ function startServer() {
     s.busy = true;
     const { page } = s;
     try {
+      // Agar page pehle hi auth/fowelcome ya dashboard par pahunch chuka hai (double-submit ya tez redirect) to seedha logged_in maano
+      const preUrl = typeof page.url === "function" ? page.url() : "";
+      if (isAuthLoggedInUrl(preUrl)) {
+        await page.waitForLoadState("domcontentloaded", { timeout: 2000 }).catch(() => {});
+        await dismissModals(page).catch(() => {});
+        const snapPre = await pageSnapshotBrief(page);
+        if (isUsableAuthWelcomePage(snapPre)) {
+          await page.waitForLoadState("networkidle", { timeout: 1500 }).catch(() => {});
+          s.loggedIn = true;
+          return res.json({ ok: true, status: "logged_in", url: page.url() });
+        }
+        const clsPre = classifyLoginPage(snapPre);
+        throw new Error(`Portal login block hua (${clsPre.kind}). Aakhri page: ${snapPre.url || preUrl}. ${clsPre.hint}`);
+      }
+
       // Field ids badal jayein to bhi kaam chale (init-login me jo selector mile the wahi pehle)
       const stored = s.loginSelectors || {};
       const userSel = (stored.user && (await firstVisibleSelector(page, [stored.user]))) || await firstVisibleSelector(page, LOGIN_USER_SELECTORS);
@@ -1596,6 +1628,16 @@ function startServer() {
       const capSel = stored.captcha || await firstVisibleSelector(page, LOGIN_CAPTCHA_SELECTORS);
       const submitSel = stored.submit || await firstVisibleSelector(page, LOGIN_SUBMIT_SELECTORS);
       if (!userSel || !passSel) {
+        // Check once more if page redirected to auth/fowelcome while checking selectors
+        const midUrl = typeof page.url === "function" ? page.url() : "";
+        if (isAuthLoggedInUrl(midUrl)) {
+          await page.waitForLoadState("domcontentloaded", { timeout: 2000 }).catch(() => {});
+          const snapMid = await pageSnapshotBrief(page);
+          if (isUsableAuthWelcomePage(snapMid)) {
+            s.loggedIn = true;
+            return res.json({ ok: true, status: "logged_in", url: page.url() });
+          }
+        }
         const snap2 = await pageSnapshotBrief(page);
         const cls2 = classifyLoginPage(snap2);
         throw new Error(`Login form ke fields nahi mile (page badal gaya). Aakhri page: ${snap2.url || "?"}. ${cls2.hint}`);
@@ -1606,11 +1648,12 @@ function startServer() {
       await page.click(submitSel || LOGIN_SUBMIT_SELECTORS[0]);
 
       // Blind 5s wait ke bajay fast polling: redirect, OTP box, ya login error dikhte hi turant aage
+      // Note: navigation ke beech Execution context destroyed errors catch kiye jate hain taaki HTTP 500 na aaye
       const loginWaitStart = Date.now();
       while (Date.now() - loginWaitStart < 6500) {
-        const uNow = page.url();
-        if (uNow.includes("/auth/") || uNow.includes("fowelcome") || uNow.includes("dashboard")) break;
-        const otpQuick = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]");
+        const uNow = typeof page.url === "function" ? page.url() : "";
+        if (isAuthLoggedInUrl(uNow)) break;
+        const otpQuick = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]").catch(() => null);
         if (otpQuick && await otpQuick.isVisible().catch(() => false)) break;
         const hasErrQuick = await page.evaluate(() => {
           const el = document.querySelector(".err, .alert-danger, .text-danger, [ng-if*='err']");
@@ -1620,13 +1663,18 @@ function startServer() {
         await page.waitForTimeout(250);
       }
 
-      const otpInput = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]");
-      if (otpInput && await otpInput.isVisible()) {
+      if (isAuthLoggedInUrl(page.url())) {
+        // Login ke baad fowelcome / auth dashboard par DOM & cookies settle hone dein
+        await page.waitForLoadState("domcontentloaded", { timeout: 2000 }).catch(() => {});
+        await page.waitForLoadState("networkidle", { timeout: 1500 }).catch(() => {});
+        s.loggedIn = true;
+        return res.json({ ok: true, status: "logged_in", url: page.url() });
+      }
+      const otpInput = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]").catch(() => null);
+      if (otpInput && await otpInput.isVisible().catch(() => false)) {
         return res.json({ ok: true, status: "otp_required", message: "GST Portal ne OTP manga hai." });
       }
-      const url = page.url();
-      if (url.includes("/auth/") || url.includes("fowelcome") || url.includes("dashboard")) {
-        // Login ke baad fowelcome / auth dashboard par cookies settle hone dein (max 1.5s)
+      if (isAuthLoggedInUrl(page.url())) {
         await page.waitForLoadState("networkidle", { timeout: 1500 }).catch(() => {});
         s.loggedIn = true;
         return res.json({ ok: true, status: "logged_in", url: page.url() });
@@ -1634,10 +1682,12 @@ function startServer() {
       const errMsg = await page.evaluate(() => {
         const el = document.querySelector(".err, .alert-danger, .text-danger, [ng-if*='err']");
         return el ? el.innerText.trim() : "";
-      });
+      }).catch(() => "");
       let newCaptcha = null;
-      const capEl = await page.$("#imgCaptcha, img[src*='captcha' i]");
-      if (capEl) newCaptcha = "data:image/png;base64," + (await capEl.screenshot({ type: "png" })).toString("base64");
+      const capEl = await page.$("#imgCaptcha, img[src*='captcha' i]").catch(() => null);
+      if (capEl) {
+        try { newCaptcha = "data:image/png;base64," + (await capEl.screenshot({ type: "png" })).toString("base64"); } catch (_) {}
+      }
       return res.status(400).json({ ok: false, error: errMsg || "Login fail hua.", captchaBase64: newCaptcha });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
@@ -1654,18 +1704,26 @@ function startServer() {
     s.busy = true;
     const { page } = s;
     try {
-      const otpInput = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]");
-      if (!otpInput) return res.status(400).json({ ok: false, error: "OTP input box nahi mila." });
+      const otpInput = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]").catch(() => null);
+      if (!otpInput) {
+        if (isAuthLoggedInUrl(page.url())) {
+          await page.waitForLoadState("networkidle", { timeout: 1500 }).catch(() => {});
+          s.loggedIn = true;
+          return res.json({ ok: true, status: "logged_in", url: page.url() });
+        }
+        return res.status(400).json({ ok: false, error: "OTP input box nahi mila." });
+      }
       await otpInput.fill(String(otp || "").trim());
       await page.click("button:has-text('VALIDATE'), button:has-text('SUBMIT'), button[type='submit']");
       const otpWaitStart = Date.now();
       while (Date.now() - otpWaitStart < 5500) {
         const uNow = page.url();
-        if (uNow.includes("/auth/") || uNow.includes("fowelcome") || uNow.includes("dashboard")) break;
+        if (isAuthLoggedInUrl(uNow)) break;
         await page.waitForTimeout(250);
       }
       const url = page.url();
-      if (url.includes("/auth/") || url.includes("fowelcome") || url.includes("dashboard")) {
+      if (isAuthLoggedInUrl(url)) {
+        await page.waitForLoadState("domcontentloaded", { timeout: 2000 }).catch(() => {});
         await page.waitForLoadState("networkidle", { timeout: 1500 }).catch(() => {});
         s.loggedIn = true;
         return res.json({ ok: true, status: "logged_in", url: page.url() });
@@ -2326,7 +2384,7 @@ module.exports = {
   openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
   classifyStuckPage, readSelectOptions, guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
-  firstVisibleSelector, waitForLoginForm, classifyLoginPage, LOGIN_USER_SELECTORS, LOGIN_PASS_SELECTORS,
+  firstVisibleSelector, waitForLoginForm, classifyLoginPage, isAuthLoggedInUrl, isUsableAuthWelcomePage, LOGIN_USER_SELECTORS, LOGIN_PASS_SELECTORS,
   LOGIN_RETRY_KINDS,
   RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL, startServer
 };
