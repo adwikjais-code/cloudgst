@@ -618,6 +618,9 @@ public class MainActivity extends FragmentActivity {
             if (id == null || id.isEmpty() || id.equals(phoneLoginPayloadId)) {
                 phoneLoginPayload = "";
             }
+            if (id != null && !id.isEmpty() && id.equals(phoneFetchPayloadId)) {
+                phoneFetchPayload = "";
+            }
         }
     }
 
@@ -672,74 +675,25 @@ public class MainActivity extends FragmentActivity {
     private FrameLayout loginBody;
 
     void setLoginOverlayVisible(boolean show) {
+        // 100% hidden phone mode: GST Portal screen/overlay kabhi screen par nahi khulega.
         try {
-            if (show) {
-                if (loginOverlay == null) {
-                    loginOverlay = new LinearLayout(this);
-                    loginOverlay.setOrientation(LinearLayout.VERTICAL);
-                    loginOverlay.setBackgroundColor(Color.parseColor("#0f172a"));
-
-                    LinearLayout bar = new LinearLayout(this);
-                    bar.setOrientation(LinearLayout.HORIZONTAL);
-                    bar.setGravity(Gravity.CENTER_VERTICAL);
-                    bar.setPadding(dp(12), dp(10), dp(8), dp(10));
-                    bar.setBackgroundColor(Color.parseColor("#0f172a"));
-
-                    TextView t = new TextView(this);
-                    t.setText("🔐 GST Portal login — captcha/OTP daalein, login hote hi apne aap aage chala jayega");
-                    t.setTextColor(Color.parseColor("#e2e8f0"));
-                    t.setTextSize(12f);
-                    bar.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-                    Button close = new Button(this);
-                    close.setText("✕");
-                    close.setTextColor(Color.parseColor("#e2e8f0"));
-                    close.setBackgroundColor(Color.parseColor("#1e293b"));
-                    close.setOnClickListener(v -> setLoginOverlayVisible(false));
-                    bar.addView(close);
-                    loginOverlay.addView(bar, new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-                    loginBody = new FrameLayout(this);
-                    loginOverlay.addView(loginBody, new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-                }
-                if (loginOverlay.getParent() == null) {
-                    rootView.addView(loginOverlay, new FrameLayout.LayoutParams(
+            if (loginOverlay != null && loginOverlay.getParent() != null) {
+                rootView.removeView(loginOverlay);
+            }
+            if (phoneLogin != null && phoneLogin.web() != null) {
+                WebView wv = phoneLogin.web();
+                if (loginBody != null) loginBody.removeAllViews();
+                wv.setAlpha(0f);
+                wv.setClickable(false);
+                wv.setFocusable(false);
+                wv.setFocusableInTouchMode(false);
+                if (wv.getParent() == null) {
+                    rootView.addView(wv, 0, new FrameLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-                }
-                loginOverlay.bringToFront();
-                if (phoneLogin != null && phoneLogin.web() != null && loginBody != null) {
-                    WebView wv = phoneLogin.web();
-                    ViewGroup p = (ViewGroup) wv.getParent();
-                    if (p != null && p != loginBody) p.removeView(wv);
-                    loginBody.removeAllViews();
-                    loginBody.addView(wv, new FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-                    wv.setAlpha(1f);
-                    wv.setClickable(true);
-                    wv.setFocusable(true);
-                    wv.setFocusableInTouchMode(true);
-                }
-            } else {
-                if (loginOverlay != null && loginOverlay.getParent() != null) {
-                    rootView.removeView(loginOverlay);
-                }
-                // WebView wapas chhupa hua (app ke peechhe)
-                if (phoneLogin != null && phoneLogin.web() != null && loginBody != null) {
-                    WebView wv = phoneLogin.web();
-                    loginBody.removeAllViews();
-                    wv.setClickable(false);
-                    wv.setFocusable(false);
-                    wv.setFocusableInTouchMode(false);
-                    if (wv.getParent() == null) {
-                        rootView.addView(wv, 0, new FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-                    }
                 }
             }
         } catch (Throwable t) {
-            Log.e(TAG, "login overlay fail", t);
+            Log.e(TAG, "login overlay hide fail", t);
         }
     }
 

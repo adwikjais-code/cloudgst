@@ -252,3 +252,36 @@ test("gstr2b-parser: gpMergePortalSaveData keeps failed/NOT_GENERATED flags accu
     partialNote: "Adhoora fetch — GSTR-2B portal se fetch nahi hua"
   });
 });
+
+test("android & portal-module: 100% hidden phone mode preserves security/stability guards", () => {
+  const androidJavaDir = path.join(ROOT, "android", "app", "src", "main", "java", "com", "cloudgst", "app");
+  const mainAct = fs.readFileSync(path.join(androidJavaDir, "MainActivity.java"), "utf8");
+  const phoneLogin = fs.readFileSync(path.join(androidJavaDir, "PhoneLogin.java"), "utf8");
+  const phoneFetch = fs.readFileSync(path.join(androidJavaDir, "PhoneFetch.java"), "utf8");
+  const portalJs = fs.readFileSync(path.join(WEB_DIR, "js", "portal-module.js"), "utf8");
+
+  // MainActivity: never surfaces loginOverlay / visible WebView, preserves BuildConfig version + separate payload locks
+  assert.match(mainAct, /BuildConfig\.VERSION_NAME/);
+  assert.match(mainAct, /public void phoneLoginVisible\(final boolean show\)/);
+  assert.match(mainAct, /public void clearPhonePayload\(final String id\)/);
+  assert.match(mainAct, /wv\.setAlpha\(0f\)/);
+  assert.doesNotMatch(mainAct, /wv\.setAlpha\(1f\)/);
+  assert.doesNotMatch(mainAct, /rootView\.addView\(loginOverlay/);
+
+  // PhoneLogin: canvas capture + CAPWAIT + cookie cleanup on switch + preserves awaitingUserInput / wrongCapPending
+  assert.match(phoneLogin, /imgToDataUrl/);
+  assert.match(phoneLogin, /CAPWAIT/);
+  assert.match(phoneLogin, /lastLoggedInUser/);
+  assert.match(phoneLogin, /removeAllCookies/);
+  assert.match(phoneLogin, /awaitingUserInput/);
+  assert.match(phoneLogin, /wrongCapPending/);
+  assert.doesNotMatch(phoneLogin, /setLoginOverlayVisible\(true\)/);
+
+  // PhoneFetch: hidden WebView + 25MB download guard + HTML guard + chunk retry limit
+  assert.match(phoneFetch, /wv\.setAlpha\(0f\)/);
+  assert.match(phoneFetch, /MAX_DOWNLOAD_BYTES/);
+  assert.match(phoneFetch, /startsWith\("<"\)/);
+
+  // portal-module: never opens native portal login overlay
+  assert.doesNotMatch(portalJs, /phoneLoginVisible\(true\)/);
+});

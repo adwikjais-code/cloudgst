@@ -1254,15 +1254,6 @@
             st.phase = st.captchaBase64 ? "captcha" : "error";
             if (!st.captchaBase64) st.note = "Phone login: captcha nahi mila";
           } catch (e) {
-            if (e && (e.code === "manual_login" || e.code === "captcha_missing")) {
-              // Portal screen par bhejne ke bajaye app ke andar hi login dikhata hai
-              st.phase = "loading_cap";
-              st.note = "🔐 App ke andar login — captcha/OTP daalein, phir apne aap aage";
-              gpRenderSerialList(clientKey);
-              try { window.CloudGSTNative.phoneLoginVisible(true); } catch (_) {}
-              gpToast("🔐 " + (c.clientName || "Client") + ": login page app ke andar khul gayi — captcha/OTP daalein, baaki kaam apne aap");
-              return;
-            }
             st.phase = "error";
             st.note = e.message;
             gpErrLogAdd(clientKey, e.message);
@@ -2148,15 +2139,9 @@
           try { id = String(window.CloudGSTNative.phoneLoginStart(String(c.portalId || "").trim(), String(pw || "")) || ""); } catch (e) { id = ""; }
           if (!id) return reject(new Error("Phone login start nahi ho paya."));
           gpPhoneLoginId = id;
-          let shownOverlay = false;
           const onStage = (stage) => {
-            if (shownOverlay) return;
-            if (stage && stage.indexOf("manual-wait") >= 0) {
-              shownOverlay = true;
-              gpPhoneDbg("manual-wait -> overlay");
-              try { window.CloudGSTNative.phoneLoginVisible(true); } catch (_) {}
-              gpToast("🔐 Login page app ke andar hi khul gaya — captcha/OTP daalein, login hote hi aage chala jayega");
-            }
+            // 100% hidden phone mode: portal overlay kabhi screen par nahi khulega
+            if (stage) gpPhoneDbg("stage: " + stage);
           };
           gpNativePoll(id, "Phone login", 320000, onStage).then((r) => {
             try { window.CloudGSTNative.phoneLoginVisible(false); } catch (_) {}
