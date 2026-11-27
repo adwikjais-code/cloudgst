@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 env:
-  RELEASE_TAG: android-v5.9.18
+  RELEASE_TAG: android-v6.0.0
 
 jobs:
   build:
@@ -111,20 +111,24 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.9.18)
+          ## CloudGST Android APK (v6.0.0)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
           2. Phone me kholein — "Unknown sources / Install anyway" allow karein.
           3. Icon **J&A (CloudGST)** kholein. Pehle se install hai to seedha update ho jayega
              (data/settings safe rahenge).
+
+          Naya kya hai (v6.0.0):
+          - Header me **📱 Phone (5 Tabs)** — 5 alag isolated WebView profiles (`gst_slot_0`..`gst_slot_4`), har tab ka apna CookieManager.
+          - 5 clients par ek saath parallel me Fetch + Captcha — GSTR-2B aur E-Com/TCS dono background me 5 tabs me ek saath chalte hain.
           EOF
-          (cd android/app/src/main/assets && zip -r9 "$GITHUB_WORKSPACE/CloudGST_web_v5_9_18.zip" app)
-          ls -lh "CloudGST_web_v5_9_18.zip"
+          (cd android/app/src/main/assets && zip -r9 "$GITHUB_WORKSPACE/CloudGST_web_v6_0_0.zip" app)
+          ls -lh "CloudGST_web_v6_0_0.zip"
           cat verify.md >> notes.md
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
-          gh release create "$RELEASE_TAG" "CloudGST.apk" "CloudGST_web_v5_9_18.zip" \
+          gh release create "$RELEASE_TAG" "CloudGST.apk" "CloudGST_web_v6_0_0.zip" \
             --target "$GITHUB_SHA" \
-            --title "CloudGST Android v5.9.18 (APK + Web Bundle)" \
+            --title "CloudGST Android v6.0.0 (APK + Web Bundle)" \
             --notes-file notes.md

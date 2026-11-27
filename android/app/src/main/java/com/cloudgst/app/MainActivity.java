@@ -46,10 +46,13 @@ import androidx.webkit.WebViewAssetLoader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.Executor;
 
 /**
- * CloudGST — Android wrapper (v5.9.0).
+ * CloudGST — Android wrapper (v6.0.0 — 5-Tab Parallel Multi-Profile Phone Mode).
  *  - UI: assets/app/ (https://appassets.androidplatform.net se serve) => browser jaisa behaviour
  *  - Swipe-back / back gesture: JS (cloudGstHandleBack) se poochta hai -> modal, page, phir app band
  *  - Fingerprint / Touch ID lock: Android 7 (API 24) se hi chalta hai (androidx.biometric),
@@ -75,15 +78,16 @@ public class MainActivity extends FragmentActivity {
     private ValueCallback<Uri[]> filePathCallback;
     private boolean appLoaded = false;
     private boolean bioUnlocked = false;
-    private PhoneFetch phoneFetch;
-    private PhoneLogin phoneLogin;
-    private String phoneLoginId = "";
-    private final Object phoneLock = new Object();
-    /** Phone-mode login aur fetch payloads alag-alag (ek doosre ko overwrite na karein). */
-    private String phoneLoginPayload = "";
-    private String phoneLoginPayloadId = "";
-    private String phoneFetchPayload = "";
-    private String phoneFetchPayloadId = "";
+    private static final int MAX_SLOTS = 5;
+    private final PhoneFetch[] phoneFetches = new PhoneFetch[MAX_SLOTS];
+    private final PhoneLogin[] phoneLogins = new PhoneLogin[MAX_SLOTS];
+    private final Map<String, String> phonePayloads = Collections.synchronizedMap(
+            new LinkedHashMap<String, String>(64, 0.75f, false) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+                    return size() > 50;
+                }
+            });
     private SharedPreferences prefs;
 
     /** Storage permission ke baad pending save (sirf Android 7/8 ke liye). */
@@ -538,8 +542,10 @@ public class MainActivity extends FragmentActivity {
     @Override
     protected void onDestroy() {
         try {
-            if (phoneFetch != null) phoneFetch.destroy();
-            if (phoneLogin != null) phoneLogin.destroy();
+            for (int i = 0; i < MAX_SLOTS; i++) {
+                if (phoneFetches[i] != null) phoneFetches[i].destroy();
+                if (phoneLogins[i] != null) phoneLogins[i].destroy();
+            }
         } catch (Exception ignored) { }
         if (web != null) {
             web.destroy();
@@ -553,143 +559,102 @@ public class MainActivity extends FragmentActivity {
     }
 
     /** JS se bulane wala bridge: window.CloudGSTNative.* */
-    // ================= Phone mode: bina cloud, background (invisible) fetch =================
+    // ================= Phone mode: 5-Tab Multi-Profile background (invisible) fetch =================
 
-    /**
-     * JS bridge thread se bulaya jata hai — isliye WebView/View ka poora kaam UI thread par.
-     * (v5.9.6 me yahi galti thi: non-UI thread se WebView banane par app turant band ho jata tha.)
-     */
-    String startPhoneFetch(final String fyLabel, final String monLabel) {
-        final String id = "pf" + System.currentTimeMillis();
+    int clampSlot(int slot) {
+        int max = PhoneLogin.multiProfileSupported() ? MAX_SLOTS : 1;
+        if (slot < 0) return 0;
+        return Math.min(slot, max - 1);
+    }
+
+    String startPhoneFetchSlot(final int rawSlot, final String fyLabel, final String monLabel) {
+        final int slot = clampSlot(rawSlot);
+        final String id = "pf_" + slot + "_" + System.currentTimeMillis() + "_" + (int) (Math.random() * 9000 + 1000);
         final String fy = fyLabel == null ? "" : fyLabel;
         final String mon = monLabel == null ? "" : monLabel;
-        synchronized (phoneLock) {
-            phoneFetchPayload = "";
-            phoneFetchPayloadId = id;
-        }
         runOnUiThread(() -> {
             try {
-                if (phoneFetch == null) {
-                    phoneFetch = new PhoneFetch(this, (rid, payload) -> runOnUiThread(
-                            () -> deliverPhoneFetchPayload(rid, payload)));
+                if (phoneFetches[slot] == null) {
+                    phoneFetches[slot] = new PhoneFetch(this, slot, (rid, payload) -> runOnUiThread(
+                            () -> deliverPhonePayload(rid, payload)));
                 }
-                phoneFetch.start(id, fy, mon, rootView);
+                phoneFetches[slot].start(id, fy, mon, rootView);
             } catch (Throwable t) {
-                Log.e(TAG, "phone fetch start fail", t);
-                deliverPhoneFetchPayload(id, "{\"ok\":false,\"source\":\"phone\",\"code\":\"start_failed\","
-                        + "\"error\":\"Phone mode start nahi ho paya (" + String.valueOf(t.getMessage())
-                        + "). ☁️ Cloud mode try karein.\"}");
+                Log.e(TAG, "phone fetch start fail slot=" + slot, t);
+                deliverPhonePayload(id, "{\"ok\":false,\"source\":\"phone\",\"code\":\"start_failed\","
+                        + "\"error\":\"Phone mode Tab " + (slot + 1) + " start nahi ho paya (" + String.valueOf(t.getMessage()) + ").\"}");
             }
         });
         return id;
     }
 
-    /** Phone-mode fetch result app JS ko deta hai (chunks me, kyunki 2B JSON bada hota hai). */
-    void deliverPhoneFetchPayload(String id, String payload) {
+    void deliverPhonePayload(String id, String payload) {
         try {
-            final String fid = id == null ? "" : id;
-            synchronized (phoneLock) {
-                phoneFetchPayload = payload == null ? "" : payload;
-                phoneFetchPayloadId = fid;
-            }
+            if (id == null || id.isEmpty()) return;
+            phonePayloads.put(id, payload == null ? "" : payload);
             if (web == null) return;
             web.evaluateJavascript(
                     "(function(){try{if(window.gpPhoneFetchReady)window.gpPhoneFetchReady("
-                            + org.json.JSONObject.quote(fid) + ");}catch(e){}})()", null);
+                            + org.json.JSONObject.quote(id) + ");}catch(e){}})()", null);
         } catch (Throwable t) {
-            Log.e(TAG, "deliverPhoneFetchPayload fail", t);
+            Log.e(TAG, "deliverPhonePayload fail", t);
         }
     }
 
-    void deliverPhoneLoginPayload(String id, String payload) {
+    void startPhoneLoginSlot(final int rawSlot, final String id, final String user, final String pass) {
+        final int slot = clampSlot(rawSlot);
         try {
-            final String lid = id == null ? "" : id;
-            synchronized (phoneLock) {
-                phoneLoginPayload = payload == null ? "" : payload;
-                phoneLoginPayloadId = lid;
+            if (phoneLogins[slot] == null) {
+                phoneLogins[slot] = new PhoneLogin(this, slot, (rid, payload) -> runOnUiThread(
+                        () -> deliverPhonePayload(rid, payload)));
             }
-        } catch (Throwable t) {
-            Log.e(TAG, "deliverPhoneLoginPayload fail", t);
-        }
-    }
-
-    void clearPhoneLoginPayload(String id) {
-        synchronized (phoneLock) {
-            if (id == null || id.isEmpty() || id.equals(phoneLoginPayloadId)) {
-                phoneLoginPayload = "";
-            }
-            if (id != null && !id.isEmpty() && id.equals(phoneFetchPayloadId)) {
-                phoneFetchPayload = "";
-            }
-        }
-    }
-
-    // ---------- 📱 Phone login (cloud jaisa: captcha app me, login back me) ----------
-
-    void startPhoneLogin(final String id, final String user, final String pass) {
-        try {
-            phoneLoginId = id == null ? "" : id;
-            synchronized (phoneLock) {
-                phoneLoginPayload = "";
-                phoneLoginPayloadId = phoneLoginId;
-            }
-            if (phoneLogin == null) {
-                phoneLogin = new PhoneLogin(this, payload -> runOnUiThread(
-                        () -> deliverPhoneLoginPayload(phoneLoginId, payload)));
-            }
-            if (phoneLogin.isBusy()) {
-                deliverPhoneLoginPayload(phoneLoginId, "{\"ok\":false,\"source\":\"phone\",\"code\":\"busy\","
-                        + "\"error\":\"Phone login pehle se chal raha hai — thoda rukein.\"}");
+            if (phoneLogins[slot].isBusy()) {
+                deliverPhonePayload(id, "{\"ok\":false,\"source\":\"phone\",\"code\":\"busy\","
+                        + "\"error\":\"Tab " + (slot + 1) + " par login pehle se chal raha hai.\"}");
                 return;
             }
-            phoneLogin.start(phoneLoginId, user, pass, rootView);
+            phoneLogins[slot].start(id, user, pass, rootView);
         } catch (Throwable t) {
-            Log.e(TAG, "phone login start fail", t);
-            deliverPhoneLoginPayload(phoneLoginId, "{\"ok\":false,\"source\":\"phone\",\"code\":\"start_failed\","
-                    + "\"error\":\"Phone login start nahi ho paya. ☁️ Cloud mode try karein.\"}");
+            Log.e(TAG, "phone login start fail slot=" + slot, t);
+            deliverPhonePayload(id, "{\"ok\":false,\"source\":\"phone\",\"code\":\"start_failed\","
+                    + "\"error\":\"Phone login start nahi ho paya.\"}");
         }
     }
 
-    void phoneLoginSubmitCaptcha(final String captcha) {
+    void phoneLoginSubmitCaptchaSlot(final int rawSlot, final String captcha) {
+        final int slot = clampSlot(rawSlot);
         try {
-            clearPhoneLoginPayload(phoneLoginId);
-            if (phoneLogin == null) return;
-            phoneLogin.submitCaptcha(captcha);
+            if (phoneLogins[slot] == null) return;
+            phoneLogins[slot].submitCaptcha(captcha);
         } catch (Throwable t) {
-            Log.e(TAG, "phone login captcha fail", t);
+            Log.e(TAG, "phone login captcha fail slot=" + slot, t);
         }
     }
 
-    void phoneLoginSubmitOtp(final String otp) {
+    void phoneLoginSubmitOtpSlot(final int rawSlot, final String otp) {
+        final int slot = clampSlot(rawSlot);
         try {
-            clearPhoneLoginPayload(phoneLoginId);
-            if (phoneLogin == null) return;
-            phoneLogin.submitOtp(otp);
+            if (phoneLogins[slot] == null) return;
+            phoneLogins[slot].submitOtp(otp);
         } catch (Throwable t) {
-            Log.e(TAG, "phone login otp fail", t);
+            Log.e(TAG, "phone login otp fail slot=" + slot, t);
         }
     }
-
-    // ===== App ke ANDAR login overlay (alag portal screen/redirect nahi) =====
-    private LinearLayout loginOverlay;
-    private FrameLayout loginBody;
 
     void setLoginOverlayVisible(boolean show) {
         // 100% hidden phone mode: GST Portal screen/overlay kabhi screen par nahi khulega.
         try {
-            if (loginOverlay != null && loginOverlay.getParent() != null) {
-                rootView.removeView(loginOverlay);
-            }
-            if (phoneLogin != null && phoneLogin.web() != null) {
-                WebView wv = phoneLogin.web();
-                if (loginBody != null) loginBody.removeAllViews();
-                wv.setAlpha(0f);
-                wv.setClickable(false);
-                wv.setFocusable(false);
-                wv.setFocusableInTouchMode(false);
-                if (wv.getParent() == null) {
-                    rootView.addView(wv, 0, new FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            for (int i = 0; i < MAX_SLOTS; i++) {
+                if (phoneLogins[i] != null && phoneLogins[i].web() != null) {
+                    WebView wv = phoneLogins[i].web();
+                    wv.setAlpha(0f);
+                    wv.setClickable(false);
+                    wv.setFocusable(false);
+                    wv.setFocusableInTouchMode(false);
+                    if (wv.getParent() == null) {
+                        rootView.addView(wv, 0, new FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -697,45 +662,48 @@ public class MainActivity extends FragmentActivity {
         }
     }
 
-    /** App JS poll karta hai — push (evaluateJavascript) fail ho jaye to bhi jawab pahunchta hai. */
     String phonePayloadFor(String id) {
         try {
             if (id == null || id.isEmpty()) return "";
-            synchronized (phoneLock) {
-                if (id.equals(phoneLoginPayloadId)) return phoneLoginPayload == null ? "" : phoneLoginPayload;
-                if (id.equals(phoneFetchPayloadId)) return phoneFetchPayload == null ? "" : phoneFetchPayload;
-            }
-            return "";
+            String v = phonePayloads.get(id);
+            return v == null ? "" : v;
         } catch (Throwable t) {
             return "";
         }
     }
 
-    /** Abhi kaam kis step par hai (progress/debug ke liye). */
+    void clearPhonePayload(String id) {
+        try {
+            if (id != null && !id.isEmpty()) phonePayloads.remove(id);
+        } catch (Throwable ignored) { }
+    }
+
     String phoneStage() {
         try {
-            if (phoneLogin != null && phoneLogin.isBusy()) return "login:" + phoneLogin.stage();
-            if (phoneFetch != null && phoneFetch.isBusy()) return "fetch:" + phoneFetch.stage();
-            if (phoneLogin != null) return "login:" + phoneLogin.stage();
-            if (phoneFetch != null) return "fetch:" + phoneFetch.stage();
-        } catch (Throwable ignored) { }
-        return "";
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < MAX_SLOTS; i++) {
+                if (phoneLogins[i] != null && phoneLogins[i].isBusy()) {
+                    if (sb.length() > 0) sb.append(" | ");
+                    sb.append("T").append(i + 1).append(":login:").append(phoneLogins[i].stage());
+                } else if (phoneFetches[i] != null && phoneFetches[i].isBusy()) {
+                    if (sb.length() > 0) sb.append(" | ");
+                    sb.append("T").append(i + 1).append(":fetch:").append(phoneFetches[i].stage());
+                }
+            }
+            return sb.length() > 0 ? sb.toString() : "idle";
+        } catch (Throwable ignored) {
+            return "";
+        }
     }
 
     String phonePayloadChunk(String id, int offset, int len) {
         try {
             if (id == null || id.isEmpty()) return "";
-            String payload;
-            synchronized (phoneLock) {
-                if (id.equals(phoneFetchPayloadId)) payload = phoneFetchPayload;
-                else if (id.equals(phoneLoginPayloadId)) payload = phoneLoginPayload;
-                else return "";
-            }
-            if (payload == null) return "";
+            String p = phonePayloads.get(id);
+            if (p == null) return "";
             int L = Math.max(1, Math.min(len, 400000));
-            if (offset < 0 || offset >= payload.length()) return "";
-            int end = Math.min(payload.length(), offset + L);
-            return payload.substring(offset, end);
+            if (offset < 0 || offset >= p.length()) return "";
+            return p.substring(offset, Math.min(p.length(), offset + L));
         } catch (Throwable t) {
             return "";
         }
@@ -859,30 +827,52 @@ public class MainActivity extends FragmentActivity {
             });
         }
 
-        /** 📱 Phone login (cloud jaisa): chhupe WebView me login page, captcha image app ko. */
+        /** Kitne parallel isolated tabs support hain (Multi-Profile par 5, warna 1). */
         @JavascriptInterface
-        public String phoneLoginStart(final String user, final String pass) {
-            final String id = "pl" + System.currentTimeMillis();
-            act.clearPhoneLoginPayload("");
-            act.runOnUiThread(() -> act.startPhoneLogin(id, user, pass));
+        public int phoneMaxParallel() {
+            return PhoneLogin.multiProfileSupported() ? MAX_SLOTS : 1;
+        }
+
+        @JavascriptInterface
+        public String phoneLoginStartSlot(final int slot, final String user, final String pass) {
+            final int s = act.clampSlot(slot);
+            final String id = "pl_" + s + "_" + System.currentTimeMillis() + "_" + (int) (Math.random() * 9000 + 1000);
+            act.runOnUiThread(() -> act.startPhoneLoginSlot(s, id, user, pass));
             return id;
         }
 
         @JavascriptInterface
+        public void phoneLoginCaptchaSlot(final int slot, final String captcha) {
+            act.runOnUiThread(() -> act.phoneLoginSubmitCaptchaSlot(slot, captcha));
+        }
+
+        @JavascriptInterface
+        public void phoneLoginOtpSlot(final int slot, final String otp) {
+            act.runOnUiThread(() -> act.phoneLoginSubmitOtpSlot(slot, otp));
+        }
+
+        @JavascriptInterface
+        public String phoneFetch2bSlot(final int slot, final String fyLabel, final String monLabel) {
+            try {
+                return act.startPhoneFetchSlot(slot, fyLabel, monLabel);
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public String phoneLoginStart(final String user, final String pass) {
+            return phoneLoginStartSlot(0, user, pass);
+        }
+
+        @JavascriptInterface
         public void phoneLoginCaptcha(final String captcha) {
-            act.clearPhoneLoginPayload("");
-            act.runOnUiThread(() -> act.phoneLoginSubmitCaptcha(captcha));
+            phoneLoginCaptchaSlot(0, captcha);
         }
 
         @JavascriptInterface
         public void phoneLoginOtp(final String otp) {
-            act.clearPhoneLoginPayload("");
-            act.runOnUiThread(() -> act.phoneLoginSubmitOtp(otp));
-        }
-
-        @JavascriptInterface
-        public void clearPhonePayload(final String id) {
-            act.clearPhoneLoginPayload(id);
+            phoneLoginOtpSlot(0, otp);
         }
 
         @JavascriptInterface
@@ -890,49 +880,34 @@ public class MainActivity extends FragmentActivity {
             return true;
         }
 
-        /** App ke andar login overlay dikhao/chhupao (portal screen par redirect nahi). */
         @JavascriptInterface
         public void phoneLoginVisible(final boolean show) {
             act.runOnUiThread(() -> act.setLoginOverlayVisible(show));
         }
 
-        /** JS isse poll karti hai (har 1.2s) — jawab ka bharosa. */
         @JavascriptInterface
         public String phonePayloadFor(final String id) {
-            try {
-                return act.phonePayloadFor(id);
-            } catch (Throwable t) {
-                return "";
-            }
+            return act.phonePayloadFor(id);
+        }
+
+        @JavascriptInterface
+        public void clearPhonePayload(final String id) {
+            act.clearPhonePayload(id);
         }
 
         @JavascriptInterface
         public String phoneStage() {
-            try {
-                return act.phoneStage();
-            } catch (Throwable t) {
-                return "";
-            }
+            return act.phoneStage();
         }
 
-        /** Phone mode: phone par login session se GSTR-2B JSON (chhupe WebView me, screen par kuch nahi). */
         @JavascriptInterface
         public String phoneFetch2b(final String fyLabel, final String monLabel) {
-            try {
-                return act.startPhoneFetch(fyLabel, monLabel);
-            } catch (Exception e) {
-                return "";
-            }
+            return phoneFetch2bSlot(0, fyLabel, monLabel);
         }
 
-        /** Phone mode result chunks (bade JSON ke liye). */
         @JavascriptInterface
         public String phoneFetchChunk(final String id, final int offset, final int len) {
-            try {
-                return act.phonePayloadChunk(id, offset, len);
-            } catch (Exception e) {
-                return "";
-            }
+            return act.phonePayloadChunk(id, offset, len);
         }
 
         @JavascriptInterface

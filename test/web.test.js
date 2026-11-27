@@ -284,4 +284,21 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
 
   // portal-module: never opens native portal login overlay
   assert.doesNotMatch(portalJs, /phoneLoginVisible\(true\)/);
+
+  // 5-Tab Multi-Profile Phone Mode + Phone TCS guards (v6.0.0)
+  assert.match(mainAct, /phoneMaxParallel/);
+  assert.match(mainAct, /phoneLoginStartSlot/);
+  assert.match(mainAct, /phoneFetch2bSlot/);
+  assert.match(phoneLogin, /WebViewCompat\.setProfile/);
+  assert.match(phoneLogin, /gst_slot_/);
+  assert.match(phoneFetch, /WebViewCompat\.setProfile/);
+  assert.match(phoneFetch, /TCS\|/);
+  assert.match(portalJs, /gpAllocPhoneSlot/);
+  assert.match(portalJs, /gpPhoneLoginOtp\(otp,\s*st\.phoneSlot/);
+  assert.equal(portalJs.includes("\x08"), false, "portal-module.js must not contain raw backspace bytes in regexes");
+
+  const gradle = fs.readFileSync(path.join(ROOT, "android", "app", "build.gradle"), "utf8");
+  const vcMatch = gradle.match(/versionCode\s+(\d+)/);
+  assert.ok(vcMatch && Number(vcMatch[1]) >= 82, "versionCode must be >= 82 to upgrade cleanly over v5.9.18 (81)");
+  assert.match(gradle, /versionName\s+'6\.0\.0'/);
 });

@@ -11,6 +11,11 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import androidx.webkit.Profile;
+import androidx.webkit.ProfileStore;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -21,20 +26,14 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 📱 Phone mode ka 100% hidden login — screen par GST Portal kabhi nahi khulta.
- *
- * Chhupe (invisible, alpha=0, index=0) WebView me GST portal ka login page khulta hai:
- *   1. Captcha ki EXACT image canvas se capture hokar Base64 me app ko jati hai
- *      (koi 2nd HTTP request nahi, isliye captcha mismatch nahi hota).
- *   2. User app me hi captcha (aur agar maange to OTP) daalta hai.
- *   3. Login hone ke baad session cookies phone me hi reh jati hain — usi se PhoneFetch
- *      background me GSTR-2B fetch karta hai.
- *   4. Naye client (alag username) ke liye purani GST cookies apne aap clear hoti hain.
+ * 📱 Phone mode 100% hidden login — Multi-Profile (5 parallel isolated tabs).
+ * Har slot (0..4) apna alag WebView Profile ("gst_slot_N") aur alag CookieManager use karta hai,
+ * isliye 5 clients ek saath login aur fetch kar sakte hain bina session clash ke.
  */
 public class PhoneLogin {
 
     public interface Callback {
-        void done(String payloadJson);
+        void done(String requestId, String payloadJson);
     }
 
     private static final String TAG = "PhoneLogin";
@@ -42,17 +41,19 @@ public class PhoneLogin {
     private static final long PREFLIGHT_TIMEOUT_MS = 15000L;
 
     private final Activity act;
+    private final int slot;
     private final Callback cb;
     private final Handler h = new Handler(Looper.getMainLooper());
 
     private WebView wv;
+    private String reqId = "";
     private String username = "";
     private String password = "";
     private String lastLoggedInUser = "";
     private String captchaSrc = "";
     private int tries = 0;
     private int clicks = 0;
-    private int phase = 0;                 // 0 = idle, 1 = captcha dhoondh rahe, 2 = submit ke baad
+    private int phase = 0;
     private boolean finished = false;
     private boolean awaitingUserInput = false;
     private boolean wrongCapPending = false;
@@ -63,29 +64,50 @@ public class PhoneLogin {
     private static final int PHASE_FIND_CAPTCHA = 1;
     private static final int PHASE_AFTER_SUBMIT = 2;
 
-    public PhoneLogin(Activity act, Callback cb) {
+    public PhoneLogin(Activity act, int slot, Callback cb) {
         this.act = act;
+        this.slot = Math.max(0, slot);
         this.cb = cb;
     }
 
-    // ======================= start =======================
+    public static String profileNameFor(int slot) {
+        return "gst_slot_" + Math.max(0, slot);
+    }
 
-    /** Chhupa WebView reference. */
+    public static boolean multiProfileSupported() {
+        try {
+            return WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    public static CookieManager cookieManagerForSlot(int slot) {
+        if (multiProfileSupported()) {
+            try {
+                Profile p = ProfileStore.getInstance().getOrCreateProfile(profileNameFor(slot));
+                return p.getCookieManager();
+            } catch (Throwable ignored) { }
+        }
+        return CookieManager.getInstance();
+    }
+
     public WebView web() {
         return wv;
     }
 
-    /** App ko progress dikhane / debug ke liye (screen par status). */
     public String stage() {
         return stage == null ? "" : stage;
     }
 
     public void start(String id, String user, String pass, ViewGroup host) {
         stage = "start";
+        this.reqId = id == null ? "" : id;
         final String newUser = user == null ? "" : user.trim();
         final boolean switchingClient = !lastLoggedInUser.isEmpty()
                 && !newUser.isEmpty()
                 && !lastLoggedInUser.equalsIgnoreCase(newUser);
+
         this.username = newUser;
         this.password = pass == null ? "" : pass;
         finished = false;
@@ -99,7 +121,7 @@ public class PhoneLogin {
         h.removeCallbacks(tickRun);
         h.removeCallbacks(timeoutRun);
         ensureWeb(host);
-        // Pehle network check — DNS/internet dikkat ho to saaf message mile
+
         new Thread(() -> {
             stage = "preflight";
             String netErr = preflight(LOGIN_URL);
@@ -120,9 +142,9 @@ public class PhoneLogin {
                     stage = "clear-session";
                     lastLoggedInUser = "";
                     try {
-                        CookieManager cm = CookieManager.getInstance();
+                        CookieManager cm = cookieManagerForSlot(slot);
                         cm.removeAllCookies(ignored -> {
-                            cm.flush();
+                            try { cm.flush(); } catch (Throwable ignored2) { }
                             beginLoad.run();
                         });
                     } catch (Throwable t) {
@@ -158,11 +180,9 @@ public class PhoneLogin {
         @Override
         public void run() {
             if (finished) return;
-            deliver(err("timeout", "Phone login: portal ne 150s me jawab nahi diya. Dobara try karein ya ☁️ Cloud mode use karein."));
+            deliver(err("timeout", "Phone login (Tab " + (slot + 1) + "): portal ne 150s me jawab nahi diya. Dobara try karein."));
         }
     };
-
-    // ======================= hidden webview =======================
 
     private void ensureWeb(ViewGroup host) {
         if (wv != null) {
@@ -172,13 +192,22 @@ public class PhoneLogin {
             return;
         }
         final WebView v = new WebView(act);
+        if (multiProfileSupported()) {
+            try {
+                WebViewCompat.setProfile(v, profileNameFor(slot));
+            } catch (Throwable t) {
+                Log.w(TAG, "setProfile fail slot=" + slot, t);
+            }
+        }
         WebSettings s = v.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
         s.setUserAgentString(s.getUserAgentString().replace("; wv", ""));
-        CookieManager.getInstance().setAcceptCookie(true);
-        CookieManager.getInstance().setAcceptThirdPartyCookies(v, true);
+        CookieManager cm = cookieManagerForSlot(slot);
+        cm.setAcceptCookie(true);
+        cm.setAcceptThirdPartyCookies(v, true);
+
         v.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
@@ -197,18 +226,15 @@ public class PhoneLogin {
                 }
             }
         });
-        // Hamesha hidden: alpha 0 + app ke WebView ke peechhe (index 0) — render hota hai, screen par kabhi nahi dikhta
         v.setAlpha(0f);
         v.setClickable(false);
         v.setFocusable(false);
         v.setVerticalScrollBarEnabled(false);
         ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        host.addView(v, 0, lp);   // app ke WebView ke peechhe — render hota hai, dikhta nahi
+        host.addView(v, 0, lp);
         wv = v;
     }
-
-    // ======================= polling =======================
 
     private final Runnable tickRun = new Runnable() {
         @Override
@@ -223,16 +249,22 @@ public class PhoneLogin {
                 try { d = new JSONObject(raw); } catch (Exception ignored) { }
                 String t = d == null ? "" : d.optString("t", "");
                 stage = "poll:" + (t.isEmpty() ? "wait" : t);
+
                 if ("CLICKLOGIN".equals(t)) {
-                    if (clicks < 2) { clicks++; stage = "click-login"; h.postDelayed(tickRun, 2500); }
-                    else if (tries >= 25) { deliver(err("login_timeout", "Portal login form nahi khula — dobara try karein.")); }
-                    else h.postDelayed(tickRun, 1800);
+                    if (clicks < 2) {
+                        clicks++;
+                        stage = "click-login";
+                        h.postDelayed(tickRun, 2500);
+                    } else if (tries >= 25) {
+                        deliver(err("login_timeout", "Portal login form nahi khula — dobara try karein."));
+                    } else {
+                        h.postDelayed(tickRun, 1800);
+                    }
                     return;
                 }
                 if ("CAPWAIT".equals(t)) {
-                    // Form mil gaya hai, par captcha image abhi load ho rahi hai — turant fail mat karo
                     if (tries >= 18) {
-                        deliver(err("captcha_missing", "Login page par captcha image load nahi hui — dobara 🔄 Re-Fetch dabayein."));
+                        deliver(err("captcha_missing", "Login page par captcha image load nahi hui — dobara Re-Fetch dabayein."));
                         return;
                     }
                     h.postDelayed(tickRun, 1400);
@@ -245,7 +277,7 @@ public class PhoneLogin {
                 }
                 if ("IN".equals(t)) {
                     lastLoggedInUser = username;
-                    try { CookieManager.getInstance().flush(); } catch (Throwable ignored) { }
+                    try { cookieManagerForSlot(slot).flush(); } catch (Throwable ignored) { }
                     deliver(ok("loggedIn"));
                     return;
                 }
@@ -255,10 +287,10 @@ public class PhoneLogin {
                     return;
                 }
                 if ("WRONGCAP".equals(t)) {
-                    // captcha galat -> bina reload page se naya captcha image grab karke client ko bhejo
                     wrongCapPending = true;
                     phase = PHASE_FIND_CAPTCHA;
                     tries = 0;
+                    stage = "reload-captcha";
                     h.postDelayed(tickRun, 1200);
                     return;
                 }
@@ -276,8 +308,7 @@ public class PhoneLogin {
                 if (tries >= 45) {
                     deliver(err("login_timeout",
                             "Phone login: portal ne form/Dashboard nahi diya (aakhri: "
-                                    + (raw.length() > 140 ? raw.substring(0, 140) : raw)
-                                    + "). Dobara try karein ya ☁️ Cloud mode use karein."));
+                                    + (raw.length() > 140 ? raw.substring(0, 140) : raw) + "). Dobara try karein."));
                     return;
                 }
                 h.postDelayed(tickRun, 1600);
@@ -285,13 +316,11 @@ public class PhoneLogin {
         }
     };
 
-    // ======================= captcha image =======================
-
     private void grabCaptcha() {
         stage = "captcha-image";
         final String src = captchaSrc == null ? "" : captchaSrc.trim();
         if (src.isEmpty()) {
-            deliver(err("captcha_missing", "Login page par captcha nahi mila — ☁️ Cloud mode try karein."));
+            deliver(err("captcha_missing", "Login page par captcha nahi mila — dobara Re-Fetch dabayein."));
             return;
         }
         if (src.startsWith("data:")) {
@@ -304,11 +333,13 @@ public class PhoneLogin {
             return;
         }
         final String url = src.startsWith("http") ? src : "https://services.gst.gov.in" + (src.startsWith("/") ? "" : "/") + src;
+        String cookie = "";
+        try { cookie = cookieManagerForSlot(slot).getCookie(url); } catch (Throwable ignored) { }
+        final String ck = cookie;
         new Thread(() -> {
             HttpURLConnection c = null;
             try {
                 c = (HttpURLConnection) new URL(url).openConnection();
-                String ck = CookieManager.getInstance().getCookie(url);
                 if (ck != null && !ck.isEmpty()) c.setRequestProperty("Cookie", ck);
                 c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
                 c.setRequestProperty("Referer", LOGIN_URL);
@@ -316,7 +347,7 @@ public class PhoneLogin {
                 c.setReadTimeout(15000);
                 int code = c.getResponseCode();
                 if (code != 200) {
-                    h.post(() -> deliver(err("captcha_failed", "Captcha image HTTP " + code + " — ☁️ Cloud mode try karein.")));
+                    h.post(() -> deliver(err("captcha_failed", "Captcha image HTTP " + code + " — dobara try karein.")));
                     return;
                 }
                 byte[] b;
@@ -340,8 +371,6 @@ public class PhoneLogin {
         }).start();
     }
 
-    // ======================= actions =======================
-
     public void submitCaptcha(String captcha) {
         stage = "submit-captcha";
         if (wv == null || finished) return;
@@ -352,31 +381,35 @@ public class PhoneLogin {
         h.removeCallbacks(tickRun);
         h.removeCallbacks(timeoutRun);
         h.postDelayed(timeoutRun, 150000);
+
         String js = "(function(){try{"
                 + "function set(el,v){if(!el)return false;try{var d=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');"
                 + "d.set.call(el,v);}catch(e){el.value=v;}"
-                + "el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return true;}"
+                + "el.dispatchEvent(new Event('input',{bubbles:true}));"
+                + "el.dispatchEvent(new Event('change',{bubbles:true}));"
+                + "el.dispatchEvent(new Event('blur',{bubbles:true}));return true;}"
                 + "function byId(ids){for(var i=0;i<ids.length;i++){var e=document.getElementById(ids[i]);if(e)return e;}return null;}"
                 + "var u=byId(['username','user_name','userid','login_name','userId'])||document.querySelector('input[name*=user i],input[id*=user i]');"
                 + "var p=byId(['user_pass','password','pwd','userPassword_u'])||document.querySelector('input[type=password]');"
                 + "var cp=byId(['captcha','captcha_code','captchacode','imgCaptchaText','captchaText'])"
                 + "||document.querySelector('input[name*=captcha i],input[id*=captcha i]');"
                 + "set(u," + JSONObject.quote(username) + ");set(p," + JSONObject.quote(password) + ");set(cp," + JSONObject.quote(captcha) + ");"
-                + "var btns=[].slice.call(document.querySelectorAll('button,input[type=submit],a.btn'));"
-                + "for(var i=0;i<btns.length;i++){var t=((btns[i].innerText||btns[i].value||'')+'').toUpperCase();"
-                + "if(t.indexOf('LOGIN')>=0||t.indexOf('SIGN IN')>=0){btns[i].click();return 'CLICKED';}}"
+                + "var btns=(p&&p.form?p.form:document).querySelectorAll('button[type=submit],input[type=submit]');"
+                + "for(var i=0;i<btns.length;i++){if(/LOGIN|SIGN/i.test(btns[i].innerText||btns[i].value||'')){btns[i].click();return 'OK';}}"
+                + "if(btns[0]){btns[0].click();return 'OK';}"
+                + "var allBtns=[].slice.call(document.querySelectorAll('button,input[type=submit],a.btn'));"
+                + "for(var j=0;j<allBtns.length;j++){if(/LOGIN|SIGN IN/i.test(allBtns[j].innerText||allBtns[j].value||'')){allBtns[j].click();return 'CLICKED';}}"
                 + "var f=p&&p.form;if(f&&f.submit){f.submit();return 'SUBMITTED';}"
                 + "return 'NOTFOUND';}catch(e){return 'ERR';}})()";
         wv.evaluateJavascript(js, value -> {
-            Log.i(TAG, "submitCaptcha -> " + value);
-            // Bina wv.reload() ke form POST/navigation complete hone dein, phir result poll karein
+            Log.i(TAG, "slot=" + slot + " submitCaptcha -> " + value);
             h.postDelayed(() -> {
                 if (!finished && !awaitingUserInput) {
                     phase = PHASE_AFTER_SUBMIT;
                     tries = 0;
                     tickRun.run();
                 }
-            }, 1800);
+            }, 2200);
         });
     }
 
@@ -389,6 +422,7 @@ public class PhoneLogin {
         h.removeCallbacks(tickRun);
         h.removeCallbacks(timeoutRun);
         h.postDelayed(timeoutRun, 150000);
+
         String js = "(function(){try{"
                 + "var el=document.querySelector('input[name*=otp i],input[id*=otp i],input[type=tel]')"
                 + "||document.querySelector('input[placeholder*=OTP i]');"
@@ -405,46 +439,37 @@ public class PhoneLogin {
                 tries = 0;
                 tickRun.run();
             }
-        }, 1800));
+        }, 2400));
     }
-
-    // ======================= page scripts =======================
 
     private String buildFindCaptchaScript() {
         return "(function(){try{"
-                + "function vis(e){try{return !!(e&&(e.offsetParent!==null||(e.getClientRects&&e.getClientRects().length)));}catch(x){return false;}}"
-                + "function txt(e){return String((e&&(e.innerText||e.textContent))||'').replace(/\\s+/g,' ').trim();}"
-                + "function imgToDataUrl(im){try{"
-                + "if(!im)return '';"
-                + "if(im.tagName==='CANVAS')return im.toDataURL('image/png');"
-                + "if(!im.complete||!im.naturalWidth||!im.naturalHeight)return '';"
-                + "var cv=document.createElement('canvas');cv.width=im.naturalWidth;cv.height=im.naturalHeight;"
-                + "cv.getContext('2d').drawImage(im,0,0);return cv.toDataURL('image/png');"
-                + "}catch(e){return (im&&im.src)?im.src:'';}}"
-                + "var body=txt(document.body||document.documentElement);"
-                + "var inputs=[].slice.call(document.querySelectorAll('input'));"
-                + "var pw=null,user=null,capField=null;"
-                + "for(var i=0;i<inputs.length;i++){var el=inputs[i];var sig=((el.type||'')+' '+(el.id||'')+' '+(el.name||'')+' '+(el.placeholder||'')).toLowerCase();"
-                + "if(!capField&&/captcha/.test(sig)) capField=el;"
-                + "else if(!pw&&((el.type||'')==='password'||/pass|pwd/.test(sig))) pw=el;"
-                + "else if(!user&&/user|login|gstin|id/.test(sig)&&(el.type||'text')!=='hidden') user=el;}"
-                + "var imgs=[].slice.call(document.querySelectorAll('img,canvas'));"
-                + "var capSrc='';"
-                + "for(var j=0;j<imgs.length;j++){var im=imgs[j];"
-                + "if(im.tagName==='CANVAS'){var c1=imgToDataUrl(im);if(c1){capSrc=c1;break;}continue;}"
-                + "var id=((im.id||'')+' '+(im.name||'')+' '+(im.className||'')+' '+(im.src||'')+' '+(im.alt||'')).toLowerCase();"
-                + "if(/captcha/.test(id)){capSrc=imgToDataUrl(im);if(capSrc)break;}}"
-                + "if(!capSrc&&capField){var box=capField.closest?capField.closest('div,td,li,section,form'):null;if(box){var bi=[].slice.call(box.querySelectorAll('img,canvas'));"
-                + "for(var k=0;k<bi.length;k++){var c2=imgToDataUrl(bi[k]);if(c2){capSrc=c2;break;}}}}"
-                + "if(pw&&capSrc) return JSON.stringify({t:'CAPTCHA',src:capSrc});"
-                + "if(pw&&!capSrc) return JSON.stringify({t:'CAPWAIT'});"
-                + "if(!pw&&/dashboard|logout|sign out|return dashboard/i.test(body)) return JSON.stringify({t:'IN'});"
-                // login page par ho par form na mile -> "LOGIN/PROCEED/CONTINUE" dabao
-                + "var btns=[].slice.call(document.querySelectorAll('button,a,input[type=button],input[type=submit]'));"
-                + "for(var m=0;m<btns.length;m++){var b=btns[m];if(!vis(b))continue;var bt=txt(b).toUpperCase();"
-                + "if(/^(LOGIN|LOG IN|SIGN IN|PROCEED|CONTINUE|CLICK HERE)/.test(bt)){try{b.click();}catch(e){}return JSON.stringify({t:'CLICKLOGIN'});}}"
-                + "return JSON.stringify({t:'WAIT',u:String(location.href||'').slice(0,120),inputs:inputs.length,imgs:imgs.length,"
-                + "pw:!!pw,user:!!user,cap:!!capSrc,b:body.slice(0,120)});"
+                + "function vis(e){return !!(e&&e.offsetParent!==null);}"
+                + "var D=document,Q=function(s,r){return [].slice.call((r||D).querySelectorAll(s));},"
+                + "T=function(e){return String((e&&(e.innerText||e.textContent))||'').replace(/\\s+/g,' ').trim();},"
+                + "imgToDataUrl=function(m){try{if(!m)return '';if(m.tagName==='CANVAS')return m.toDataURL('image/png');"
+                + "if(!m.complete||!m.naturalWidth)return '';var c=D.createElement('canvas');c.width=m.naturalWidth;c.height=m.naturalHeight;"
+                + "c.getContext('2d').drawImage(m,0,0);return c.toDataURL('image/png');}catch(e){return (m&&m.src&&m.complete&&m.naturalWidth)?m.src:'';}},"
+                + "F=function(e,v){try{e.focus();var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');"
+                + "if(d&&d.set)d.set.call(e,v);else e.value=v;"
+                + "['input','keyup','change','blur'].forEach(function(n){e.dispatchEvent(new Event(n,{bubbles:true}));});"
+                + "try{if(window.angular){var s=angular.element(e).scope();if(s&&s.$apply)s.$apply();}}catch(a){}}catch(x){}};"
+                + "var B=T(D.body||D.documentElement),pw=null,u=null,cf=null;"
+                + "Q('input').forEach(function(e){var g=((e.type||'')+' '+(e.id||'')+' '+(e.name||'')+' '+(e.placeholder||'')).toLowerCase();"
+                + "if(!cf&&/captcha/.test(g))cf=e;else if(!pw&&(e.type==='password'||/pass|pwd/.test(g)))pw=e;"
+                + "else if(!u&&/user|login|gstin|id/.test(g)&&(e.type||'text')!=='hidden')u=e;});"
+                + "var cs='',di=D.getElementById('imgCaptcha')||D.querySelector('img[src*=captcha i],img[id*=captcha i]');"
+                + "if(di)cs=imgToDataUrl(di);"
+                + "if(!cs){Q('img,canvas').some(function(m){var id=((m.id||'')+' '+(m.src||'')+' '+(m.className||'')).toLowerCase();"
+                + "if(m.tagName==='CANVAS'||/captcha/.test(id)){cs=imgToDataUrl(m);return !!cs;}return false;});}"
+                + "if(!cs&&cf){var bx=cf.closest&&cf.closest('div,td,li,section,form');if(bx)Q('img,canvas',bx).some(function(m){cs=imgToDataUrl(m);return !!cs;});}"
+                + "if(pw&&cs)return JSON.stringify({t:'CAPTCHA',src:cs});"
+                + "if(pw&&!cs){if(u&&!window.__cgCapTrig){window.__cgCapTrig=1;F(u,'gstuser');try{pw.focus();pw.click();}catch(e){}}return JSON.stringify({t:'CAPWAIT'});}"
+                + "if(!pw&&/dashboard|logout|sign out|return dashboard/i.test(B))return JSON.stringify({t:'IN'});"
+                + "var hit=Q('button,a,input[type=button],input[type=submit]').some(function(b){if(!vis(b))return false;"
+                + "if(/^(LOGIN|LOG IN|SIGN IN|PROCEED|CONTINUE|CLICK HERE)/.test(T(b).toUpperCase())){try{b.click();}catch(e){}return true;}return false;});"
+                + "if(hit)return JSON.stringify({t:'CLICKLOGIN'});"
+                + "return JSON.stringify({t:'WAIT',u:String(location.href||'').slice(0,90),pw:!!pw,user:!!u,cap:!!cs});"
                 + "}catch(e){return JSON.stringify({t:'ERR',m:String((e&&e.message)||e)});}})()";
     }
 
@@ -462,8 +487,6 @@ public class PhoneLogin {
                 + "return JSON.stringify({t:'WAIT',u:String(location.href||'')});"
                 + "}catch(e){return JSON.stringify({t:'WAIT'});}})()";
     }
-
-    // ======================= helpers =======================
 
     private String ok(String kind) {
         JSONObject p = new JSONObject();
@@ -510,16 +533,16 @@ public class PhoneLogin {
         return p.toString();
     }
 
-    /** Intermediate step (captcha / otpRequired / captcha_wrong) — finished false hi rehta hai taaki submitCaptcha/submitOtp chalein. */
     private void emitStep(final String payload) {
         if (finished) return;
         awaitingUserInput = true;
         stage = "await-user";
         h.removeCallbacks(tickRun);
         h.removeCallbacks(timeoutRun);
+        final String rid = reqId;
         h.post(() -> {
             try {
-                if (cb != null) cb.done(payload);
+                if (cb != null) cb.done(rid, payload);
             } catch (Exception e) {
                 Log.w(TAG, "callback fail", e);
             }
@@ -533,16 +556,16 @@ public class PhoneLogin {
         stage = "done";
         h.removeCallbacks(tickRun);
         h.removeCallbacks(timeoutRun);
+        final String rid = reqId;
         h.post(() -> {
             try {
-                if (cb != null) cb.done(payload);
+                if (cb != null) cb.done(rid, payload);
             } catch (Exception e) {
                 Log.w(TAG, "callback fail", e);
             }
         });
     }
 
-    /** true = login chal raha hai (naya start rokne ke liye); user input ke intezar par false taaki doosra start/retry ho sake. */
     public boolean isBusy() {
         return !finished && !awaitingUserInput && wv != null && phase != PHASE_IDLE;
     }

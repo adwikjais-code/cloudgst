@@ -703,7 +703,7 @@
         } catch (_) {}
         try {
           const _bb = document.getElementById("gpBridgeOfflineBanner");
-          if (_bb) _bb.classList.toggle("hidden", !gpBridgeOffline);
+          if (_bb) _bb.classList.add("hidden");
           const _bs = document.getElementById("gpBridgeOfflineSub");
           if (_bs && gpBridgeOffline) _bs.textContent = "Bridge server jawab nahi de raha (" + (gpGetBridgeUrl() || "URL set nahi") + ") — app apne aap dobara try karta rahega.";
         } catch (_) {}
@@ -1234,7 +1234,12 @@
         const st = gpGetState(clientKey);
         st.pendingAction = actionMode || "FETCH";
         if (gpPhoneModeNow() && gpPhoneLoginAvailable()) {
-          // 📱 Phone mode = cloud jaisa: login chhupe WebView me, captcha app me, phir background fetch
+          const slot = gpAllocPhoneSlot(clientKey);
+          if (slot < 0) {
+            return gpToast("⏳ Sabhi " + gpPhoneMaxSlots() + " tabs busy hain — ek finish hote hi agla chalega.");
+          }
+          st.phoneSlot = slot;
+          // 📱 Phone mode (Multi-Profile): har client ko apna alag hidden WebView tab (0..4)
           st.sessionId = "PHONE";
           st.captchaBase64 = "";
           st.note = "";
@@ -1243,7 +1248,7 @@
           gpRenderSerialList();
           gpPhoneDbg("login start: " + (c.clientName || "") + " (" + (c.gstin || c.portalId || "") + ")");
           try {
-            const pres = await gpPhoneLoginStart(c, (pwCheck && pwCheck.pw) || "");
+            const pres = await gpPhoneLoginStart(c, (pwCheck && pwCheck.pw) || "", st.phoneSlot || 0, st);
             gpPhoneDbg("login reply: " + JSON.stringify(pres).slice(0, 200));
             if (pres && pres.loggedIn) {          // session pehle se zinda hai -> seedha fetch
               st.phase = "idle";
@@ -1252,8 +1257,12 @@
             }
             st.captchaBase64 = (pres && pres.captchaBase64) || "";
             st.phase = st.captchaBase64 ? "captcha" : "error";
-            if (!st.captchaBase64) st.note = "Phone login: captcha nahi mila";
+            if (!st.captchaBase64) {
+              st.note = "Phone login: captcha nahi mila";
+              gpFreePhoneSlot(clientKey);
+            }
           } catch (e) {
+            gpFreePhoneSlot(clientKey);
             st.phase = "error";
             st.note = e.message;
             gpErrLogAdd(clientKey, e.message);
@@ -1338,7 +1347,141 @@
             }
           }
           if (_phoneMode) {
-            return gpPhoneFetch2b(fy, (typeof gpGetSelectedMonthDisplay === "function" ? gpGetSelectedMonthDisplay() : ""));
+            const monDisp = (typeof gpGetSelectedMonthDisplay === "function" ? gpGetSelectedMonthDisplay() : "");
+            const parseTcsFromPhone = (tcsResp) => {
+              const outTcs = { rows: [], totalGrossTaxable: 0, totalReturned: 0, totalNetValue: 0, totalTcs: 0, mode: "none" };
+              try {
+                const b64 = tcsResp && tcsResp.gstr2b && tcsResp.gstr2b.jsonBase64;
+                if (!b64) return outTcs;
+                const rawObj = JSON.parse(decodeURIComponent(escape(atob(b64))));
+                const GSTIN_RE = /^[0-9]{2}[A-Z0-9]{13}$/i;
+                const parseAmt = (v) => {
+                  let s = String(v == null ? "" : v).replace(/[₹,\s]/g, "");
+                  let neg = false;
+                  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+                  if (s.startsWith("-")) { neg = true; s = s.slice(1); }
+                  if (!/^\d+(\.\d+)?$/.test(s)) return NaN;
+                  const n = parseFloat(s);
+                  return neg ? -n : n;
+                };
+                const amt0 = (v) => { const n = parseAmt(v); return isNaN(n) ? 0 : n; };
+                const looksLikePeriod = (v) => { const s = String(v).trim(); return /^\d{6}$/.test(s) || /^\d{2}[-\/]\d{4}$/.test(s) || /^[A-Za-z]{3,9}[-\s,]*\d{2,4}$/.test(s); };
+                const buildColumnLabels = (head) => {
+                  const labels = [], occupied = [];
+                  (head || []).forEach((row, r) => {
+                    occupied[r] = occupied[r] || {};
+                    let c = 0;
+                    row.forEach(cell => {
+                      while (occupied[r][c]) c++;
+                      const cs = cell.cs || 1, rs = cell.rs || 1;
+                      for (let i = 0; i < cs; i++) {
+                        labels[c + i] = ((labels[c + i] || "") + " " + (cell.t || "")).trim();
+                        for (let j = 1; j < rs; j++) { occupied[r + j] = occupied[r + j] || {}; occupied[r + j][c + i] = true; }
+                      }
+                      c += cs;
+                    });
+                  });
+                  return labels.map(l => String(l || "").toLowerCase());
+                };
+                const mapTcsColumns = (labels) => {
+                  const find = (re, ex) => labels.findIndex((l, i) => re.test(l) && !(ex || []).includes(i));
+                  const gstin = find(/gstin|gstn|\buin\b/), name = find(/name/, [gstin]), gross = find(/gross/);
+                  const ret = find(/return(?!\s*period)/, [gross]), net = find(/\bnet\b/, [gross, ret]);
+                  const igst = find(/integrated|igst/), cgst = find(/central|cgst/), sgst = find(/state|sgst|utgst/);
+                  const period = find(/period/, [gross, ret, net]);
+                  return { gstin, name, gross, ret, net, igst, cgst, sgst, period };
+                };
+                const tables = Array.isArray(rawObj.tables) ? rawObj.tables : [];
+                outTcs._dbg = "tbl:" + tables.length + " | " + String(rawObj.b || "").slice(0, 80);
+                for (const tbl of tables) {
+                  const body = (tbl.body || []).filter(r => r.some(v => GSTIN_RE.test(String(v).trim())));
+                  if (!body.length) continue;
+                  const labels = buildColumnLabels(tbl.head);
+                  const m = mapTcsColumns(labels);
+                  const headerOk = m.gstin >= 0 && m.gross >= 0 && body.every(r => r.length === labels.length);
+                  if (headerOk) {
+                    outTcs.mode = outTcs.mode === "fallback" ? "fallback" : "header";
+                    for (const r of body) {
+                      const gstin = String(r[m.gstin] || "").trim();
+                      if (!GSTIN_RE.test(gstin)) continue;
+                      const gross = amt0(r[m.gross]), returned = m.ret >= 0 ? amt0(r[m.ret]) : 0;
+                      const net = m.net >= 0 ? amt0(r[m.net]) : (m.ret >= 0 ? gross - returned : gross);
+                      outTcs.rows.push({
+                        ecoGstin: gstin.toUpperCase(),
+                        ecoName: (m.name >= 0 && String(r[m.name] || "").trim()) || "E-Commerce Operator",
+                        taxPeriod: m.period >= 0 ? String(r[m.period] || "").trim() : "",
+                        grossTaxableAmount: gross, returnedValue: returned, netValueSupplies: net,
+                        tcsIgst: m.igst >= 0 ? amt0(r[m.igst]) : 0,
+                        tcsCgst: m.cgst >= 0 ? amt0(r[m.cgst]) : 0,
+                        tcsSgst: m.sgst >= 0 ? amt0(r[m.sgst]) : 0
+                      });
+                    }
+                  } else {
+                    outTcs.mode = "fallback";
+                    for (const r of body) {
+                      const gi = r.findIndex(v => GSTIN_RE.test(String(v).trim()));
+                      const gstin = String(r[gi]).trim();
+                      const name = r.find((v, i) => i !== gi && isNaN(parseAmt(v)) && !looksLikePeriod(v) && String(v).trim().length > 2) || "E-Commerce Operator";
+                      const a = r.slice(gi + 1).filter(v => !/^\d{6}$/.test(String(v).trim()) && !looksLikePeriod(v)).map(parseAmt).filter(n => !isNaN(n));
+                      let gross = a[0] || 0, returned = 0, net, igst, cgst, sgst;
+                      if (a.length >= 6) { returned = a[1]; net = a[2]; igst = a[3]; cgst = a[4]; sgst = a[5]; }
+                      else { net = a.length > 1 ? a[1] : gross; igst = a[2] || 0; cgst = a[3] || 0; sgst = a[4] || 0; }
+                      outTcs.rows.push({ ecoGstin: gstin.toUpperCase(), ecoName: name, grossTaxableAmount: gross, returnedValue: returned, netValueSupplies: net, tcsIgst: igst || 0, tcsCgst: cgst || 0, tcsSgst: sgst || 0 });
+                    }
+                  }
+                }
+                if (!outTcs.rows.length && rawObj.b) {
+                  const txt = String(rawObj.b || "");
+                  const ms = Array.from(txt.matchAll(/\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3})\b/gi));
+                  for (let i = 0; i < ms.length; i++) {
+                    const gstin = ms[i][1].toUpperCase();
+                    const ch = txt.slice(ms[i].index + 15, i + 1 < ms.length ? ms[i + 1].index : txt.length).split(/\b(?:BACK|REJECT|ACCEPT|Total)\b/i)[0].trim();
+                    const nm = Array.from(ch.matchAll(/\b\d{1,3}(?:,\d{2,3})*\.\d{2}\b/g)).map(x => parseFloat(x[0].replace(/,/g, "")));
+                    const ecoName = (ch.split(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[-\s]20\d{2}\b|\b\d{1,3}(?:,\d{2,3})*\.\d{2}\b/i)[0] || "").replace(/\s+/g, " ").trim() || "E-Commerce Operator";
+                    let gross = nm[0] || 0, ret = 0, net = gross, igst = 0, cgst = 0, sgst = 0;
+                    if (nm.length >= 6) { ret = nm[1]; net = nm[2]; igst = nm[3]; cgst = nm[4]; sgst = nm[5]; }
+                    else if (nm.length >= 4) { net = nm[1]; igst = nm[2]; cgst = nm[3]; sgst = nm[4] || 0; }
+                    outTcs.rows.push({ ecoGstin: gstin, ecoName, grossTaxableAmount: gross, returnedValue: ret, netValueSupplies: net, tcsIgst: igst, tcsCgst: cgst, tcsSgst: sgst });
+                  }
+                }
+                outTcs.totalGrossTaxable = outTcs.rows.reduce((s, r) => s + (r.grossTaxableAmount || 0), 0);
+                outTcs.totalReturned = outTcs.rows.reduce((s, r) => s + (r.returnedValue || 0), 0);
+                outTcs.totalNetValue = outTcs.rows.reduce((s, r) => s + (r.netValueSupplies || 0), 0);
+                outTcs.totalTcs = outTcs.rows.reduce((s, r) => s + (r.tcsIgst || 0) + (r.tcsCgst || 0) + (r.tcsSgst || 0), 0);
+              } catch (e) { gpPhoneDbg("tcs parse err: " + (e && e.message)); }
+              return outTcs;
+            };
+            let res2b = null;
+            if (options.gstr2b) {
+              res2b = await gpPhoneFetch2b(fy, monDisp, st.phoneSlot || 0);
+            } else {
+              res2b = { ok: true, source: "phone", fy, month, gstr2b: { summary: null }, status: { gstr2b: { state: "skipped" } }, warnings: [] };
+            }
+            res2b.fy = res2b.fy || fy;
+            res2b.month = res2b.month || month;
+            res2b.status = res2b.status || {};
+            if (options.tcs) {
+              st.progressText = "🛍 Phone se E-Commerce / TCS la rahe hain…";
+              gpRenderSerialList();
+              try {
+                const tcsRaw = await gpPhoneFetch2b("TCS|" + fy, monDisp, st.phoneSlot || 0);
+                const parsedTcs = parseTcsFromPhone(tcsRaw);
+                res2b.ecommerceTcs = parsedTcs;
+                res2b.status.tcs = { state: parsedTcs.rows.length ? "ok" : "empty", message: parsedTcs.rows.length ? (parsedTcs.rows.length + " ECO row mili") : "Is month koi TCS record nahi hai." };
+                if (!parsedTcs.rows.length && parsedTcs._dbg) {
+                  res2b.partial = { tcs: false, text: "TCS 0 rows (" + parsedTcs._dbg + ")" };
+                }
+              } catch (te) {
+                gpPhoneDbg("tcs fetch err: " + (te && te.message));
+                if (te && te.code === "login_required") throw te;
+                if (!options.gstr2b) throw te;
+                res2b.status.tcs = { state: "failed", message: (te && te.message) || "TCS fetch fail" };
+                res2b.partial = { tcs: true, text: "E-Com/TCS fetch nahi ho paya: " + ((te && te.message) || "") };
+              }
+            } else {
+              res2b.status.tcs = { state: "skipped", message: "Option off tha." };
+            }
+            return res2b;
           }
           const initial = await gpCallBridge("/api/gst/fetch-all", { sessionId: st.sessionId, fy, month, autoClose: true, options, async: true }, {
             signal: ctrl.signal, timeoutMs: 900000, retry: false,
@@ -1421,6 +1564,7 @@
             st.progressText = "";
             st.abort = null;
             gpActiveFetches = Math.max(0, gpActiveFetches - 1);
+            gpFreePhoneSlot(c.clientKey);
             gpRenderSerialList();
           });
       }
@@ -1618,9 +1762,9 @@
             if (!mj || mj.uploaded || (mj.fp && mj.fp !== wantFp)) continue;
           }
           const isCloud = !gpGetBridgeUrl().includes("localhost") && !gpGetBridgeUrl().includes("127.0.0.1");
-          // 📱 Phone mode: ek hi chhupa WebView — isliye ek ke baad ek (serial), parallel nahi
+          // 📱 Phone mode: Multi-Profile par 5 parallel isolated tabs!
           const isPhone = (typeof gpPhoneModeNow === "function") && gpPhoneModeNow();
-          const maxPar = isPhone ? 1 : 2;
+          const maxPar = isPhone ? gpPhoneMaxSlots() : 2;
           if ((isPhone || isCloud) && gpActiveFetches >= maxPar) {
             const waitSlot = () => {
               if (gpActiveFetches < maxPar) gpLoadCaptchaForClient(nxt.clientKey, actionMode || "FETCH");
@@ -1657,7 +1801,7 @@
           if (gpPhoneModeNow() && gpPhoneLoginAvailable()) {
             // 📱 Phone mode: captcha chhupe WebView ke login page me jata hai (cloud ki zaroorat nahi)
             try {
-              const pres = await gpPhoneLoginCaptcha(cap);
+              const pres = await gpPhoneLoginCaptcha(cap, st.phoneSlot || 0, st);
               st._capDraft = "";
               if (pres && pres.otpRequired) {
                 st.phase = "otp";
@@ -1676,6 +1820,7 @@
                 st.phase = "captcha";
                 st.note = "";
               } else {
+                gpFreePhoneSlot(clientKey);
                 st.phase = "error";
                 st.note = e.message;
                 gpErrLogAdd(clientKey, e.message);
@@ -1740,13 +1885,14 @@
         try {
           if (gpPhoneModeNow() && gpPhoneLoginAvailable()) {
             try {
-              await gpPhoneLoginOtp(otp);
+              await gpPhoneLoginOtp(otp, st.phoneSlot || 0, st);
               st.phase = "idle";
               st.note = "";
               gpRenderSerialList();
               gpTriggerFetchInBackground(c, st);
               gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
             } catch (e) {
+              gpFreePhoneSlot(clientKey);
               st.phase = "error";
               st.note = e.message;
               gpRenderSerialList(clientKey);
@@ -1993,17 +2139,10 @@
       function gpPhoneAvailable() {
         try { return !!(window.CloudGSTNative && CloudGSTNative.phoneFetch2b); } catch (_) { return false; }
       }
-      // v5.9.13: ek baar sabko cloud par le aao (phone beta me atke na rahein)
-      try {
-        if (!localStorage.getItem("gst_src_reset_v13")) {
-          localStorage.setItem("gst_src_reset_v13", "1");
-          localStorage.setItem("gst_data_source_v1", "cloud");
-        }
-      } catch (_) { }
-
+      // Phone-Only mode: Cloud mode hata diya gaya hai, hamesha phone mode active rahega
+      try { localStorage.setItem("gst_data_source_v1", "phone"); } catch (_) {}
       function gpDataSource() {
-        try { const v = localStorage.getItem(GP_SRC_KEY); if (v === "cloud" || v === "phone") return v; } catch (_) {}
-        return "cloud";   // default cloud (jo pehle se chal raha hai); phone mode = beta, switch se on
+        return "phone";
       }
       // 📱 Phone-mode debug log (ek tap me copy karke bhej sakte hain)
       const GP_DBG_KEY = "gst_phone_debug_v1";
@@ -2039,13 +2178,10 @@
       }
       window.gpPhoneDebugCopy = gpPhoneDebugCopy;
       window.__gpPhoneDebugText = gpPhoneDebugText;
-      function gpSetDataSource(v) {
-        const val = v === "cloud" ? "cloud" : "phone";
-        try { localStorage.setItem(GP_SRC_KEY, val); } catch (_) {}
+      function gpSetDataSource() {
+        try { localStorage.setItem(GP_SRC_KEY, "phone"); } catch (_) {}
         if (window.__gpPaintSrcSwitch) window.__gpPaintSrcSwitch();
-        gpToast(val === "phone"
-          ? "📱 Phone mode: data seedha phone se (cloud nahi) — login chhupe me chalta hai"
-          : "☁️ Cloud mode: Railway bridge se data (phone band kar sakte hain)");
+        gpToast("📱 Phone Mode active — saara fetch phone ke andar chhup kar hota hai");
       }
       function gpPhoneModeNow() { return gpDataSource() === "phone" && gpPhoneAvailable(); }
       function gpPhoneLoginClient(v) {
@@ -2066,6 +2202,34 @@
       window.__gpPhoneLoginOtp = (otp) => gpPhoneLoginOtp(otp);
       window.__gpPhoneLoginAvailable = gpPhoneLoginAvailable;
 
+      // ===== 5-Tab Parallel Multi-Profile Slot Pool =====
+      function gpPhoneMaxSlots() {
+        try {
+          if (window.CloudGSTNative && CloudGSTNative.phoneMaxParallel) {
+            return Math.max(1, Math.min(5, Number(CloudGSTNative.phoneMaxParallel()) || 1));
+          }
+        } catch (_) {}
+        return 1;
+      }
+      const gpSlotOwners = new Map(); // slotIdx -> clientKey
+      function gpAllocPhoneSlot(clientKey) {
+        const maxS = gpPhoneMaxSlots();
+        for (const [s, k] of gpSlotOwners.entries()) {
+          if (k === clientKey) return s;
+        }
+        for (let s = 0; s < maxS; s++) {
+          if (!gpSlotOwners.has(s)) {
+            gpSlotOwners.set(s, clientKey);
+            return s;
+          }
+        }
+        return -1;
+      }
+      function gpFreePhoneSlot(clientKey) {
+        for (const [s, k] of Array.from(gpSlotOwners.entries())) {
+          if (k === clientKey) gpSlotOwners.delete(s);
+        }
+      }
       function gpPhoneLoginAvailable() {
         try { return !!(window.CloudGSTNative && CloudGSTNative.phoneLoginStart); } catch (_) { return false; }
       }
@@ -2132,93 +2296,97 @@
         });
       }
 
-      function gpPhoneLoginStart(c, pw) {
+      function gpPhoneLoginStart(c, pw, slot, stRef) {
         return new Promise((resolve, reject) => {
-          if (!gpPhoneLoginAvailable()) return reject(new Error("Phone login is app me nahi hai — app update karein (ya ☁️ Cloud mode)."));
+          if (!gpPhoneLoginAvailable()) return reject(new Error("Phone login is app me nahi hai."));
+          const s = Number(slot) || 0;
           let id = "";
-          try { id = String(window.CloudGSTNative.phoneLoginStart(String(c.portalId || "").trim(), String(pw || "")) || ""); } catch (e) { id = ""; }
+          try {
+            id = String(window.CloudGSTNative.phoneLoginStartSlot
+              ? window.CloudGSTNative.phoneLoginStartSlot(s, String(c.portalId || "").trim(), String(pw || ""))
+              : window.CloudGSTNative.phoneLoginStart(String(c.portalId || "").trim(), String(pw || "")) || "");
+          } catch (e) { id = ""; }
           if (!id) return reject(new Error("Phone login start nahi ho paya."));
           gpPhoneLoginId = id;
-          const onStage = (stage) => {
-            // 100% hidden phone mode: portal overlay kabhi screen par nahi khulega
-            if (stage) gpPhoneDbg("stage: " + stage);
-          };
-          gpNativePoll(id, "Phone login", 320000, onStage).then((r) => {
-            try { window.CloudGSTNative.phoneLoginVisible(false); } catch (_) {}
-            resolve(r);
-          }, (e) => {
-            try { window.CloudGSTNative.phoneLoginVisible(false); } catch (_) {}
-            reject(e);
-          });
+          if (stRef) stRef._phoneLoginId = id;
+          const onStage = (stage) => { if (stage) gpPhoneDbg("T" + (s + 1) + " " + stage); };
+          gpNativePoll(id, "Phone login (Tab " + (s + 1) + ")", 320000, onStage).then(resolve, reject);
         });
       }
-      function gpPhoneLoginCaptcha(cap) {
+      function gpPhoneLoginCaptcha(cap, slot, stRef) {
         return new Promise((resolve, reject) => {
-          if (!gpPhoneLoginId) return reject(new Error("Pehle phone login start karein."));
+          const s = Number(slot) || 0;
+          const reqId = (stRef && stRef._phoneLoginId) || gpPhoneLoginId;
+          if (!reqId) return reject(new Error("Pehle phone login start karein."));
           try {
-            if (window.CloudGSTNative.clearPhonePayload) window.CloudGSTNative.clearPhonePayload(gpPhoneLoginId);
-            window.CloudGSTNative.phoneLoginCaptcha(String(cap || ""));
-          }
-          catch (e) { return reject(new Error("Captcha bhej nahi paye: " + (e.message || e))); }
-          gpPhoneDbg("captcha submit: " + String(cap).slice(0, 12));
-          gpNativePoll(gpPhoneLoginId, "Phone login (captcha)", 320000).then(resolve, reject);
+            if (window.CloudGSTNative.clearPhonePayload) window.CloudGSTNative.clearPhonePayload(reqId);
+            if (window.CloudGSTNative.phoneLoginCaptchaSlot) window.CloudGSTNative.phoneLoginCaptchaSlot(s, String(cap || ""));
+            else window.CloudGSTNative.phoneLoginCaptcha(String(cap || ""));
+          } catch (e) { return reject(new Error("Captcha bhej nahi paye: " + (e.message || e))); }
+          gpPhoneDbg("T" + (s + 1) + " captcha submit");
+          gpNativePoll(reqId, "Phone login (Tab " + (s + 1) + ")", 320000).then(resolve, reject);
         });
       }
-      function gpPhoneLoginOtp(otp) {
+      function gpPhoneLoginOtp(otp, slot, stRef) {
         return new Promise((resolve, reject) => {
-          if (!gpPhoneLoginId) return reject(new Error("Pehle phone login start karein."));
+          const s = Number(slot) || 0;
+          const reqId = (stRef && stRef._phoneLoginId) || gpPhoneLoginId;
+          if (!reqId) return reject(new Error("Pehle phone login start karein."));
           try {
-            if (window.CloudGSTNative.clearPhonePayload) window.CloudGSTNative.clearPhonePayload(gpPhoneLoginId);
-            window.CloudGSTNative.phoneLoginOtp(String(otp || ""));
-          }
-          catch (e) { return reject(new Error("OTP bhej nahi paye: " + (e.message || e))); }
-          gpPhoneDbg("otp submit");
-          gpNativePoll(gpPhoneLoginId, "Phone login (OTP)", 320000).then(resolve, reject);
+            if (window.CloudGSTNative.clearPhonePayload) window.CloudGSTNative.clearPhonePayload(reqId);
+            if (window.CloudGSTNative.phoneLoginOtpSlot) window.CloudGSTNative.phoneLoginOtpSlot(s, String(otp || ""));
+            else window.CloudGSTNative.phoneLoginOtp(String(otp || ""));
+          } catch (e) { return reject(new Error("OTP bhej nahi paye: " + (e.message || e))); }
+          gpPhoneDbg("T" + (s + 1) + " otp submit");
+          gpNativePoll(reqId, "Phone login OTP (Tab " + (s + 1) + ")", 320000).then(resolve, reject);
         });
       }
-
-      function gpPhoneFetch2b(fy, mon) {
+      function gpPhoneFetch2b(fy, mon, slot) {
         return new Promise((resolve, reject) => {
-          if (!gpPhoneAvailable()) return reject(new Error("Phone mode sirf Android app me chalta hai — ☁️ Cloud mode use karein."));
+          if (!gpPhoneAvailable()) return reject(new Error("Phone mode sirf Android app me chalta hai."));
+          const s = Number(slot) || 0;
           let id = "";
-          try { id = String(window.CloudGSTNative.phoneFetch2b(String(fy || ""), String(mon || "")) || ""); } catch (e) { id = ""; }
+          try {
+            id = String(window.CloudGSTNative.phoneFetch2bSlot
+              ? window.CloudGSTNative.phoneFetch2bSlot(s, String(fy || ""), String(mon || ""))
+              : window.CloudGSTNative.phoneFetch2b(String(fy || ""), String(mon || "")) || "");
+          } catch (e) { id = ""; }
           if (!id) return reject(new Error("Phone mode start nahi ho paya — app dobara khol kar try karein."));
-          gpPhoneDbg("2b fetch start");
-          gpNativePoll(id, "Phone mode", 200000).then((r) => { gpPhoneDbg("2b ok"); resolve(r); },
-            (e) => { gpPhoneDbg("2b fail: " + (e && e.message)); reject(e); });
+          gpPhoneDbg("T" + (s + 1) + " fetch start (" + fy + ")");
+          gpNativePoll(id, "Phone mode (Tab " + (s + 1) + ")", 200000).then((r) => { gpPhoneDbg("T" + (s + 1) + " ok"); resolve(r); },
+            (e) => { gpPhoneDbg("T" + (s + 1) + " fail: " + (e && e.message)); reject(e); });
         });
       }
 
-      // Header switch: 📱 Phone | ☁️ Cloud (sirf app me; browser me poora hidden)
+      // Phone-Only Mode badge (Cloud mode hata diya gaya hai)
       (function gpInitSrcSwitch() {
         const lockBtn = document.getElementById("lockAppBtn");
         if (!lockBtn || document.getElementById("gpSrcSwitch")) return;
         const wrap = document.createElement("div");
         wrap.id = "gpSrcSwitch";
-        wrap.className = "inline-flex items-center rounded-xl overflow-hidden border border-slate-700 bg-slate-800 text-[11px] font-bold";
-        wrap.innerHTML = '<button type="button" data-src="phone" class="px-2.5 py-2">📱 Phone 🧪</button>'
-          + '<button type="button" data-src="cloud" class="px-2.5 py-2">☁️ Cloud</button>';
-        const anchorBtn = document.getElementById("gpNativeBioBtn") || lockBtn;
-        anchorBtn.insertAdjacentElement("afterend", wrap);
-        const paint = () => {
-          if (!gpPhoneAvailable()) { wrap.classList.add("hidden"); return; }
-          wrap.classList.remove("hidden");
-          const cur = gpDataSource();
-          wrap.querySelectorAll("button").forEach(b => {
-            const on = b.getAttribute("data-src") === cur;
-            b.className = "px-2.5 py-2 " + (on ? "bg-indigo-500 text-white" : "text-slate-300 hover:bg-slate-700");
-            b.title = b.getAttribute("data-src") === "phone"
-              ? "Phone mode: data seedha phone se fetch hota hai (cloud server ki zaroorat nahi)"
-              : "Cloud mode: Railway cloud server se fetch hota hai (phone band kar sakte hain)";
-          });
+        wrap.className = "inline-flex items-center rounded-xl overflow-hidden border border-emerald-600/60 bg-emerald-900/60 text-emerald-100 text-[11px] font-bold px-2.5 py-2";
+        wrap.textContent = gpPhoneMaxSlots() > 1 ? ("📱 Phone (" + gpPhoneMaxSlots() + " Tabs)") : "📱 Phone Mode";
+        wrap.title = "100% Phone Mode — background fetch bina screen par portal khole";
+        lockBtn.parentNode.insertBefore(wrap, lockBtn);
+        window.__gpPaintSrcSwitch = function () {
+          wrap.classList.toggle("hidden", !gpPhoneAvailable());
         };
-        wrap.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
-          if (b.getAttribute("data-src") === gpDataSource()) return;
-          gpSetDataSource(b.getAttribute("data-src"));
-        }));
-        window.__gpPaintSrcSwitch = paint;
-        paint();
-        setTimeout(paint, 600);
+        window.__gpPaintSrcSwitch();
+        // Cloud bridge settings / offline banner chhupa do
+        try {
+          const bb = document.getElementById("gpBridgeOfflineBanner");
+          if (bb) bb.classList.add("hidden");
+          const sd = document.getElementById("gpSettingsDrawer");
+          if (sd) {
+            sd.querySelectorAll("input, label, button").forEach(el => {
+              const t = (el.textContent || el.placeholder || el.id || "").toLowerCase();
+              if (/bridge|railway|secret|cloud/.test(t)) {
+                const box = el.closest("div");
+                if (box && box !== sd && !box.querySelector("#gpBioLockBtn")) box.classList.add("hidden");
+              }
+            });
+          }
+        } catch (_) {}
       })();
 
       // ===== APK: header me seedha 👆 Fingerprint button (option dhoondhna na pade) =====
