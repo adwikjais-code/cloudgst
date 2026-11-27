@@ -9,6 +9,7 @@ const assert = require("node:assert/strict");
 
 const {
   openReturnsDashboardAndSearch, selectDropdownByText, dismissModals, classifyStuckPage,
+  openServicesMenuReturnsDashboard, waitForReturnsSelectsSmart,
   guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
   firstVisibleSelector, waitForLoginForm, classifyLoginPage, LOGIN_USER_SELECTORS, LOGIN_PASS_SELECTORS,
@@ -550,4 +551,82 @@ test("classifyLoginPage: login page ki jagah kaun sa page aaya — wajah + hint 
   assert.deepEqual(LOGIN_RETRY_KINDS, ["portal_down", "blank_page"]);
   assert.equal(LOGIN_RETRY_KINDS.includes(classifyLoginPage({ text: "Site under maintenance" }).kind), true);
   assert.equal(LOGIN_RETRY_KINDS.includes(classifyLoginPage({ url: "https://services.gst.gov.in/services/error/accessdenied" }).kind), false);
+});
+
+test("openServicesMenuReturnsDashboard: Services -> Returns -> Returns Dashboard 3-level click", async () => {
+  const clicked = [];
+  let stage = 0;
+  const fakeDoc = () => ({
+    querySelectorAll(sel) {
+      const items = [{ textContent: "Services", offsetParent: {}, href: "" }];
+      if (stage >= 1) items.push({ textContent: "Returns", offsetParent: {}, href: "" });
+      if (stage >= 2) items.push({ textContent: "Returns Dashboard", offsetParent: {}, href: "/returns/auth/dashboard" });
+      return items.filter(x => {
+        if (sel === "a") return x.textContent === "Returns Dashboard";
+        return true;
+      }).map(x => ({
+        textContent: x.textContent,
+        offsetParent: x.offsetParent,
+        getAttribute(a) { return a === "href" ? x.href : ""; },
+        dispatchEvent() {},
+        click() {
+          clicked.push(x.textContent);
+          if (x.textContent === "Services" && stage < 1) stage = 1;
+          if (x.textContent === "Returns" && stage < 2) stage = 2;
+        }
+      }));
+    }
+  });
+  const navPage = {
+    async evaluate(fn, arg) {
+      const prev = global.document;
+      const prevMouse = global.MouseEvent;
+      global.document = fakeDoc();
+      global.MouseEvent = class { constructor() {} };
+      try { return fn(arg); } finally { global.document = prev; global.MouseEvent = prevMouse; }
+    },
+    async waitForTimeout() {}
+  };
+  const res = await openServicesMenuReturnsDashboard(navPage);
+  assert.equal(res.clicked, true);
+  assert.equal(res.step, "services_returns_dashboard");
+  assert.deepEqual(clicked, ["Services", "Returns", "Returns Dashboard"]);
+});
+
+test("waitForReturnsSelectsSmart: exits early on access_denied without waiting full timeout", async () => {
+  let waits = 0;
+  const stuckPage = {
+    url: () => "https://services.gst.gov.in/services/error/accessdenied",
+    waitForSelector: async () => { throw new Error("timeout"); },
+    waitForTimeout: async () => { waits++; },
+    evaluate: async () => ({ url: "https://services.gst.gov.in/services/error/accessdenied", title: "Access Denied", text: "Access Denied", buttons: [] })
+  };
+  const res = await waitForReturnsSelectsSmart(stuckPage, null, 0, 30000);
+  assert.equal(res.ok, false);
+  assert.equal(res.earlyReason, "access_denied");
+  assert.ok(waits <= 3, `expected <=3 waits on early exit, got ${waits}`);
+});
+
+test("dismissModals: Escape key sirf open modal dikhne par dabata hai", async () => {
+  let escPressed = 0;
+  let visibleMap = {};
+  const mockModalPage = (hasModal) => ({
+    locator(sel) {
+      return {
+        first() {
+          return {
+            async isVisible() { return !!visibleMap[sel]; },
+            async click() {}
+          };
+        }
+      };
+    },
+    async waitForTimeout() {},
+    keyboard: { async press(k) { if (k === "Escape") escPressed++; } },
+    async evaluate() { return hasModal; }
+  });
+  await dismissModals(mockModalPage(false));
+  assert.equal(escPressed, 0);
+  await dismissModals(mockModalPage(true));
+  assert.equal(escPressed, 1);
 });

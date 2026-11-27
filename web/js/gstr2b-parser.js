@@ -9,6 +9,9 @@
     root.gpExtractEcoList = api.gpExtractEcoList;
     root.gpB2bSummaryFromSellers = api.gpB2bSummaryFromSellers;
     root.gpPackB2bJson = api.gpPackB2bJson;
+    root.gpParseGstr2bStatusFlags = api.gpParseGstr2bStatusFlags;
+    root.gpBuildGstr2bStatusToken = api.gpBuildGstr2bStatusToken;
+    root.gpMergePortalSaveData = api.gpMergePortalSaveData;
     root.__gpExtractB2b = api.gpExtractB2bSellersFromData;
   }
 })(typeof globalThis !== "undefined" ? globalThis : (typeof window !== "undefined" ? window : null), function () {
@@ -171,12 +174,148 @@
     };
   }
 
+  function gpParseGstr2bStatusFlags(rawStatus) {
+    var s = String(rawStatus || "").trim().toUpperCase();
+    var tokens = s ? s.split("|").map(function (x) { return x.trim(); }).filter(Boolean) : [];
+    var hasNotGen = tokens.indexOf("NOT_GENERATED") >= 0 || s.indexOf("NOT") === 0;
+    var has2bFail = tokens.indexOf("2B_FAILED") >= 0;
+    var hasTcsFail = tokens.indexOf("TCS_FAILED") >= 0;
+    var parts = [];
+    if (has2bFail) parts.push("GSTR-2B portal se fetch nahi hua");
+    if (hasTcsFail) parts.push("E-Com / TCS portal se fetch nahi hua");
+    return {
+      gstr2bStatus: s,
+      gstr2bNotGenerated: hasNotGen,
+      missing: { gstr2b: has2bFail, tcs: hasTcsFail },
+      partialNote: parts.length ? ("Adhoora fetch — " + parts.join(" | ")) : ""
+    };
+  }
+
+  function gpBuildGstr2bStatusToken(flags) {
+    var f = flags || {};
+    var miss = f.missing || {};
+    var tokens = [];
+    if (f.gstr2bNotGenerated) tokens.push("NOT_GENERATED");
+    else if (miss.gstr2b) tokens.push("2B_FAILED");
+    if (miss.tcs) tokens.push("TCS_FAILED");
+    return tokens.join("|");
+  }
+
+  function gpMergePortalSaveData(prevPdSamePeriod, data, periodLabel) {
+    var d = data || {};
+    var prev = (prevPdSamePeriod && typeof prevPdSamePeriod === "object") ? prevPdSamePeriod : null;
+    var s2 = (d.gstr2b && d.gstr2b.summary) ? d.gstr2b.summary : {};
+    var ec = d.ecommerceTcs || {};
+    var b2bSellers = gpExtractB2bSellersFromData(d);
+    if ((!d.gstr2b || !d.gstr2b.summary) && b2bSellers.length) {
+      s2 = gpB2bSummaryFromSellers(b2bSellers);
+    }
+    var ecoList = gpExtractEcoList(d, "");
+    var ecoPlat = (ec.rows || []).map(function (r) {
+      return (r.ecoName || r.ecoGstin) + " (" + (r.ecoGstin || "") + "): ₹" + (r.grossTaxableAmount || 0);
+    }).join("; ");
+
+    var pt = d.partial || {};
+    var g2bSkipped = !!(d.status && d.status.gstr2b && d.status.gstr2b.state === "skipped");
+    var tcsSkipped = !!(d.status && d.status.tcs && d.status.tcs.state === "skipped");
+
+    var prevHasValid2b = !!(prev && !(prev.missing && prev.missing.gstr2b));
+    var prevHasValidTcs = !!(prev && !(prev.missing && prev.missing.tcs));
+
+    var keepPrev2b = !!(prevHasValid2b && (pt.gstr2b || g2bSkipped));
+    var keepPrevTcs = !!(prevHasValidTcs && (pt.tcs || tcsSkipped));
+
+    var gstr2bNotGenerated;
+    var b2bJsonNoteOverride = "";
+    if (keepPrev2b) {
+      s2 = {
+        igst: prev.igst,
+        cgst: prev.cgst,
+        sgst: prev.sgst,
+        cess: prev.cess,
+        ineligibleTotal: prev.ineligible,
+        b2bSuppliersCount: prev.suppliers
+      };
+      b2bSellers = Array.isArray(prev.b2bSellers) ? prev.b2bSellers : [];
+      gstr2bNotGenerated = !!prev.gstr2bNotGenerated;
+      b2bJsonNoteOverride = prev.b2bJsonNote || "";
+    } else if (pt.gstr2b) {
+      gstr2bNotGenerated = false;
+    } else {
+      gstr2bNotGenerated = !!(
+        (d.status && d.status.gstr2b && d.status.gstr2b.code === "gstr2b_not_generated") ||
+        d.notGenerated2b === true
+      );
+    }
+
+    if (keepPrevTcs) {
+      ec = {
+        totalGrossTaxable: prev.ecomGross,
+        totalNetValue: prev.ecomNet,
+        totalTcs: prev.ecomTcs,
+        rows: []
+      };
+      ecoPlat = prev.ecomPlatforms || "";
+      ecoList = Array.isArray(prev.ecoList) ? prev.ecoList : [];
+    }
+
+    var b2bPack = gpPackB2bJson(b2bSellers);
+    var missingGstr2b = !!(pt.gstr2b && !keepPrev2b);
+    var missingTcs = !!(pt.tcs && !keepPrevTcs);
+    var partialNote = (d.partial && d.partial.text) ? String(d.partial.text) : "";
+    var gstr2bStatusToken = gpBuildGstr2bStatusToken({
+      gstr2bNotGenerated: gstr2bNotGenerated,
+      missing: { gstr2b: missingGstr2b, tcs: missingTcs }
+    });
+
+    return {
+      localPortalObj: {
+        period: periodLabel,
+        noticesCount: 0,
+        noticesSummary: "",
+        igst: Number(s2.igst || 0),
+        cgst: Number(s2.cgst || 0),
+        sgst: Number(s2.sgst || 0),
+        cess: Number(s2.cess || 0),
+        ineligible: Number(s2.ineligibleTotal || 0),
+        suppliers: Number(s2.b2bSuppliersCount || b2bSellers.length || 0),
+        ecomGross: Number(ec.totalGrossTaxable || 0),
+        ecomNet: Number(ec.totalNetValue || (Number(ec.totalGrossTaxable || 0) - Number(ec.totalReturned || 0)) || 0),
+        ecomTcs: Number(ec.totalTcs || 0),
+        ecomPlatforms: ecoPlat,
+        b2bSellers: b2bSellers,
+        b2bJsonNote: b2bJsonNoteOverride || b2bPack.note || "",
+        ecoList: ecoList,
+        partialNote: partialNote,
+        missing: {
+          gstr2b: missingGstr2b,
+          tcs: missingTcs
+        },
+        gstr2bNotGenerated: gstr2bNotGenerated,
+        gstr2bStatus: gstr2bStatusToken,
+        docCollected: prev ? !!prev.docCollected : false,
+        driveLink: prev ? (prev.driveLink || "") : "",
+        updatedAt: ""
+      },
+      b2bPack: {
+        json: b2bPack.json,
+        note: b2bJsonNoteOverride || b2bPack.note || ""
+      },
+      ecomPlatforms: ecoPlat,
+      ecoList: ecoList,
+      gstr2bStatus: gstr2bStatusToken
+    };
+  }
+
   return {
     pickTax: pickTax,
     gpExtractB2bSellersFromObj: gpExtractB2bSellersFromObj,
     gpExtractB2bSellersFromData: gpExtractB2bSellersFromData,
     gpExtractEcoList: gpExtractEcoList,
     gpB2bSummaryFromSellers: gpB2bSummaryFromSellers,
-    gpPackB2bJson: gpPackB2bJson
+    gpPackB2bJson: gpPackB2bJson,
+    gpParseGstr2bStatusFlags: gpParseGstr2bStatusFlags,
+    gpBuildGstr2bStatusToken: gpBuildGstr2bStatusToken,
+    gpMergePortalSaveData: gpMergePortalSaveData
   };
 });

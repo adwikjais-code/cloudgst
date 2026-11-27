@@ -856,14 +856,33 @@
               const locPortal = (k && portalByKey.get(k)) || portalByName.get(nm) || null;
               if (!c.portalData) {
                 if (locPortal) c.portalData = locPortal;
-              } else if (locPortal && String(c.portalData.period || "").trim() === String(locPortal.period || "").trim()) {
-                const recentLocalDoc = locPortal._docLocalTs && (Date.now() - locPortal._docLocalTs < 30000);
-                if (c.portalData.docCollected === undefined || (recentLocalDoc && Boolean(locPortal.docCollected) !== Boolean(c.portalData.docCollected))) {
-                  c.portalData.docCollected = Boolean(locPortal.docCollected);
-                  if (locPortal._docLocalTs) c.portalData._docLocalTs = locPortal._docLocalTs;
+              } else {
+                if (c.portalData.gstr2bStatus && typeof gpParseGstr2bStatusFlags === "function") {
+                  const stFlags = gpParseGstr2bStatusFlags(c.portalData.gstr2bStatus);
+                  if (stFlags.gstr2bNotGenerated) c.portalData.gstr2bNotGenerated = true;
+                  if (stFlags.missing.gstr2b || stFlags.missing.tcs) {
+                    c.portalData.missing = stFlags.missing;
+                    if (!c.portalData.partialNote && stFlags.partialNote) c.portalData.partialNote = stFlags.partialNote;
+                  }
                 }
-                if (locPortal.gstr2bNotGenerated && !c.portalData.gstr2bNotGenerated && Number(c.portalData.igst || 0) === 0 && Number(c.portalData.suppliers || 0) === 0) {
-                  c.portalData.gstr2bNotGenerated = true;
+                if (locPortal && String(c.portalData.period || "").trim() === String(locPortal.period || "").trim()) {
+                  const recentLocalDoc = locPortal._docLocalTs && (Date.now() - locPortal._docLocalTs < 30000);
+                  if (c.portalData.docCollected === undefined || (recentLocalDoc && Boolean(locPortal.docCollected) !== Boolean(c.portalData.docCollected))) {
+                    c.portalData.docCollected = Boolean(locPortal.docCollected);
+                    if (locPortal._docLocalTs) c.portalData._docLocalTs = locPortal._docLocalTs;
+                  }
+                  if (locPortal.gstr2bNotGenerated && !c.portalData.gstr2bNotGenerated && Number(c.portalData.igst || 0) === 0 && Number(c.portalData.suppliers || 0) === 0) {
+                    c.portalData.gstr2bNotGenerated = true;
+                  }
+                  const sameUpdate = !locPortal.updatedAt || !c.portalData.updatedAt || String(locPortal.updatedAt) === String(c.portalData.updatedAt);
+                  if (sameUpdate && !c.portalData.gstr2bStatus && locPortal.missing) {
+                    const keep2bMiss = !!(locPortal.missing.gstr2b && !c.portalData.gstr2bNotGenerated && Number(c.portalData.igst || 0) === 0 && Number(c.portalData.suppliers || 0) === 0);
+                    const keepTcsMiss = !!(locPortal.missing.tcs && Number(c.portalData.ecomGross || 0) === 0 && Number(c.portalData.ecomTcs || 0) === 0);
+                    if (keep2bMiss || keepTcsMiss) {
+                      c.portalData.missing = { gstr2b: keep2bMiss, tcs: keepTcsMiss };
+                      if (!c.portalData.partialNote && locPortal.partialNote) c.portalData.partialNote = locPortal.partialNote;
+                    }
+                  }
                 }
               }
               if (c.password) return;

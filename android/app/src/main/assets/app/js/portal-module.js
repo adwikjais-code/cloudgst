@@ -320,61 +320,18 @@
       }
 
       async function gpSaveToGstDetailsSheet(clientWrap, data, saveDrive) {
-        let s2 = data.gstr2b?.summary || {};
-        let ec = data.ecommerceTcs || {};
-        let b2bSellers = gpExtractB2bSellersFromData(data);
-        if ((!data.gstr2b || !data.gstr2b.summary) && b2bSellers.length) {
-          s2 = gpB2bSummaryFromSellers(b2bSellers);   // phone mode: summary nahi aati
-        }
-        let ecoList = gpExtractEcoList(data, "");
-        let ecoPlat = (ec.rows || []).map(r => `${r.ecoName || r.ecoGstin} (${r.ecoGstin || ""}): ₹${r.grossTaxableAmount || 0}`).join("; ");
-        // Partial fetch: jo section portal se nahi mila, uska purana (same period) data sheet me 0 se overwrite na ho
-        const _pt = data.partial || {};
-        const _prevPd = (clientWrap._ref.portalData && gpIsPeriodMatch(clientWrap._ref.portalData.period)) ? clientWrap._ref.portalData : null;
-        if (_pt.gstr2b && _prevPd) {
-          s2 = { igst: _prevPd.igst, cgst: _prevPd.cgst, sgst: _prevPd.sgst, cess: _prevPd.cess, ineligibleTotal: _prevPd.ineligible, b2bSuppliersCount: _prevPd.suppliers };
-          b2bSellers = Array.isArray(_prevPd.b2bSellers) ? _prevPd.b2bSellers : [];
-        }
-        if (_pt.tcs && _prevPd) {
-          ec = { totalGrossTaxable: _prevPd.ecomGross, totalTcs: _prevPd.ecomTcs, rows: [] };
-          ecoPlat = _prevPd.ecomPlatforms || "";
-          ecoList = Array.isArray(_prevPd.ecoList) ? _prevPd.ecoList : [];
-        }
-        const _b2bPack = gpPackB2bJson(b2bSellers);
         const periodLabel = `${data.fy || document.getElementById("gpFySel")?.value || "2026-27"} / ${String(data.month || document.getElementById("gpMonSel")?.value || "10").padStart(2, "0")}`;
-
         const prevSamePeriod = clientWrap._ref.portalData && gpIsPeriodMatch(clientWrap._ref.portalData.period);
-        const prevDrive = prevSamePeriod ? (clientWrap._ref.portalData?.driveLink || "") : "";
-        const prevDocCol = prevSamePeriod ? !!clientWrap._ref.portalData?.docCollected : false;
-        const localPortalObj = {
-          period: periodLabel,
-          noticesCount: 0,
-          noticesSummary: "",
-          igst: Number(s2.igst || 0),
-          cgst: Number(s2.cgst || 0),
-          sgst: Number(s2.sgst || 0),
-          cess: Number(s2.cess || 0),
-          ineligible: Number(s2.ineligibleTotal || 0),
-          suppliers: Number(s2.b2bSuppliersCount || b2bSellers.length || 0),
-          ecomGross: Number(ec.totalGrossTaxable || 0),
-          ecomNet: Number(ec.totalNetValue || (Number(ec.totalGrossTaxable || 0) - Number(ec.totalReturned || 0)) || 0),
-          ecomTcs: Number(ec.totalTcs || 0),
-          ecomPlatforms: ecoPlat,
-          b2bSellers,
-          ecoList,
-          partialNote: (data.partial && data.partial.text) || "",
-          missing: {
-            gstr2b: !!(data.partial && data.partial.gstr2b) && !(_pt.gstr2b && _prevPd),
-            tcs: !!(data.partial && data.partial.tcs) && !(_pt.tcs && _prevPd)
-          },
-          gstr2bNotGenerated: !!(
-            (data.status && data.status.gstr2b && data.status.gstr2b.code === "gstr2b_not_generated") ||
-            data.notGenerated2b === true
-          ),
-          docCollected: prevDocCol,
-          driveLink: prevDrive,
-          updatedAt: new Date().toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })
-        };
+        const _prevPd = prevSamePeriod ? clientWrap._ref.portalData : null;
+        const merged = gpMergePortalSaveData(_prevPd, data, periodLabel);
+        const localPortalObj = merged.localPortalObj;
+        localPortalObj.updatedAt = new Date().toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+        const prevDrive = localPortalObj.driveLink || "";
+        const prevDocCol = !!localPortalObj.docCollected;
+        const _b2bPack = merged.b2bPack;
+        const ecoPlat = merged.ecomPlatforms;
+        const ecoList = merged.ecoList;
+
         clientWrap._ref.portalData = localPortalObj;
         if (typeof saveClients === "function") saveClients();
 
@@ -406,7 +363,7 @@
           b2bJsonNote: _b2bPack.note,
           ecoListJson: JSON.stringify(ecoList),
           docCollected: prevDocCol,
-          gstr2bStatus: localPortalObj.gstr2bNotGenerated ? "NOT_GENERATED" : "",
+          gstr2bStatus: merged.gstr2bStatus,
           saveDrive: !!saveDrive,
           gstr2bFileName: data.gstr2b?.fileName || "",
           gstr2bJsonBase64: saveDrive ? (data.gstr2b?.jsonBase64 || "") : ""
@@ -416,9 +373,13 @@
           if (res.data?.driveLink) clientWrap._ref.portalData.driveLink = res.data.driveLink;
           if (res.data?.updatedAt) clientWrap._ref.portalData.updatedAt = res.data.updatedAt;
           if (typeof saveClients === "function") saveClients();
+          const isPartialSave = !!(localPortalObj.partialNote || localPortalObj.missing?.gstr2b || localPortalObj.missing?.tcs);
+          const okLabel = isPartialSave
+            ? "⚠️ Adhoora Sheet Synced"
+            : (res.data?.driveLink && saveDrive ? "📗 Synced + ☁️ Drive" : "📗 GST Details Synced");
           return {
             ok: true,
-            label: res.data?.driveLink && saveDrive ? "📗 Synced + ☁️ Drive" : "📗 GST Details Synced",
+            label: okLabel,
             driveLink: res.data?.driveLink || prevDrive
           };
         }
@@ -452,7 +413,7 @@
       function gpIsAdhoora(c) {
         const pd = gpGetActivePortalData(c);
         const st = gpGetState(c.clientKey);
-        if (st && st.phase === "error") return true;
+        if (st && (st.phase === "error" || st.partialNote)) return true;
         return !!(pd && (pd.partialNote || (pd.missing && (pd.missing.gstr2b || pd.missing.tcs))));
       }
       function gpAdhooraClients() { return gpGetAppClients().filter(gpIsAdhoora); }
@@ -549,14 +510,14 @@
           : `<span class="text-[11px] font-medium text-slate-400">0 B2B Sellers</span>`;
 
 
-        return `
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-            <div class="bg-white rounded-xl border border-slate-200/90 p-3.5 space-y-2.5">
-              <div class="flex items-center justify-between gap-2">
-                <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">GSTR-2B ITC Summary</span>
-                ${sellerBtn}
-              </div>
-              <div class="grid grid-cols-3 gap-2">
+        const is2bMissing = !!(pd.missing && pd.missing.gstr2b);
+        const isTcsMissing = !!(pd.missing && pd.missing.tcs);
+        const isPartial = !!(is2bMissing || isTcsMissing || st.partialNote || pd.partialNote);
+        const gstr2bBodyHtml = pd.gstr2bNotGenerated
+          ? `<div class="rounded-lg bg-slate-50 border border-slate-200 px-3 py-3 text-xs text-slate-600 italic">Is month ki GSTR-2B generate nahi hui hai (portal par koi record nahi / pichhli 3B pending / QRMP quarter).</div>`
+          : (is2bMissing
+            ? `<div class="rounded-lg bg-amber-50 border border-amber-200 px-3 py-3 text-xs text-amber-800 font-medium">⚠️ GSTR-2B portal se fetch nahi ho paya (purana valid data bhi nahi tha) — dobara Fetch karke retry karein.</div>`
+            : `<div class="grid grid-cols-3 gap-2">
                 <div class="bg-slate-50 rounded-lg p-2.5">
                   <div class="text-[10px] text-slate-400 font-semibold">IGST</div>
                   <div class="text-sm font-bold text-slate-900 tabular-nums mt-0.5">${gpFmtInr(pd.igst)}</div>
@@ -576,16 +537,11 @@
                   <span>Ineligible: <b class="${Number(pd.ineligible || 0) > 0 ? "text-amber-700" : "text-slate-700"}">${gpFmtInr(pd.ineligible)}</b></span>
                 </div>
                 ${drivePart}
-              </div>
-            </div>
+              </div>`);
 
-            <div class="bg-white rounded-xl border border-slate-200/90 p-3.5 flex flex-col justify-between space-y-2.5">
-              <div class="space-y-2.5">
-                <div class="flex items-center justify-between gap-2">
-                  <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">E-Commerce Gross &amp; TCS</span>
-                  <span class="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md">TCS ${gpFmtInr(pd.ecomTcs)}</span>
-                </div>
-                <div class="grid grid-cols-1 sm:grid-cols-12 gap-2">
+        const tcsBodyHtml = isTcsMissing
+          ? `<div class="rounded-lg bg-amber-50 border border-amber-200 px-3 py-3 text-xs text-amber-800 font-medium">⚠️ E-Com / TCS portal se fetch nahi ho paya — dobara Fetch karke retry karein.</div>`
+          : `<div class="grid grid-cols-1 sm:grid-cols-12 gap-2">
                   <div class="sm:col-span-5 bg-emerald-50/60 rounded-lg p-2.5 border border-emerald-100 flex flex-col justify-center">
                     <div class="text-[10px] text-emerald-700 font-semibold">Gross Taxable</div>
                     <div class="text-sm font-extrabold text-emerald-800 tabular-nums mt-0.5">${gpFmtInr(pd.ecomGross)}</div>
@@ -601,11 +557,31 @@
                         ${e.gstin ? `<button type="button" data-copy-gstin="${gpEsc(e.gstin)}" class="gp-copy-gstin-btn shrink-0 px-1.5 py-0.5 rounded bg-white border border-slate-200 hover:bg-slate-100 text-[10px] text-slate-600" title="Copy ECO GSTIN">📋</button>` : ""}
                       </div>`).join("") : '<div class="text-[11px] text-slate-400 italic">Koi E-Commerce TCS nahi kata</div>'}
                   </div>
+                </div>`;
+
+        const syncLabelText = st.sheetStatus || ((isPartial ? "⚠️ Adhoora Sync" : "📗 Synced") + (pd.updatedAt ? " • " + pd.updatedAt : ""));
+
+        return `
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+            <div class="bg-white rounded-xl border ${is2bMissing ? "border-amber-200" : "border-slate-200/90"} p-3.5 space-y-2.5">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">GSTR-2B ITC Summary</span>
+                ${sellerBtn}
+              </div>
+              ${gstr2bBodyHtml}
+            </div>
+
+            <div class="bg-white rounded-xl border ${isTcsMissing ? "border-amber-200" : "border-slate-200/90"} p-3.5 flex flex-col justify-between space-y-2.5">
+              <div class="space-y-2.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">E-Commerce Gross &amp; TCS</span>
+                  <span class="text-[11px] font-semibold ${isTcsMissing ? "text-amber-700 bg-amber-50" : "text-emerald-700 bg-emerald-50"} px-2 py-0.5 rounded-md">${isTcsMissing ? "TCS Fail" : ("TCS " + gpFmtInr(pd.ecomTcs))}</span>
                 </div>
+                ${tcsBodyHtml}
               </div>
               <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 pt-2 border-t border-slate-100">
                 <span>Period: <b class="text-slate-700 font-mono">${gpEsc(pd.period || "—")}</b></span>
-                <span class="text-emerald-700 font-semibold shrink-0">${gpEsc(st.sheetStatus || ("📗 Synced" + (pd.updatedAt ? " • " + pd.updatedAt : "")))}</span>
+                <span class="${isPartial ? "text-amber-700" : "text-emerald-700"} font-semibold shrink-0">${gpEsc(syncLabelText)}</span>
               </div>
             </div>
           </div>`;
@@ -816,7 +792,7 @@
               let statusBadge = '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500">Pending</span>';
               if (st.phase === "fetching" || st.phase === "saving") statusBadge = '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 animate-pulse">Working...</span>';
               else if (st.phase === "error") statusBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200" title="${gpEsc(st.note)}">Error</span>`;
-              else if (pd && (pd.partialNote || (pd.missing && (pd.missing.gstr2b || pd.missing.tcs)))) statusBadge = `<div class="inline-flex flex-col items-center gap-0.5"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-800 border border-amber-200" title="${gpEsc(pd.partialNote || "Kuch section portal se nahi mila.")}">⚠️ Adhoora</span><span class="text-[10px] text-slate-400 tabular-nums whitespace-nowrap">${gpEsc(pd.period || "")}${pd.updatedAt ? " • " + gpEsc(pd.updatedAt) : ""}</span></div>`;
+              else if (pd && (st.partialNote || pd.partialNote || (pd.missing && (pd.missing.gstr2b || pd.missing.tcs)))) statusBadge = `<div class="inline-flex flex-col items-center gap-0.5"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-800 border border-amber-200" title="${gpEsc(st.partialNote || pd.partialNote || "Kuch section portal se nahi mila.")}">⚠️ Adhoora</span><span class="text-[10px] text-slate-400 tabular-nums whitespace-nowrap">${gpEsc(pd.period || "")}${pd.updatedAt ? " • " + gpEsc(pd.updatedAt) : ""}</span></div>`;
               else if (pd) statusBadge = `<div class="inline-flex flex-col items-center gap-0.5"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">✓ Synced</span><span class="text-[10px] text-slate-400 tabular-nums whitespace-nowrap">${gpEsc(pd.period || "")}${pd.updatedAt ? " • " + gpEsc(pd.updatedAt) : ""}</span></div>`;
 
               const mjBadge = (function() {
@@ -843,10 +819,10 @@
                   <td class="py-3 px-3 align-middle text-right tabular-nums">${pd ? (pd.gstr2bNotGenerated
                     ? `<div class="text-[11px] font-semibold text-slate-500 italic leading-tight" title="Portal ne is month ki GSTR-2B generate hi nahi ki (koi record nahi / pichhli 3B pending / QRMP quarter month) — IMS Dashboard se manual compute karna hoga">not generated this month</div>`
                     : (pd.missing && pd.missing.gstr2b
-                      ? `<div class="font-bold text-amber-600 text-[13px]" title="GSTR-2B is baar portal se nahi mila (purana data bhi nahi tha)">—</div><div class="text-[10px] text-amber-600">2B nahi mila</div>`
+                      ? `<div class="font-bold text-amber-600 text-[13px]" title="GSTR-2B is baar portal se fetch nahi ho paya (purana data bhi nahi tha)">—</div><div class="text-[10px] text-amber-600 font-semibold">2B fail hua</div>`
                       : `<div class="font-bold text-slate-900 text-[13px]">${gpFmtInr(itcSum)}</div><div class="text-[10px] text-slate-400">I ${gpFmtInr(pd.igst)} · C ${gpFmtInr(pd.cgst)}</div>`)
                   ) : '<span class="text-slate-300">—</span>'}</td>
-                  <td class="py-3 px-3 align-middle text-right tabular-nums">${pd ? (pd.missing && pd.missing.tcs ? `<div class="font-bold text-amber-600 text-[13px]" title="E-Com / TCS is baar portal se nahi mila">—</div><div class="text-[10px] text-amber-600">TCS nahi mila</div>` : `<div class="font-bold ${hasEcom ? "text-emerald-700" : "text-slate-400"} text-[13px]">${gpFmtInr(pd.ecomGross)}</div><div class="text-[10px] text-slate-400">TCS ${gpFmtInr(pd.ecomTcs)}</div>`) : '<span class="text-slate-300">—</span>'}</td>
+                  <td class="py-3 px-3 align-middle text-right tabular-nums">${pd ? (pd.missing && pd.missing.tcs ? `<div class="font-bold text-amber-600 text-[13px]" title="E-Com / TCS is baar portal se fetch nahi ho paya">—</div><div class="text-[10px] text-amber-600 font-semibold">TCS fail hua</div>` : `<div class="font-bold ${hasEcom ? "text-emerald-700" : "text-slate-400"} text-[13px]">${gpFmtInr(pd.ecomGross)}</div><div class="text-[10px] text-slate-400">TCS ${gpFmtInr(pd.ecomTcs)}</div>`) : '<span class="text-slate-300">—</span>'}</td>
                   <td class="py-3 px-3 align-middle text-center">${docCellHtml}</td>
                   <td class="py-3 px-3 align-middle text-center">${statusBadge}</td>
                   <td class="py-3 pl-3 pr-4 align-middle text-right">${gpNativePortalBtn(c)}${gpBuildActionCellHtml(c, st, ready, isExp, pd)}</td>

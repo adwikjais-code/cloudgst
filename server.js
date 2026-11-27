@@ -1,4 +1,4 @@
-/* GST Cloud Bridge — version dynamically read from package.json (currently v1.29.1)
+/* GST Cloud Bridge — version dynamically read from package.json (currently v1.29.2)
  * Recent fixes: strict ALLOWED_ORIGIN CORS, busy-safe memory watchdog, serialized upload-gstr1,
  * ZIP method/bomb bounds, graceful SIGTERM/SIGINT shutdown, and updated Railway/Render env hints.
  * Historical notes (v1.9.6 - v1.20.0):
@@ -555,19 +555,29 @@ const RETURNS_DASHBOARD_URL = "https://return.gst.gov.in/returns/auth/dashboard"
 const GST_AUTH_DASHBOARD_URL = "https://services.gst.gov.in/services/auth/dashboard";
 
 async function dismissModals(page) {
-  const selectors = [
-    "button:has-text('Remind me later')", "button:has-text('CLOSE')", "button:has-text('OK')", ".modal .close",
-    "button:has-text('Proceed')", "button:has-text('Continue')", "button:has-text('I Agree')"
+  const safeGlobal = ["button:has-text('Remind me later')", ".modal .close", "[role='dialog'] .close"];
+  const modalScoped = [
+    ".modal button:has-text('CLOSE')", "[role='dialog'] button:has-text('CLOSE')",
+    ".modal button:has-text('OK')", "[role='dialog'] button:has-text('OK')",
+    ".modal button:has-text('Proceed')", "[role='dialog'] button:has-text('Proceed')",
+    ".modal button:has-text('Continue')", "[role='dialog'] button:has-text('Continue')",
+    ".modal button:has-text('I Agree')", "[role='dialog'] button:has-text('I Agree')",
+    ".sweet-alert button:has-text('OK')", ".sweet-alert button:has-text('CLOSE')"
   ];
-  for (const sel of selectors) {
+  for (const sel of [...safeGlobal, ...modalScoped]) {
     const btn = page.locator(sel).first();
     if (await btn.isVisible().catch(() => false)) {
       await btn.click().catch(() => {});
       await page.waitForTimeout(350);
     }
   }
-  // Kuch modals sirf Esc se band hote hain
-  try { if (page.keyboard) await page.keyboard.press("Escape"); } catch (_) {}
+  // Sirf tab Esc dabao jab sach me modal khula ho (warna dropdown/menu band ho sakta hai)
+  try {
+    const hasOpenModal = await page.evaluate(() =>
+      !!document.querySelector(".modal.in, .modal.show, .modal[style*='display: block'], [role='dialog'], .sweet-alert.visible")
+    ).catch(() => false);
+    if (hasOpenModal && page.keyboard) await page.keyboard.press("Escape");
+  } catch (_) {}
 }
 
 // Dropdown ke options page par der se aate hain (Angular/AJAX) — isliye polling wala select.
@@ -857,9 +867,35 @@ async function adoptNewPopupPage(context, currentPage, pagesBefore) {
 /* Returns Dashboard kholne ka WAF-safe rasta.
  * DIRECT URL GOTO NAHI — portal ka WAF use "Access Denied" (services.gst.gov.in/services/error/accessdenied) se
  * block kar deta hai, aur us page par koi dropdown nahi hota -> "period select nahi ho paya".
- * Insaan jaisa rasta: RETURN DASHBOARD button/link click -> nahi mila to Services > Returns > Returns Dashboard
- * menu link click -> phir bhi na ho to aakhri option ke roop me direct URL.
+ * Insaan jaisa rasta: Auth Dashboard ready hone ka intezaar -> visible RETURN DASHBOARD button/link click ->
+ * nahi mila to Services > Returns > Returns Dashboard (3-level menu) -> sabse baad me direct URL.
  */
+async function waitForAuthDashboardReady(page, timeoutMs) {
+  if (isReturnsDashboardUrl(page.url())) return { ready: true, reason: "already_returns" };
+  try { await page.waitForLoadState("networkidle", { timeout: Math.min(Number(timeoutMs) || 8000, 5000) }); } catch (_) {}
+  const limit = Number(timeoutMs) || 0;
+  const maxTries = limit > 0 ? Math.min(18, Math.max(2, Math.ceil(limit / 700))) : 1;
+  const started = Date.now();
+  for (let i = 0; i < maxTries; i++) {
+    const state = await page.evaluate(() => {
+      const selCount = document.querySelectorAll("select").length;
+      if (selCount > 0) return "select";
+      const txt = String((document.body && document.body.innerText) || "");
+      if (/access\s*denied/i.test(txt) || /accessdenied/i.test(location.href)) return "access_denied";
+      const hasBtn = Array.from(document.querySelectorAll("button, a, span")).some(el =>
+        el.offsetParent !== null && (/return\s*dashboard/i.test(el.textContent || "") || /^\s*services\s*$/i.test((el.textContent || "").trim()))
+      );
+      return hasBtn ? "ready" : "loading";
+    }).catch(() => null);
+    if (!state || state === "select" || state === "ready" || state === "access_denied") {
+      return { ready: state !== "access_denied", reason: state || "unknown" };
+    }
+    if (Date.now() - started >= limit) break;
+    await page.waitForTimeout(700);
+  }
+  return { ready: false, reason: "timeout" };
+}
+
 async function clickReturnsDashboardLink(page) {
   try {
     const btn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
@@ -868,13 +904,83 @@ async function clickReturnsDashboardLink(page) {
       return "button";
     }
   } catch (_) {}
+  // Sirf VISIBLE link click karo — hidden navbar dropdown <a> click karne se Angular bypass hokar WAF Access Denied aa sakta hai
   const viaAnchor = await page.evaluate(() => {
     const links = Array.from(document.querySelectorAll("a"));
-    const a = links.find(x => /returns\s+dashboard/i.test(x.textContent || "") || (x.getAttribute("href") || "").includes("/returns/auth/dashboard"));
+    const a = links.find(x => x.offsetParent !== null && (/returns\s+dashboard/i.test(x.textContent || "") || (x.getAttribute("href") || "").includes("/returns/auth/dashboard")));
     if (a) { a.click(); return "anchor:" + (a.textContent || "").replace(/\s+/g, " ").trim().slice(0, 30); }
     return null;
   }).catch(() => null);
   return viaAnchor;
+}
+
+// 3-level GST navbar: Services -> Returns -> Returns Dashboard
+async function openServicesMenuReturnsDashboard(page) {
+  const clickOrHoverByText = async (selectorList, reSrc, reFlags) => {
+    return await page.evaluate(({ sels, src, flags }) => {
+      const re = new RegExp(src, flags);
+      const els = Array.from(document.querySelectorAll(sels)).filter(x => x.offsetParent !== null && re.test((x.textContent || "").trim()));
+      if (!els.length) return false;
+      const el = els[0];
+      try { el.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true })); } catch (_) {}
+      try { el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); } catch (_) {}
+      el.click();
+      return true;
+    }, { sels: selectorList, src: reSrc, flags: reFlags }).catch(() => false);
+  };
+
+  const s1 = await clickOrHoverByText("a, button, span, li", "^\\s*services\\s*$", "i");
+  if (!s1) return { clicked: false, step: "no_services" };
+  await page.waitForTimeout(900);
+
+  // Level 2: Returns submenu (agar pehle se Returns Dashboard na dikh raha ho)
+  const directAfterServices = await page.evaluate(() => {
+    const a = Array.from(document.querySelectorAll("a")).find(x => x.offsetParent !== null && (/^\s*returns\s+dashboard\s*$/i.test((x.textContent || "").trim()) || (x.getAttribute("href") || "").includes("/returns/auth/dashboard")));
+    if (a) { a.click(); return true; }
+    return false;
+  }).catch(() => false);
+  if (directAfterServices) return { clicked: true, step: "services_direct" };
+
+  const s2 = await clickOrHoverByText("a, button, span, li", "^\\s*returns\\s*$", "i");
+  if (!s2) return { clicked: false, step: "no_returns_submenu" };
+  await page.waitForTimeout(900);
+
+  const s3 = await page.evaluate(() => {
+    const a = Array.from(document.querySelectorAll("a")).find(x => x.offsetParent !== null && (/^\s*returns\s+dashboard\s*$/i.test((x.textContent || "").trim()) || (x.getAttribute("href") || "").includes("/returns/auth/dashboard")));
+    if (a) { a.click(); return true; }
+    return false;
+  }).catch(() => false);
+  return { clicked: !!s3, step: s3 ? "services_returns_dashboard" : "no_dashboard_item" };
+}
+
+// 40s andha wait karne ke bajay poll karte raho: select aaye to turant true; access denied ya stall par jaldi bahar
+async function waitForReturnsSelectsSmart(page, context, pagesBefore, timeoutMs) {
+  const limit = Number(timeoutMs) || 25000;
+  const maxTries = Math.min(Math.max(2, Math.ceil(limit / 1000)), 45);
+  const started = Date.now();
+  let curPage = page;
+  let lastSnap = null;
+  for (let i = 1; i <= maxTries; i++) {
+    curPage = await adoptNewPopupPage(context, curPage, pagesBefore);
+    if (await waitForDashboardSelects(curPage, 800)) {
+      return { ok: true, page: curPage, earlyReason: null, snap: null };
+    }
+    // Pehle 2 checks ke baad dekh lo kahin Access Denied page to nahi aa gaya (40s waste mat karo)
+    if (i >= 3) {
+      lastSnap = await pageSnapshotBrief(curPage).catch(() => null);
+      const kind = classifyStuckPage(lastSnap).kind;
+      if (kind === "access_denied" || kind === "concurrent_session" || kind === "session_expired") {
+        return { ok: false, page: curPage, earlyReason: kind, snap: lastSnap };
+      }
+      // 14s baad bhi agar services/auth/ par hi atka hai (click se navigation hua hi nahi) to retry karo
+      if (i >= 14 && /services\.gst\.gov\.in\/services\/auth\//i.test(String(curPage.url() || ""))) {
+        return { ok: false, page: curPage, earlyReason: "stalled_on_auth_dashboard", snap: lastSnap };
+      }
+    }
+    if (Date.now() - started >= limit) break;
+    await curPage.waitForTimeout(800);
+  }
+  return { ok: false, page: curPage, earlyReason: "timeout", snap: lastSnap };
 }
 
 async function ensureReturnsDashboard(page, context, pagesBefore, dbg, tag) {
@@ -886,43 +992,46 @@ async function ensureReturnsDashboard(page, context, pagesBefore, dbg, tag) {
   let snap = await pageSnapshotBrief(page).catch(() => null);
   if (classifyStuckPage(snap).kind === "access_denied") {
     step("recoverFromAccessDenied", true);
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(7000);
     await page.goto(GST_AUTH_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
-    await page.waitForTimeout(3000);
+    await waitForAuthDashboardReady(page, 10000);
     await dismissModals(page).catch(() => {});
     page = await adoptNewPopupPage(context, page, pagesBefore);
+  } else {
+    await waitForAuthDashboardReady(page, 8000);
+    await dismissModals(page).catch(() => {});
   }
 
   let how = await clickReturnsDashboardLink(page);
-  await page.waitForTimeout(4500);
-  page = await adoptNewPopupPage(context, page, pagesBefore);
-  let ok = await waitForDashboardSelects(page, 25000);
+  await page.waitForTimeout(3500);
+  let w1 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 22000);
+  page = w1.page;
+  let ok = w1.ok;
 
   if (!ok) {
-    // Services > Returns > Returns Dashboard (aapke screenshot wala menu)
-    await page.evaluate(() => {
-      const el = Array.from(document.querySelectorAll("a,button,span")).find(x => /^\s*services\s*$/i.test((x.textContent || "").trim()) && x.offsetParent !== null);
-      if (el) el.click();
-    }).catch(() => {});
-    await page.waitForTimeout(1800);
-    const clickedMenu = await page.evaluate(() => {
-      const a = Array.from(document.querySelectorAll("a")).find(x => x.offsetParent !== null && (/^\s*returns\s+dashboard\s*$/i.test((x.textContent || "").trim()) || (x.getAttribute("href") || "").includes("/returns/auth/dashboard")));
-      if (a) { a.click(); return true; }
-      return false;
-    }).catch(() => false);
-    step("menuClick", clickedMenu);
-    await page.waitForTimeout(4500);
-    page = await adoptNewPopupPage(context, page, pagesBefore);
-    ok = await waitForDashboardSelects(page, 25000);
-    if (ok) how = (how || "") + "+menu";
+    // Agar click ne sach me Access Denied URL par bheja to menu se pehle wapas Auth Dashboard par aao
+    if (w1.earlyReason === "access_denied" && /accessdenied/i.test(String(page.url() || ""))) {
+      await page.waitForTimeout(6000);
+      await page.goto(GST_AUTH_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
+      await waitForAuthDashboardReady(page, 10000);
+      await dismissModals(page).catch(() => {});
+    }
+    const menuRes = await openServicesMenuReturnsDashboard(page);
+    step("menuClick", menuRes);
+    await page.waitForTimeout(3500);
+    const w2 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 22000);
+    page = w2.page;
+    ok = w2.ok;
+    if (ok) how = (how || "") + "+menu(" + menuRes.step + ")";
     else {
-      // Aakhri option: direct URL (WAF kabhi ise block karta hai, isliye sabse baad me)
-      await page.waitForTimeout(2500);
-      await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
+      // Aakhri option: direct URL with Referer (WAF ko lagta hai dashboard se aaya)
+      await page.waitForTimeout(3500);
+      await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded", referer: GST_AUTH_DASHBOARD_URL }).catch(() => {});
       await page.waitForTimeout(3000);
       await dismissModals(page).catch(() => {});
-      page = await adoptNewPopupPage(context, page, pagesBefore);
-      ok = await waitForDashboardSelects(page, 20000);
+      const w3 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 20000);
+      page = w3.page;
+      ok = w3.ok;
       if (ok) how = (how || "") + "+directUrl";
     }
   }
@@ -931,9 +1040,8 @@ async function ensureReturnsDashboard(page, context, pagesBefore, dbg, tag) {
 }
 
 /* Returns Dashboard kholna + FY/Quarter/Month select karna.
- * Fail hone par ek retry (seedha return.gst.gov.in URL), aur phir bhi fail ho to ASLI page ka
- * diagnostic error deta hai (pehle sirf "waitForSelector Timeout 25000ms" aata tha — pata hi nahi
- * chalta tha ki portal ne kaun sa page dikhaya tha).
+ * Fail hone par WAF-safe retries (button -> 3-level Services>Returns>Returns Dashboard -> cool-down Auth Dashboard ->
+ * last-resort direct URL), aur phir bhi fail ho to ASLI page ka diagnostic error deta hai.
  * Returns: page (popup adopt hua ho to naya page) — caller ko isi page se aage kaam karna chahiye.
  */
 async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
@@ -943,34 +1051,25 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
   const pagesBefore = context && typeof context.pages === "function" ? (context.pages() || []).length : 0;
   const startedOn = page;
 
-  await dismissModals(page);
   if (!isReturnsDashboardUrl(page.url())) {
-    const retBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
-    if (await retBtn.isVisible().catch(() => false)) {
-      await retBtn.click({ force: true }).catch(() => {});
-      await page.waitForTimeout(4500);
-    } else {
-      // Koi cheez (e.g. modal) click rok rahi ho to page par link dhundh kar click karte hain
-      await page.evaluate(() => {
-        const links = Array.from(document.querySelectorAll("a"));
-        const retLink = links.find(a => /returns dashboard/i.test(a.textContent || "") || (a.getAttribute("href") || "").includes("/returns/auth/dashboard"));
-        if (retLink) retLink.click();
-      }).catch(() => {});
-      await page.waitForTimeout(4500);
-    }
+    await waitForAuthDashboardReady(page, 10000);
+    await dismissModals(page);
+    await clickReturnsDashboardLink(page);
+    await page.waitForTimeout(3500);
     page = await adoptNewPopupPage(context, page, pagesBefore);
   }
   await dismissModals(page);
   if (page !== startedOn) step("adoptedPopup", page.url());
   step("urlBeforeSelect", page.url());
 
-  let ok = await waitForDashboardSelects(page, 40000);
-  let stuck = null;
+  const smart1 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 32000);
+  page = smart1.page;
+  let ok = smart1.ok;
+  let stuck = smart1.snap || null;
   if (!ok) {
-    // Retry 1: kabhi menu click navigate nahi karta; WAF/portal slow hone par 40s bhi kam pad jate hain
-    const snap1 = await pageSnapshotBrief(page);
-    step("selectTimeoutAt", Object.assign({ url: page.url(), kind: classifyStuckPage(snap1).kind }, snap1));
-    // Retry bhi WAF-safe: pehle menu/button click, direct URL sirf aakhri option me (helper ke andar)
+    // Retry 1: WAF/portal slow hone par ya angular click miss hone par WAF-safe recovery
+    const snap1 = stuck || await pageSnapshotBrief(page);
+    step("selectTimeoutAt", Object.assign({ url: page.url(), earlyReason: smart1.earlyReason, kind: classifyStuckPage(snap1).kind }, snap1));
     const ens1 = await ensureReturnsDashboard(page, context, pagesBefore, dbg, t);
     page = ens1.page;
     step("retry1Ensure", { ok: ens1.ok, how: ens1.how });
@@ -981,21 +1080,33 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
     const cls = classifyStuckPage(stuck);
     step("stuck", Object.assign({ kind: cls.kind }, stuck));
 
-    // Retry 2 (sirf Access Denied / concurrent session par): portal ko thoda "cool down" do, phir
-    // Auth Dashboard se fresh click — direct URL goto se portal ka WAF aksar naraz hota hai.
+    // Retry 2 (Access Denied / concurrent session par): portal ko lamba cool-down do, phir
+    // Auth Dashboard par wait karke RETURN DASHBOARD + 3-level menu dono try karo.
     if (cls.kind === "access_denied" || cls.kind === "concurrent_session") {
-      await page.waitForTimeout(cls.kind === "concurrent_session" ? 4000 : 8000);
+      await page.waitForTimeout(cls.kind === "concurrent_session" ? 5000 : 10000);
       await page.goto(GST_AUTH_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
-      await page.waitForTimeout(3000);
+      await waitForAuthDashboardReady(page, 12000);
       await dismissModals(page);
       page = await adoptNewPopupPage(context, page, pagesBefore);
-      const retryBtn = page.locator("button:has-text('RETURN DASHBOARD'), a:has-text('RETURN DASHBOARD'), span:has-text('RETURN DASHBOARD')").first();
-      if (await retryBtn.isVisible().catch(() => false)) {
-        await retryBtn.click({ force: true }).catch(() => {});
-        await page.waitForTimeout(5000);
-        page = await adoptNewPopupPage(context, page, pagesBefore);
+      await clickReturnsDashboardLink(page);
+      await page.waitForTimeout(4500);
+      const smart2 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 22000);
+      page = smart2.page;
+      ok = smart2.ok;
+      if (!ok) {
+        if (smart2.earlyReason === "access_denied" && /accessdenied/i.test(String(page.url() || ""))) {
+          await page.waitForTimeout(5000);
+          await page.goto(GST_AUTH_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
+          await waitForAuthDashboardReady(page, 10000);
+          await dismissModals(page);
+        }
+        const menuRetry2 = await openServicesMenuReturnsDashboard(page);
+        step("retry2Menu", menuRetry2);
+        await page.waitForTimeout(3500);
+        const smart3 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 20000);
+        page = smart3.page;
+        ok = smart3.ok;
       }
-      ok = await waitForDashboardSelects(page, 30000);
       if (ok) step("dashboardAfterBlockRetry", page.url());
       else stuck = await pageSnapshotBrief(page);
     }
@@ -1373,9 +1484,13 @@ function startServer() {
         }
       }
       browser = await ensureBrowser();
+      const verMatch = String((typeof browser.version === "function" ? browser.version() : "") || "").match(/(\d+\.\d+\.\d+\.\d+)/);
+      const chromeVer = (verMatch && verMatch[1]) || "141.0.0.0";
       context = await browser.newContext({
         viewport: { width: 1366, height: 860 },
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        locale: "en-IN",
+        timezoneId: "Asia/Kolkata",
+        userAgent: `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVer} Safari/537.36`,
         acceptDownloads: true
       });
       await context.addInitScript(() => { Object.defineProperty(navigator, "webdriver", { get: () => undefined }); });
@@ -1477,8 +1592,10 @@ function startServer() {
       }
       const url = page.url();
       if (url.includes("/auth/") || url.includes("fowelcome") || url.includes("dashboard")) {
+        // Login ke baad fowelcome / auth dashboard par Angular & session cookies settle hone dein
+        await page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => {});
         s.loggedIn = true;
-        return res.json({ ok: true, status: "logged_in", url });
+        return res.json({ ok: true, status: "logged_in", url: page.url() });
       }
       const errMsg = await page.evaluate(() => {
         const el = document.querySelector(".err, .alert-danger, .text-danger, [ng-if*='err']");
@@ -1510,8 +1627,9 @@ function startServer() {
       await page.waitForTimeout(4500);
       const url = page.url();
       if (url.includes("/auth/") || url.includes("fowelcome") || url.includes("dashboard")) {
+        await page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => {});
         s.loggedIn = true;
-        return res.json({ ok: true, status: "logged_in", url });
+        return res.json({ ok: true, status: "logged_in", url: page.url() });
       }
       return res.status(400).json({ ok: false, error: "OTP invalid ya verify nahi ho paya." });
     } catch (err) {
@@ -1634,134 +1752,143 @@ function startServer() {
       const release = await acquireFetchSlot();
       let payload = null;
       try {
-      // --- STEP 1: GSTR-2B ---
-      if (!opts.gstr2b) { result.status.gstr2b = { state: "skipped", message: "Option off tha." }; } else try {
-        page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "gstr2b");
-        s.page = page;
-        {
-          const earlyText = await page.locator("body").innerText().catch(() => "");
-          if (isGstr2bNotGenerated(earlyText)) {
-            setGstr2bNotGenerated(earlyText);
-            throw Object.assign(new Error("__gstr2b_not_generated__"), { gstr2bNotGenerated: true });
-          }
+      const runGstr2bStep = async (isRetryAfterTcs) => {
+        if (isRetryAfterTcs) {
+          result.warnings = result.warnings.filter(w => !String(w).startsWith("[gstr2b]"));
+          dbg.steps.gstr2bPostTcsRetry = true;
+          delete dbg.steps.gstr2bError;
         }
-        setProgress(s, "gstr2b_card", "GSTR-2B ka DOWNLOAD button dhundh rahe hain…");
-        const gstr2bCard = page.locator("div").filter({ hasText: /GSTR-?2B/i }).filter({ has: page.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')") }).last();
-        const downloadBtn = gstr2bCard.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')").first();
-        dbg.steps.gstr2bCardFound = await downloadBtn.count();
-
-        if (!(await downloadBtn.count())) {
-          const noCardText = await page.locator("body").innerText().catch(() => "");
-          if (gstr2bPageSaysNotGenerated(noCardText)) {
-            setGstr2bNotGenerated(noCardText);
-          } else {
-            setStatus("gstr2b", "failed", "GSTR-2B card ya Download button nahi mila (2B abhi generate na hui ho to bhi aisa hota hai).");
+        try {
+          page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, isRetryAfterTcs ? "gstr2b_retry" : "gstr2b");
+          s.page = page;
+          {
+            const earlyText = await page.locator("body").innerText().catch(() => "");
+            if (isGstr2bNotGenerated(earlyText)) {
+              setGstr2bNotGenerated(earlyText);
+              throw Object.assign(new Error("__gstr2b_not_generated__"), { gstr2bNotGenerated: true });
+            }
           }
-        } else {
-          setProgress(s, "gstr2b_click", "GSTR-2B ka DOWNLOAD dabaya ja raha hai…");
-          await downloadBtn.click({ force: true });
-          await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-          await page.waitForTimeout(1200);
-          dbg.steps.gstr2bPageUrl = page.url();
+          setProgress(s, "gstr2b_card", "GSTR-2B ka DOWNLOAD button dhundh rahe hain…");
+          const gstr2bCard = page.locator("div").filter({ hasText: /GSTR-?2B/i }).filter({ has: page.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')") }).last();
+          const downloadBtn = gstr2bCard.locator("button:has-text('DOWNLOAD'), a:has-text('DOWNLOAD')").first();
+          dbg.steps.gstr2bCardFound = await downloadBtn.count();
 
-          // ===== Asli portal process (26-Nov screenshots) =====
-          // 2B card ka DOWNLOAD -> gstr2b.gst.gov.in "Offline Download for GSTR-2B" page.
-          // Wahan download link NAHI hota — "GENERATE JSON FILE TO DOWNLOAD" dabana padta hai:
-          //   * 2B bani hui  -> click ke turant baad file download ho jati hai
-          //   * 2B nahi bani -> upar RED error banner turant aa jata hai
-          // Isliye: click karo, jitni jaldi file aaye utni jaldi lo; error banner dikhe to TURANT "not generated".
-          const downloads = [];
-          const onDl = d => downloads.push(d);
-          page.on("download", onDl);
-          const ctx = typeof page.context === "function" ? page.context() : null;
-          const onCtxPage = (p2) => { try { p2.on("download", onDl); } catch (_) {} };
-          if (ctx && typeof ctx.on === "function") ctx.on("page", onCtxPage);
-          let download = null, genClicked = false;
-          try {
-            let txt = await page.locator("body").innerText().catch(() => "");
-            dbg.steps.gstr2bOfflinePageText = String(txt || "").replace(/\s+/g, " ").slice(0, 700);
-            if (gstr2bPageSaysNotGenerated(txt)) {
-              setGstr2bNotGenerated(txt);           // page par pehle se hi error banner
-            } else if (gstr2bPageSaysSessionExpired(txt)) {
-              setStatus("gstr2b", "failed", "Portal session expire ho gaya — dobara fetch karein.");
+          if (!(await downloadBtn.count())) {
+            const noCardText = await page.locator("body").innerText().catch(() => "");
+            if (gstr2bPageSaysNotGenerated(noCardText)) {
+              setGstr2bNotGenerated(noCardText);
             } else {
-              const genBtn = page.locator("button:has-text('GENERATE JSON'), a:has-text('GENERATE JSON')").first();
-              if (await genBtn.count().catch(() => 0)) {
-                setProgress(s, "gstr2b_generate", "GSTR-2B JSON download kiya ja raha hai…");
-                genClicked = true;
-                await genBtn.click({ force: true, timeout: 10000 }).catch(() => {});
+              setStatus("gstr2b", "failed", "GSTR-2B card ya Download button nahi mila (2B abhi generate na hui ho to bhi aisa hota hai).");
+            }
+          } else {
+            setProgress(s, "gstr2b_click", "GSTR-2B ka DOWNLOAD dabaya ja raha hai…");
+            await downloadBtn.click({ force: true });
+            await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+            await page.waitForTimeout(1200);
+            dbg.steps.gstr2bPageUrl = page.url();
+
+            // ===== Asli portal process (26-Nov screenshots) =====
+            // 2B card ka DOWNLOAD -> gstr2b.gst.gov.in "Offline Download for GSTR-2B" page.
+            // Wahan download link NAHI hota — "GENERATE JSON FILE TO DOWNLOAD" dabana padta hai:
+            //   * 2B bani hui  -> click ke turant baad file download ho jati hai
+            //   * 2B nahi bani -> upar RED error banner turant aa jata hai
+            // Isliye: click karo, jitni jaldi file aaye utni jaldi lo; error banner dikhe to TURANT "not generated".
+            const downloads = [];
+            const onDl = d => downloads.push(d);
+            page.on("download", onDl);
+            const ctx = typeof page.context === "function" ? page.context() : null;
+            const onCtxPage = (p2) => { try { p2.on("download", onDl); } catch (_) {} };
+            if (ctx && typeof ctx.on === "function") ctx.on("page", onCtxPage);
+            let download = null, genClicked = false;
+            try {
+              let txt = await page.locator("body").innerText().catch(() => "");
+              dbg.steps.gstr2bOfflinePageText = String(txt || "").replace(/\s+/g, " ").slice(0, 700);
+              if (gstr2bPageSaysNotGenerated(txt)) {
+                setGstr2bNotGenerated(txt);           // page par pehle se hi error banner
+              } else if (gstr2bPageSaysSessionExpired(txt)) {
+                setStatus("gstr2b", "failed", "Portal session expire ho gaya — dobara fetch karein.");
               } else {
-                // purane layout me seedha download link bhi hota tha
-                const l = page.locator("a:has-text('Click here to download'), a:has-text('File 1')").first();
-                if (await l.count().catch(() => 0)) {
+                const genBtn = page.locator("button:has-text('GENERATE JSON'), a:has-text('GENERATE JSON')").first();
+                if (await genBtn.count().catch(() => 0)) {
+                  setProgress(s, "gstr2b_generate", "GSTR-2B JSON download kiya ja raha hai…");
                   genClicked = true;
-                  await l.click({ force: true, timeout: 8000 }).catch(() => {});
+                  await genBtn.click({ force: true, timeout: 10000 }).catch(() => {});
+                } else {
+                  // purane layout me seedha download link bhi hota tha
+                  const l = page.locator("a:has-text('Click here to download'), a:has-text('File 1')").first();
+                  if (await l.count().catch(() => 0)) {
+                    genClicked = true;
+                    await l.click({ force: true, timeout: 8000 }).catch(() => {});
+                  }
                 }
+                // 10 second tak dekho: file aayi ya error banner aaya (dono turant aate hain)
+                const started = Date.now();
+                while (genClicked && Date.now() - started < 10000 && !downloads.length) {
+                  await page.waitForTimeout(700);
+                  const t = await page.locator("body").innerText().catch(() => "");
+                  if (gstr2bPageSaysNotGenerated(t)) { setGstr2bNotGenerated(t); break; }
+                  if (gstr2bPageSaysSessionExpired(t)) { setStatus("gstr2b", "failed", "Portal session expire ho gaya — dobara fetch karein."); break; }
+                }
+                if (downloads.length) download = downloads[0];
               }
-              // 10 second tak dekho: file aayi ya error banner aaya (dono turant aate hain)
-              const started = Date.now();
-              while (genClicked && Date.now() - started < 10000 && !downloads.length) {
-                await page.waitForTimeout(700);
-                const t = await page.locator("body").innerText().catch(() => "");
-                if (gstr2bPageSaysNotGenerated(t)) { setGstr2bNotGenerated(t); break; }
-                if (gstr2bPageSaysSessionExpired(t)) { setStatus("gstr2b", "failed", "Portal session expire ho gaya — dobara fetch karein."); break; }
+            } finally {
+              page.off("download", onDl);
+              if (ctx && typeof ctx.off === "function") ctx.off("page", onCtxPage);
+            }
+
+            const after = await snapshotPage(page);
+            const multiFile = (await page.locator("a:has-text('File 2')").count().catch(() => 0)) > 0;
+            dbg.steps.gstr2bAfterDownload = { genClicked, gotDownload: !!download, multiFile, url: after.url, buttons: after.buttons, bodyExcerpt: after.bodyText.slice(0, 1500) };
+
+            if (!download) {
+              // File nahi aayi -> "not generated" likh kar TURANT aage (koi 90s wait nahi)
+              const alreadyNotGen = !!(result.status.gstr2b && result.status.gstr2b.code === "gstr2b_not_generated");
+              if (!alreadyNotGen) {
+                setGstr2bNotGenerated(after.bodyText, "GSTR-2B generate nahi hui — portal ne error diya ya file nahi aayi (app khud 2B nahi banata).");
               }
-              if (downloads.length) download = downloads[0];
-            }
-          } finally {
-            page.off("download", onDl);
-            if (ctx && typeof ctx.off === "function") ctx.off("page", onCtxPage);
-          }
-
-          const after = await snapshotPage(page);
-          const multiFile = (await page.locator("a:has-text('File 2')").count().catch(() => 0)) > 0;
-          dbg.steps.gstr2bAfterDownload = { genClicked, gotDownload: !!download, multiFile, url: after.url, buttons: after.buttons, bodyExcerpt: after.bodyText.slice(0, 1500) };
-
-          if (!download) {
-            // File nahi aayi -> "not generated" likh kar TURANT aage (koi 90s wait nahi)
-            const alreadyNotGen = !!(result.status.gstr2b && result.status.gstr2b.code === "gstr2b_not_generated");
-            if (!alreadyNotGen) {
-              setGstr2bNotGenerated(after.bodyText, "GSTR-2B generate nahi hui — portal ne error diya ya file nahi aayi (app khud 2B nahi banata).");
-            }
-          } else {
-            const rawBuf = fs.readFileSync(await download.path());
-            const pack = readJsonFilesFromBuffer(rawBuf);
-            const parsedList = pack.files.map(f => JSON.parse(f.text));
-            const parsed = parsedList.find(x => x && x.data && x.data.itcsumm) || parsedList[0];
-            const sugg = download.suggestedFilename() || `GSTR2B_${result.month}${result.fy.slice(0, 4)}`;
-            if (pack.isZip && pack.files.length > 1) {
-              result.gstr2b.fileName = /\.zip$/i.test(sugg) ? sugg : sugg.replace(/\.json$/i, "") + ".zip";
-              result.gstr2b.jsonBase64 = "data:application/zip;base64," + rawBuf.toString("base64");
             } else {
-              result.gstr2b.fileName = /\.json$/i.test(sugg) ? sugg : (pack.isZip ? safeFileName(pack.files[0].name, sugg + ".json") : sugg + ".json");
-              result.gstr2b.jsonBase64 = "data:application/json;base64," + Buffer.from(pack.files[0].text, "utf8").toString("base64");
+              const rawBuf = fs.readFileSync(await download.path());
+              const pack = readJsonFilesFromBuffer(rawBuf);
+              const parsedList = pack.files.map(f => JSON.parse(f.text));
+              const parsed = parsedList.find(x => x && x.data && x.data.itcsumm) || parsedList[0];
+              const sugg = download.suggestedFilename() || `GSTR2B_${result.month}${result.fy.slice(0, 4)}`;
+              if (pack.isZip && pack.files.length > 1) {
+                result.gstr2b.fileName = /\.zip$/i.test(sugg) ? sugg : sugg.replace(/\.json$/i, "") + ".zip";
+                result.gstr2b.jsonBase64 = "data:application/zip;base64," + rawBuf.toString("base64");
+              } else {
+                result.gstr2b.fileName = /\.json$/i.test(sugg) ? sugg : (pack.isZip ? safeFileName(pack.files[0].name, sugg + ".json") : sugg + ".json");
+                result.gstr2b.jsonBase64 = "data:application/json;base64," + Buffer.from(pack.files[0].text, "utf8").toString("base64");
+              }
+              const sm = summarizeGstr2B(parsed);
+              const countOf = key => parsedList.reduce((acc, x) => acc + (Array.isArray(x?.data?.docdata?.[key]) ? x.data.docdata[key].length : 0), 0);
+              sm.b2bSuppliersCount = countOf("b2b");
+              sm.cdnrCount = countOf("cdnr");
+              result.gstr2b.summary = sm;
+              result.gstr2b.b2bSellers = buildB2bSellers(parsedList);
+              if (result.gstr2b.b2bSellers.length) sm.b2bSuppliersCount = result.gstr2b.b2bSellers.length;
+              dbg.steps.gstr2bFiles = { isZip: pack.isZip, files: pack.files.map(f => f.name) };
+              dbg.steps.gstr2bItcKeys = { avl: Object.keys(parsed?.data?.itcsumm?.itcavl || {}), unavl: Object.keys(parsed?.data?.itcsumm?.itcunavl || {}) };
+              const problems = sm.warnings.slice();
+              if (multiFile && !(pack.isZip && pack.files.length > 1)) problems.push("2B ki ek se zyada file hain — sirf File 1 ka summary li gayi hai, totals adhoore ho sakte hain.");
+              if (sm.rtnprd && sm.rtnprd !== result.period) problems.push(`Download hui 2B ka period ${sm.rtnprd} hai, jabki maanga gaya ${result.period}.`);
+              if (problems.length) setStatus("gstr2b", "uncertain", problems.join(" "));
+              else setStatus("gstr2b", "ok", "GSTR-2B mil gayi.");
             }
-            const sm = summarizeGstr2B(parsed);
-            const countOf = key => parsedList.reduce((acc, x) => acc + (Array.isArray(x?.data?.docdata?.[key]) ? x.data.docdata[key].length : 0), 0);
-            sm.b2bSuppliersCount = countOf("b2b");
-            sm.cdnrCount = countOf("cdnr");
-            result.gstr2b.summary = sm;
-            result.gstr2b.b2bSellers = buildB2bSellers(parsedList);
-            if (result.gstr2b.b2bSellers.length) sm.b2bSuppliersCount = result.gstr2b.b2bSellers.length;
-            dbg.steps.gstr2bFiles = { isZip: pack.isZip, files: pack.files.map(f => f.name) };
-            dbg.steps.gstr2bItcKeys = { avl: Object.keys(parsed?.data?.itcsumm?.itcavl || {}), unavl: Object.keys(parsed?.data?.itcsumm?.itcunavl || {}) };
-            const problems = sm.warnings.slice();
-            if (multiFile && !(pack.isZip && pack.files.length > 1)) problems.push("2B ki ek se zyada file hain — sirf File 1 ka summary li gayi hai, totals adhoore ho sakte hain.");
-            if (sm.rtnprd && sm.rtnprd !== result.period) problems.push(`Download hui 2B ka period ${sm.rtnprd} hai, jabki maanga gaya ${result.period}.`);
-            if (problems.length) setStatus("gstr2b", "uncertain", problems.join(" "));
-            else setStatus("gstr2b", "ok", "GSTR-2B mil gayi.");
+          }
+        } catch (err) {
+          if (err && err.gstr2bNotGenerated) {
+            // setGstr2bNotGenerated() pehle hi ho chuka hai
+          } else if (isGstr2bNotGenerated(err && err.message)) {
+            setGstr2bNotGenerated(err.message);
+          } else {
+            setStatus("gstr2b", "failed", "GSTR-2B fetch issue: " + shortErr(err));
+            dbg.steps.gstr2bError = err.message;
           }
         }
-      } catch (err) {
-        if (err && err.gstr2bNotGenerated) {
-          // setGstr2bNotGenerated() pehle hi ho chuka hai
-        } else if (isGstr2bNotGenerated(err && err.message)) {
-          setGstr2bNotGenerated(err.message);
-        } else {
-          setStatus("gstr2b", "failed", "GSTR-2B fetch issue: " + shortErr(err));
-          dbg.steps.gstr2bError = err.message;
-        }
-      }
+      };
+
+      // --- STEP 1: GSTR-2B ---
+      if (!opts.gstr2b) { result.status.gstr2b = { state: "skipped", message: "Option off tha." }; } else await runGstr2bStep(false);
 
       setProgress(s, "tcs_open", "E-Com / TCS section khol rahe hain…");
       // --- STEP 2: E-COMMERCE TCS  (Services > Returns > TDS and TCS credit received > PREPARE ONLINE > TCS Credit received) ---
@@ -1786,6 +1913,17 @@ function startServer() {
         });
         await dismissModals(page);
         let menu = await clickTcsMenu();
+        if (!menu) {
+          try {
+            const tcsCtx = typeof page.context === "function" ? page.context() : null;
+            const tcsBefore = tcsCtx && typeof tcsCtx.pages === "function" ? (tcsCtx.pages() || []).length : 0;
+            const tcsEns = await ensureReturnsDashboard(page, tcsCtx, tcsBefore, dbg, "tcs_nav");
+            page = tcsEns.page;
+            s.page = page;
+            await dismissModals(page);
+            menu = await clickTcsMenu();
+          } catch (_) {}
+        }
         if (!menu) {
           await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
           await page.waitForTimeout(3500);
@@ -1903,6 +2041,13 @@ function startServer() {
       } catch (err) {
         setStatus("tcs", "failed", "E-Commerce TCS fetch issue: " + shortErr(err));
         dbg.steps.tcsError = shortErr(err);
+      }
+
+      // Agar Step 1 (GSTR-2B) WAF/Access Denied se fail hua, lekin Step 2 (TCS) return.gst.gov.in par chal gaya,
+      // to session pakka healthy hai — ek baar GSTR-2B phir try karo (user ka "Adhoora fetch" khud theek ho jayega).
+      if (opts.gstr2b && result.status.gstr2b.state === "failed" && opts.tcs && ["ok", "empty", "uncertain"].includes(result.status.tcs.state)) {
+        setProgress(s, "gstr2b_retry", "TCS mil gaya — GSTR-2B ek baar phir try kar rahe hain…");
+        await runGstr2bStep(true);
       }
 
       // --- STEP 3: NOTICES & ORDERS ---
@@ -2110,7 +2255,7 @@ module.exports = {
   summarizeGstr2B, periodFor, safeFileName, getQuarterForMonth, ERR_TEXT_RE, OK_TEXT_RE,
   // naye helpers bhi test ke liye bahar (browser ke bina testable)
   readJsonFilesFromBuffer, buildB2bSellers, partialOutcome, getMonthName, normalizePeriod,
-  isGstr2bNotGenerated, GSTR2B_NOT_GENERATED_RE, isGstr2bNotGeneratedFast, isReturnsDashboardUrl, ensureReturnsDashboard, clickReturnsDashboardLink, GSTR2B_NOT_GENERATED_FAST_RE, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, TCS_EMPTY_RE, waitForBodyMatch,
+  isGstr2bNotGenerated, GSTR2B_NOT_GENERATED_RE, isGstr2bNotGeneratedFast, isReturnsDashboardUrl, ensureReturnsDashboard, clickReturnsDashboardLink, openServicesMenuReturnsDashboard, waitForAuthDashboardReady, waitForReturnsSelectsSmart, GSTR2B_NOT_GENERATED_FAST_RE, gstr2bPageSaysNotGenerated, gstr2bPageSaysSessionExpired, isTcsEmpty, TCS_EMPTY_RE, waitForBodyMatch,
   openReturnsDashboardAndSearch, dismissModals, selectDropdownByText, pageSnapshotBrief, adoptNewPopupPage,
   classifyStuckPage, readSelectOptions, guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,

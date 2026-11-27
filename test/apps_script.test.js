@@ -247,3 +247,30 @@ test("APPS_SCRIPT: saveFeeData merges stale revisions and honors deleted receipt
   const savedNos = Array.from(ctx.readFeeData(ss).ledger.map(x => String(x.receiptNo))).sort();
   assert.deepStrictEqual(savedNos, ["RCP-2", "RCP-3"]);
 });
+
+test("APPS_SCRIPT: doGet decodes GSTR2B_Status failure flags (2B_FAILED / TCS_FAILED / NOT_GENERATED)", () => {
+  const ctx = createGasContext({}, {
+    "PAID CLINTS": [
+      ["Sr. No.", "Client", "ID", "GST No.", "Portal_Period", "ECom_Gross", "GSTR2B_Status"],
+      ["56", "SIMARAN ANSARI", "C56", "09FVVPA8695C1ZV", "2026-27 / 11", 787849, "2B_FAILED"],
+      ["55", "SANDEEP GUPTA", "C55", "09ABCPG1111A1Z1", "2026-27 / 11", 0, "NOT_GENERATED|TCS_FAILED"]
+    ]
+  });
+  const out = JSON.parse(ctx.doGet({ parameter: {} }).getContent());
+  assert.equal(out.status, "ok");
+  assert.equal(out.clients.length, 2);
+
+  const c56 = out.clients.find(c => c.client === "SIMARAN ANSARI");
+  assert.equal(c56.portalData.gstr2bStatus, "2B_FAILED");
+  assert.equal(c56.portalData.gstr2bNotGenerated, false);
+  assert.equal(Boolean(c56.portalData.missing && c56.portalData.missing.gstr2b), true);
+  assert.equal(Boolean(c56.portalData.missing && c56.portalData.missing.tcs), false);
+  assert.match(c56.portalData.partialNote, /GSTR-2B/);
+
+  const c55 = out.clients.find(c => c.client === "SANDEEP GUPTA");
+  assert.equal(c55.portalData.gstr2bStatus, "NOT_GENERATED|TCS_FAILED");
+  assert.equal(c55.portalData.gstr2bNotGenerated, true);
+  assert.equal(Boolean(c55.portalData.missing && c55.portalData.missing.gstr2b), false);
+  assert.equal(Boolean(c55.portalData.missing && c55.portalData.missing.tcs), true);
+  assert.match(c55.portalData.partialNote, /TCS/);
+});
