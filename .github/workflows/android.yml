@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 env:
-  RELEASE_TAG: android-v6.0.2
+  RELEASE_TAG: android-v6.0.3
 
 jobs:
   build:
@@ -111,7 +111,7 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v6.0.2)
+          ## CloudGST Android APK (v6.0.3)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
@@ -119,17 +119,17 @@ jobs:
           3. Icon **J&A (CloudGST)** kholein. Pehle se install hai to seedha update ho jayega
              (data/settings safe rahenge).
 
-          Naya kya hai (v6.0.2):
-          - External USB / Bluetooth keyboard connect hone par phone ka on-screen keyboard screen par nahi aayega (disconnect hote hi normal wapas aa jayega).
-          - Portal screen par **Space** button dabane se agle client ka **Fetch / Re-Fetch** seedha click ho jayega (Search ya modal me typing par koi asar nahi).
-          - Default unticked checkboxes (GSTR-2B / E-Com / Auto-Next), collapsed fetch details, aur 5-Tab Parallel Phone Mode intact.
+          Naya kya hai (v6.0.3):
+          - External USB / Bluetooth keyboard connect hone par Android WebView ka native soft IME (`onCheckIsTextEditor` / `onCreateInputConnection` + `FLAG_ALT_FOCUSABLE_IM` + `WindowInsets.Type.ime()` + `focus` hook) poori tarah band rahega — phone ka on-screen keyboard bilkul pop up nahi hoga (disconnect hote hi normal wapas aa jayega).
+          - Portal screen par **Space** button dabane se agle client ka **Fetch / Re-Fetch** seedha click hota rahega.
+          - Default unticked checkboxes, collapsed fetch details, aur 5-Tab Parallel Phone Mode intact.
           EOF
-          (cd android/app/src/main/assets && zip -r9 "$GITHUB_WORKSPACE/CloudGST_web_v6_0_2.zip" app)
-          ls -lh "CloudGST_web_v6_0_2.zip"
+          (cd android/app/src/main/assets && zip -r9 "$GITHUB_WORKSPACE/CloudGST_web_v6_0_3.zip" app)
+          ls -lh "CloudGST_web_v6_0_3.zip"
           cat verify.md >> notes.md
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
-          gh release create "$RELEASE_TAG" "CloudGST.apk" "CloudGST_web_v6_0_2.zip" \
+          gh release create "$RELEASE_TAG" "CloudGST.apk" "CloudGST_web_v6_0_3.zip" \
             --target "$GITHUB_SHA" \
-            --title "CloudGST Android v6.0.2 (APK + Web Bundle)" \
+            --title "CloudGST Android v6.0.3 (APK + Web Bundle)" \
             --notes-file notes.md

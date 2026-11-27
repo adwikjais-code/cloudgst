@@ -25,7 +25,11 @@ import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
@@ -99,6 +103,7 @@ public class MainActivity extends FragmentActivity {
     private SharedPreferences prefs;
     private InputManager inputManager;
     private InputManager.InputDeviceListener inputDeviceListener;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile boolean externalKeyboardConnected = false;
 
     /** Storage permission ke baad pending save (sirf Android 7/8 ke liye). */
@@ -111,9 +116,29 @@ public class MainActivity extends FragmentActivity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
 
         rootView = new FrameLayout(this);
-        web = new WebView(this);
+        web = new WebView(this) {
+            @Override
+            public boolean onCheckIsTextEditor() {
+                if (externalKeyboardConnected) return false;
+                return super.onCheckIsTextEditor();
+            }
+
+            @Override
+            public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+                if (externalKeyboardConnected) return null;
+                return super.onCreateInputConnection(outAttrs);
+            }
+        };
         rootView.addView(web, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            rootView.setOnApplyWindowInsetsListener((v, insets) -> {
+                if (externalKeyboardConnected && insets != null && insets.isVisible(WindowInsets.Type.ime())) {
+                    mainHandler.post(this::hideSoftKeyboard);
+                }
+                return v.onApplyWindowInsets(insets);
+            });
+        }
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -296,21 +321,49 @@ public class MainActivity extends FragmentActivity {
 
     // ================= external keyboard: hide on-screen soft keyboard =================
 
+    private static boolean hasTypingKeys(InputDevice dev) {
+        try {
+            boolean[] has = dev.hasKeys(KeyEvent.KEYCODE_A, KeyEvent.KEYCODE_E, KeyEvent.KEYCODE_SPACE);
+            return has != null && has.length == 3 && has[0] && has[1] && has[2];
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isPhysicalKeyboardDevice(InputDevice dev) {
+        if (dev == null || dev.isVirtual()) return false;
+        int src = dev.getSources();
+        if ((src & InputDevice.SOURCE_KEYBOARD) != InputDevice.SOURCE_KEYBOARD) return false;
+        if (dev.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC) return true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && dev.isExternal() && hasTypingKeys(dev)) {
+            return true;
+        }
+        return hasTypingKeys(dev);
+    }
+
+    private static boolean isTypingKeyCode(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_SPACE
+                || keyCode == KeyEvent.KEYCODE_ENTER
+                || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+                || keyCode == KeyEvent.KEYCODE_DEL
+                || keyCode == KeyEvent.KEYCODE_TAB
+                || (keyCode >= KeyEvent.KEYCODE_A && keyCode <= KeyEvent.KEYCODE_Z)
+                || (keyCode >= KeyEvent.KEYCODE_0 && keyCode <= KeyEvent.KEYCODE_9)
+                || (keyCode >= KeyEvent.KEYCODE_NUMPAD_0 && keyCode <= KeyEvent.KEYCODE_NUMPAD_9);
+    }
+
     private boolean detectExternalKeyboard() {
         try {
             Configuration cfg = getResources().getConfiguration();
-            if (cfg.keyboard != Configuration.KEYBOARD_NOKEYS
+            if ((cfg.keyboard == Configuration.KEYBOARD_QWERTY
+                    || cfg.keyboard == Configuration.KEYBOARD_12KEY)
                     && cfg.hardKeyboardHidden == Configuration.HARDKEYBOARDHIDDEN_NO) {
                 return true;
             }
         } catch (Throwable ignored) { }
         try {
             for (int id : InputDevice.getDeviceIds()) {
-                InputDevice dev = InputDevice.getDevice(id);
-                if (dev == null || dev.isVirtual()) continue;
-                int src = dev.getSources();
-                if ((src & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD
-                        && dev.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+                if (isPhysicalKeyboardDevice(InputDevice.getDevice(id))) {
                     return true;
                 }
             }
@@ -330,15 +383,26 @@ public class MainActivity extends FragmentActivity {
 
     private void applyExternalKeyboardMode(final boolean connected) {
         try {
-            if (connected) {
+            if (connected && lockView == null) {
+                getWindow().addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
                 getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
                         | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-                hideSoftKeyboard();
             } else {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
                 getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
                         | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
             }
         } catch (Throwable ignored) { }
+        try {
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null && web != null) {
+                imm.restartInput(web);
+            }
+        } catch (Throwable ignored) { }
+        if (connected) {
+            hideSoftKeyboard();
+            mainHandler.postDelayed(this::hideSoftKeyboard, 120);
+        }
         if (web != null) {
             try {
                 web.evaluateJavascript(
@@ -351,13 +415,27 @@ public class MainActivity extends FragmentActivity {
 
     void hideSoftKeyboard() {
         try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                WindowInsetsController wic = getWindow().getInsetsController();
+                if (wic != null) wic.hide(WindowInsets.Type.ime());
+                if (web != null && web.getWindowInsetsController() != null) {
+                    web.getWindowInsetsController().hide(WindowInsets.Type.ime());
+                }
+            }
+        } catch (Throwable ignored) { }
+        try {
             InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
             if (imm == null) return;
-            View v = getCurrentFocus();
-            if (v == null) v = web;
-            if (v == null) v = rootView;
-            if (v != null && v.getWindowToken() != null) {
-                imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+            View[] views = new View[] {
+                    getCurrentFocus(),
+                    web,
+                    rootView,
+                    getWindow() != null ? getWindow().getDecorView() : null
+            };
+            for (View v : views) {
+                if (v != null && v.getWindowToken() != null) {
+                    imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+                }
             }
         } catch (Throwable ignored) { }
     }
@@ -386,6 +464,15 @@ public class MainActivity extends FragmentActivity {
                 + "  }"
                 + "}"
                 + "function applyAll(on){try{document.querySelectorAll('input,textarea').forEach(function(el){applyEl(el,on);});}catch(e){}}"
+                + "try{"
+                + "  var origFocus=HTMLElement.prototype.focus;"
+                + "  HTMLElement.prototype.focus=function(){"
+                + "    try{if(window.__cgExtKb)applyEl(this,true);}catch(e){}"
+                + "    var r=origFocus.apply(this,arguments);"
+                + "    try{if(window.__cgExtKb&&window.CloudGSTNative&&CloudGSTNative.hideSoftKeyboard)CloudGSTNative.hideSoftKeyboard();}catch(e){}"
+                + "    return r;"
+                + "  };"
+                + "}catch(e){}"
                 + "window.__cgExtKbChanged=function(on){"
                 + "  window.__cgExtKb=!!on;applyAll(window.__cgExtKb);"
                 + "  if(window.__cgExtKb&&window.CloudGSTNative&&CloudGSTNative.hideSoftKeyboard){try{CloudGSTNative.hideSoftKeyboard();}catch(e){}}"
@@ -428,9 +515,9 @@ public class MainActivity extends FragmentActivity {
         try {
             if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
                 InputDevice dev = event.getDevice();
-                if (dev != null && !dev.isVirtual()
-                        && (dev.getSources() & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD
-                        && dev.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+                boolean fromPhysicalKb = isPhysicalKeyboardDevice(dev)
+                        || (dev != null && !dev.isVirtual() && event.getDeviceId() > 0 && isTypingKeyCode(event.getKeyCode()));
+                if (fromPhysicalKb) {
                     if (!externalKeyboardConnected) {
                         externalKeyboardConnected = true;
                         applyExternalKeyboardMode(true);
@@ -602,12 +689,14 @@ public class MainActivity extends FragmentActivity {
         if (lockView != null && lockView.getParent() != null) {
             rootView.removeView(lockView);
         }
+        lockView = null;
         if (web != null && appLoaded) {
             // app khud ka password popup na dikhaye (fingerprint hi unlock hai)
             web.evaluateJavascript(
                     "(window.cloudGstNativeUnlocked&&window.cloudGstNativeUnlocked())", null);
         }
         loadApp();
+        syncExternalKeyboardState();
     }
 
     // ================= downloads =================

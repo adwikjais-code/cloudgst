@@ -299,8 +299,8 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
 
   const gradle = fs.readFileSync(path.join(ROOT, "android", "app", "build.gradle"), "utf8");
   const vcMatch = gradle.match(/versionCode\s+(\d+)/);
-  assert.ok(vcMatch && Number(vcMatch[1]) >= 84, "versionCode must be >= 84 to upgrade cleanly over v6.0.1 (83)");
-  assert.match(gradle, /versionName\s+'6\.0\.2'/);
+  assert.ok(vcMatch && Number(vcMatch[1]) >= 85, "versionCode must be >= 85 to upgrade cleanly over v6.0.2 (84)");
+  assert.match(gradle, /versionName\s+'6\.0\.3'/);
 
   // Portal checkboxes default OFF (GSTR-2B, E-Com, Auto-Next, Drive) & no auto-expand dropdown on fetch completion
   const webHtml = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
@@ -312,13 +312,19 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
   assert.doesNotMatch(portalJs, /nextChk\.checked\s*=\s*true/, "Auto-Next must not auto-check itself");
   assert.doesNotMatch(portalJs, /gpExpanded\.add\(c\.clientKey\)/, "Fetched client details must not auto-expand");
 
-  // v6.0.2: External physical keyboard hides soft IME & Spacebar triggers next Fetch/Re-Fetch on Portal
+  // v6.0.2/v6.0.3: External physical keyboard blocks soft IME natively & Spacebar triggers next Fetch/Re-Fetch on Portal
   const manifest = fs.readFileSync(path.join(ROOT, "android", "app", "src", "main", "AndroidManifest.xml"), "utf8");
   assert.match(manifest, /android:configChanges="[^"]*\bkeyboard\b[^"]*"/, "AndroidManifest must handle keyboard configChanges without recreating Activity");
   assert.match(mainAct, /detectExternalKeyboard/, "MainActivity must detect connected external keyboards");
+  assert.match(mainAct, /isPhysicalKeyboardDevice/, "MainActivity must detect physical keyboards including USB/BT dongles via hasTypingKeys");
   assert.match(mainAct, /InputDeviceListener/, "MainActivity must react dynamically to external keyboard connect/disconnect");
+  assert.match(mainAct, /onCreateInputConnection/, "MainActivity WebView must block soft IME InputConnection when external keyboard is connected");
+  assert.match(mainAct, /onCheckIsTextEditor/, "MainActivity WebView must return false from onCheckIsTextEditor when external keyboard is connected");
+  assert.match(mainAct, /FLAG_ALT_FOCUSABLE_IM/, "MainActivity must set FLAG_ALT_FOCUSABLE_IM when external keyboard is connected");
+  assert.match(mainAct, /WindowInsets\.Type\.ime\(\)/, "MainActivity must hide IME via WindowInsetsController on Android 11+");
   assert.match(mainAct, /SOFT_INPUT_STATE_ALWAYS_HIDDEN/, "MainActivity must suppress soft keyboard when external keyboard is connected");
   assert.match(mainAct, /injectExternalKeyboardGuard/, "MainActivity must inject inputmode=none guard into WebView");
+  assert.match(mainAct, /HTMLElement\.prototype\.focus/, "MainActivity guard must apply inputmode=none synchronously before focus()");
   assert.match(mainAct, /public boolean hasExternalKeyboard\(\)/, "CloudGSTNative must expose hasExternalKeyboard()");
   assert.match(mainAct, /public void hideSoftKeyboard\(\)/, "CloudGSTNative must expose hideSoftKeyboard()");
   assert.match(portalJs, /let gpLastFetchKey\s*=\s*null;/, "portal-module must track gpLastFetchKey for Spacebar next Fetch/Re-Fetch");

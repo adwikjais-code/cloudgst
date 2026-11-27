@@ -651,7 +651,7 @@
           return `<div class="inline-flex flex-wrap items-center gap-1.5 justify-end">
             <span class="text-[10px] font-bold px-1.5 py-0.5 rounded ${isUp ? "bg-purple-100 text-purple-800" : "bg-slate-200 text-slate-700"}">${isUp ? "GSTR-1" : "Fetch"}</span>
             <img src="${st.captchaBase64}" alt="Captcha" class="h-9 rounded-lg border border-slate-300 bg-white px-1 object-contain" />
-            <input type="text" autocomplete="off" placeholder="Code" value="${gpEsc(st._capDraft || "")}" ${sub ? "disabled" : ""} class="gp-cap-inp w-20 px-2 py-1.5 rounded-lg border ${isUp ? "border-purple-400" : "border-indigo-400"} text-xs font-mono bg-white outline-none" data-k="${gpEsc(c.clientKey)}" />
+            <input type="text" autocomplete="off" inputmode="${window.__cgExtKb ? "none" : "text"}" placeholder="Code" value="${gpEsc(st._capDraft || "")}" ${sub ? "disabled" : ""} class="gp-cap-inp w-20 px-2 py-1.5 rounded-lg border ${isUp ? "border-purple-400" : "border-indigo-400"} text-xs font-mono bg-white outline-none" data-k="${gpEsc(c.clientKey)}" />
             <button type="button" ${sub ? "disabled" : ""} class="gp-cap-submit-btn px-2.5 py-1.5 rounded-lg ${isUp ? "bg-purple-600 hover:bg-purple-700" : "bg-emerald-600 hover:bg-emerald-700"} text-white text-[11px] font-semibold" data-k="${gpEsc(c.clientKey)}">${sub ? "⏳" : (isUp ? "Upload" : "Go")}</button>
             <button type="button" class="gp-cap-reload-btn px-1.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-[11px]" data-k="${gpEsc(c.clientKey)}" title="Refresh Captcha">🔄</button>
             <button type="button" class="gp-cap-cancel-btn px-2 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-[11px] font-bold" data-k="${gpEsc(c.clientKey)}" title="Cancel Captcha">✕</button>
@@ -659,7 +659,7 @@
         }
         if (st.phase === "otp") {
           return `<div class="inline-flex items-center gap-1.5 justify-end">
-            <input type="text" placeholder="OTP" class="gp-otp-inp w-20 px-2 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-xs font-mono outline-none" data-k="${gpEsc(c.clientKey)}" />
+            <input type="text" inputmode="${window.__cgExtKb ? "none" : "text"}" placeholder="OTP" class="gp-otp-inp w-20 px-2 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-xs font-mono outline-none" data-k="${gpEsc(c.clientKey)}" />
             <button type="button" class="gp-otp-submit-btn px-2.5 py-1.5 rounded-lg bg-amber-600 text-white text-[11px] font-semibold" data-k="${gpEsc(c.clientKey)}">Verify</button>
             <button type="button" class="gp-cap-cancel-btn px-2 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-[11px] font-bold" data-k="${gpEsc(c.clientKey)}" title="Cancel">✕</button>
           </div>`;
