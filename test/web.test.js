@@ -299,6 +299,16 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
 
   const gradle = fs.readFileSync(path.join(ROOT, "android", "app", "build.gradle"), "utf8");
   const vcMatch = gradle.match(/versionCode\s+(\d+)/);
-  assert.ok(vcMatch && Number(vcMatch[1]) >= 82, "versionCode must be >= 82 to upgrade cleanly over v5.9.18 (81)");
-  assert.match(gradle, /versionName\s+'6\.0\.0'/);
+  assert.ok(vcMatch && Number(vcMatch[1]) >= 83, "versionCode must be >= 83 to upgrade cleanly over v6.0.0 (82)");
+  assert.match(gradle, /versionName\s+'6\.0\.1'/);
+
+  // Portal checkboxes default OFF (GSTR-2B, E-Com, Auto-Next, Drive) & no auto-expand dropdown on fetch completion
+  const webHtml = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
+  for (const id of ["gpOpt2b", "gpOptTcs", "gpAutoNextChk", "gpAutoDriveChk"]) {
+    const tagMatch = webHtml.match(new RegExp(`<input[^>]*id="${id}"[^>]*>`));
+    assert.ok(tagMatch, `expected checkbox #${id} in web/index.html`);
+    assert.equal(/\bchecked\b/i.test(tagMatch[0]), false, `#${id} must NOT be pre-checked by default`);
+  }
+  assert.doesNotMatch(portalJs, /nextChk\.checked\s*=\s*true/, "Auto-Next must not auto-check itself");
+  assert.doesNotMatch(portalJs, /gpExpanded\.add\(c\.clientKey\)/, "Fetched client details must not auto-expand");
 });

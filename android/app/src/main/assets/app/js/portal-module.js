@@ -224,33 +224,35 @@
           await new Promise(r => setTimeout(r, 2500));
         }
       }
-      // ===== GSTR-2B / E-Com options: yaad rakho + dono off par rok =====
+      // ===== GSTR-2B / E-Com / Auto-Next options: default sab OFF (user khud tick karega) =====
       const K_OPT2B = "gst_opt_2b_v1", K_OPT_TCS = "gst_opt_tcs_v1";
+      let gpOptsUserTouched = false;
       function gpReadOptions() {
         const a = document.getElementById("gpOpt2b"), b = document.getElementById("gpOptTcs");
         return { gstr2b: !!(a && a.checked), tcs: !!(b && b.checked), notices: false };
       }
       function gpSaveOptions() {
-        try {
-          localStorage.setItem(K_OPT2B, document.getElementById("gpOpt2b")?.checked ? "1" : "0");
-          localStorage.setItem(K_OPT_TCS, document.getElementById("gpOptTcs")?.checked ? "1" : "0");
-        } catch (_) {}
+        gpOptsUserTouched = true;
       }
       function gpInitOptions() {
-        const apply = () => {
+        const resetUnchecked = () => {
+          if (gpOptsUserTouched) return;
           try {
-            const a = localStorage.getItem(K_OPT2B), b = localStorage.getItem(K_OPT_TCS);
-            const ea = document.getElementById("gpOpt2b"), eb = document.getElementById("gpOptTcs");
-            if (ea && a !== null) ea.checked = a === "1";
-            if (eb && b !== null) eb.checked = b === "1";
+            localStorage.removeItem(K_OPT2B);
+            localStorage.removeItem(K_OPT_TCS);
           } catch (_) {}
+          for (const id of ["gpOpt2b", "gpOptTcs", "gpAutoNextChk", "gpAutoDriveChk"]) {
+            const el = document.getElementById(id);
+            if (el) el.checked = false;
+          }
         };
-        apply();
-        // Safari/iOS reload par form-state restore hota hai — uske baad phir apni saved value lagao
-        try { window.addEventListener("pageshow", () => setTimeout(apply, 50)); } catch (_) {}
-        try { window.addEventListener("pageshow", () => setTimeout(apply, 400)); } catch (_) {}
-        document.getElementById("gpOpt2b")?.addEventListener("change", gpSaveOptions);
-        document.getElementById("gpOptTcs")?.addEventListener("change", gpSaveOptions);
+        resetUnchecked();
+        // Safari/iOS/WebView reload par form-state restore na ho -> sab unticked rakho
+        try { window.addEventListener("pageshow", () => setTimeout(resetUnchecked, 50)); } catch (_) {}
+        try { window.addEventListener("pageshow", () => setTimeout(resetUnchecked, 400)); } catch (_) {}
+        for (const id of ["gpOpt2b", "gpOptTcs", "gpAutoNextChk", "gpAutoDriveChk"]) {
+          document.getElementById(id)?.addEventListener("change", gpSaveOptions);
+        }
       }
 
       async function gpCallBridgeOnce(endpoint, bodyObj, callOpts) {
@@ -921,7 +923,8 @@
         document.querySelectorAll("#pagePortalMain .gp-cap-cancel-btn").forEach(b => b.addEventListener("click", () => {
           const k = b.getAttribute("data-k");
           const st = gpGetState(k);
-          if (st.sessionId) gpCallBridge("/api/gst/logout", { sessionId: st.sessionId }).catch(() => {});
+          if (st.sessionId && st.sessionId !== "PHONE") gpCallBridge("/api/gst/logout", { sessionId: st.sessionId }).catch(() => {});
+          gpFreePhoneSlot(k);
           st.phase = "idle"; st.sessionId = null; st.captchaBase64 = ""; st.note = ""; st._capDraft = ""; st._submittingCap = false;
           gpRenderSerialList();
         }));
@@ -1220,6 +1223,13 @@
       async function gpLoadCaptchaForClient(clientKey, actionMode) {
         const c = gpGetAppClients().find(x => x.clientKey === clientKey);
         if (!c) return;
+        const mode = actionMode || "FETCH";
+        if (mode !== "UPLOAD") {
+          const _opts = gpReadOptions();
+          if (!_opts.gstr2b && !_opts.tcs) {
+            return gpToast("⚠️ Pehle upar GSTR-2B ya E-Com tick karein, phir Fetch dabayein.");
+          }
+        }
         const st0 = gpGetState(clientKey);
         if (st0.cooldownUntil && st0.cooldownUntil > Date.now()) {
           return gpToast(`⏳ ${Math.ceil((st0.cooldownUntil - Date.now()) / 1000)}s rukein — bar-bar retry portal ko block karta hai.`);
@@ -1300,6 +1310,7 @@
         // Dono option OFF = kuchh fetch hi nahi hoga -> chup-chaap khaali save mat karo
         const _opts = gpReadOptions();
         if (!_opts.gstr2b && !_opts.tcs) {
+          gpFreePhoneSlot(c.clientKey);
           st.phase = "error";
           st.note = "⚠️ GSTR-2B aur E-Com dono OFF hain — upar kam se kam ek tick karein, phir Re-Fetch. (Kuchh save nahi kiya.)";
           gpErrLogAdd(c.clientKey, "2B + E-Com dono OFF the — fetch nahi chala");
@@ -1527,9 +1538,8 @@
             gpErrLogClear(c.clientKey);
             st.cooldownUntil = 0;
             st.partialNote = (data.partial && data.partial.text) || "";
-            gpExpanded.add(c.clientKey); gpScheduleAutoHide(c.clientKey);
             if (st.partialNote) gpToast(`✅ ${c.clientName}: jitna mila save ho gaya — ${st.partialNote}`);
-            else gpToast(`✅ ${c.clientName}: GSTR-2B & E-Com fetch hokar GST Details Sheet me save ho gaya!`);
+            else gpToast(`✅ ${c.clientName}: data fetch hokar GST Details Sheet me save ho gaya!`);
           })
           .catch(err => {
             if (err && err.aborted) {
@@ -1743,10 +1753,6 @@
       }
 
       function gpAutoOpenNextSerialCaptcha(currentKey, actionMode) {
-        const nextChk = document.getElementById("gpAutoNextChk");
-        if (nextChk && !nextChk.checked && (typeof gpPhoneModeNow === "function") && gpPhoneModeNow()) {
-          nextChk.checked = true;   // 📱 Phone mode: ek ke baad ek sab clients (serial) — checkbox apne aap on
-        }
         if (!document.getElementById("gpAutoNextChk")?.checked) return;
         const visible = gpGetFilteredClients();
         if (visible.length <= 1) return;
