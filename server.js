@@ -1,4 +1,4 @@
-/* GST Cloud Bridge — version dynamically read from package.json (currently v1.29.4)
+/* GST Cloud Bridge — version dynamically read from package.json (currently v1.29.5)
  * Recent fixes: strict ALLOWED_ORIGIN CORS, busy-safe memory watchdog, serialized upload-gstr1,
  * ZIP method/bomb bounds, graceful SIGTERM/SIGINT shutdown, and updated Railway/Render env hints.
  * Historical notes (v1.9.6 - v1.20.0):

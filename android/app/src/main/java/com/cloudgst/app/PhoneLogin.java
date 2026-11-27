@@ -21,16 +21,15 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 📱 Phone mode ka login — cloud bridge jaisa, par phone par hi.
+ * 📱 Phone mode ka 100% hidden login — screen par GST Portal kabhi nahi khulta.
  *
- * Chhupe (invisible) WebView me GST portal ka login page khulta hai, captcha ki IMAGE app ko
- * bheji jati hai (aap app me hi captcha dalkar Login dabate hain), phir OTP (agar portal maange),
- * aur login hone ke baad session (cookies) phone me hi reh jata hai — usi se 2B fetch hota hai.
- *
- * Entry points (MainActivity bridge se):
- *   start(user, pass)        -> {ok, captchaBase64} | {ok:false, code, error}
- *   submitCaptcha(captcha)   -> {ok, otpRequired|loggedIn} | {code:"captcha_wrong", captchaBase64}
- *   submitOtp(otp)           -> {ok, loggedIn} | {ok:false, code, error}
+ * Chhupe (invisible, alpha=0, index=0) WebView me GST portal ka login page khulta hai:
+ *   1. Captcha ki EXACT image canvas se capture hokar Base64 me app ko jati hai
+ *      (koi 2nd HTTP request nahi, isliye captcha mismatch nahi hota).
+ *   2. User app me hi captcha (aur agar maange to OTP) daalta hai.
+ *   3. Login hone ke baad session cookies phone me hi reh jati hain — usi se PhoneFetch
+ *      background me GSTR-2B fetch karta hai.
+ *   4. Naye client (alag username) ke liye purani GST cookies apne aap clear hoti hain.
  */
 public class PhoneLogin {
 
@@ -49,6 +48,7 @@ public class PhoneLogin {
     private WebView wv;
     private String username = "";
     private String password = "";
+    private String lastLoggedInUser = "";
     private String captchaSrc = "";
     private int tries = 0;
     private int clicks = 0;
@@ -58,7 +58,6 @@ public class PhoneLogin {
     private boolean wrongCapPending = false;
     private boolean otpMode = false;
     private volatile String stage = "idle";
-    private boolean manual = false;
 
     private static final int PHASE_IDLE = 0;
     private static final int PHASE_FIND_CAPTCHA = 1;
@@ -71,7 +70,7 @@ public class PhoneLogin {
 
     // ======================= start =======================
 
-    /** Chhupa WebView (overlay me dikhane ke liye). */
+    /** Chhupa WebView reference. */
     public WebView web() {
         return wv;
     }
@@ -83,7 +82,11 @@ public class PhoneLogin {
 
     public void start(String id, String user, String pass, ViewGroup host) {
         stage = "start";
-        this.username = user == null ? "" : user.trim();
+        final String newUser = user == null ? "" : user.trim();
+        final boolean switchingClient = !lastLoggedInUser.isEmpty()
+                && !newUser.isEmpty()
+                && !lastLoggedInUser.equalsIgnoreCase(newUser);
+        this.username = newUser;
         this.password = pass == null ? "" : pass;
         finished = false;
         awaitingUserInput = false;
@@ -93,7 +96,6 @@ public class PhoneLogin {
         clicks = 0;
         captchaSrc = "";
         phase = PHASE_FIND_CAPTCHA;
-        manual = false;
         h.removeCallbacks(tickRun);
         h.removeCallbacks(timeoutRun);
         ensureWeb(host);
@@ -108,9 +110,27 @@ public class PhoneLogin {
                             + "). Wi-Fi/mobile data check karein, phir try karein."));
                     return;
                 }
-                stage = "load:login";
-                if (wv != null) wv.loadUrl(LOGIN_URL);
-                h.postDelayed(tickRun, 1200);
+                Runnable beginLoad = () -> {
+                    if (finished || wv == null) return;
+                    stage = "load:login";
+                    wv.loadUrl(LOGIN_URL);
+                    h.postDelayed(tickRun, 1400);
+                };
+                if (switchingClient) {
+                    stage = "clear-session";
+                    lastLoggedInUser = "";
+                    try {
+                        CookieManager cm = CookieManager.getInstance();
+                        cm.removeAllCookies(ignored -> {
+                            cm.flush();
+                            beginLoad.run();
+                        });
+                    } catch (Throwable t) {
+                        beginLoad.run();
+                    }
+                } else {
+                    beginLoad.run();
+                }
             });
         }).start();
         h.postDelayed(timeoutRun, 150000);
@@ -134,30 +154,23 @@ public class PhoneLogin {
         }
     }
 
-    /** Login page pehchana nahi gaya -> ek baar visible login (captcha/OTP user dalega), phir background. */
-    private void deliverManualLogin(JSONObject d) {
-        String info = "";
-        if (d != null) {
-            info = " | page: " + d.optString("u", "") + " | inputs: " + d.optInt("inputs", -1)
-                    + " | imgs: " + d.optInt("imgs", -1) + (d.optString("b", "").isEmpty() ? "" : " | text: " + d.optString("b", ""));
-        }
-        deliver(err("manual_login",
-                "Phone login: portal ka login page apne aap nahi pehchana gaya" + info
-                        + " — ek baar login screen khol rahe hain (captcha/OTP aap dalenge), uske baad phone mode background me chalega."));
-    }
-
     private final Runnable timeoutRun = new Runnable() {
         @Override
         public void run() {
             if (finished) return;
-            deliver(err("timeout", "Phone login: portal ne 150s me jawab nahi diya. ☁️ Cloud mode try karein."));
+            deliver(err("timeout", "Phone login: portal ne 150s me jawab nahi diya. Dobara try karein ya ☁️ Cloud mode use karein."));
         }
     };
 
     // ======================= hidden webview =======================
 
     private void ensureWeb(ViewGroup host) {
-        if (wv != null) return;
+        if (wv != null) {
+            wv.setAlpha(0f);
+            wv.setClickable(false);
+            wv.setFocusable(false);
+            return;
+        }
         final WebView v = new WebView(act);
         WebSettings s = v.getSettings();
         s.setJavaScriptEnabled(true);
@@ -171,7 +184,7 @@ public class PhoneLogin {
             public void onPageFinished(WebView view, String url) {
                 if (finished || awaitingUserInput) return;
                 h.removeCallbacks(tickRun);
-                h.postDelayed(tickRun, 700);
+                h.postDelayed(tickRun, 900);
             }
 
             @Override
@@ -184,6 +197,8 @@ public class PhoneLogin {
                 }
             }
         });
+        // Hamesha hidden: alpha 0 + app ke WebView ke peechhe (index 0) — render hota hai, screen par kabhi nahi dikhta
+        v.setAlpha(0f);
         v.setClickable(false);
         v.setFocusable(false);
         v.setVerticalScrollBarEnabled(false);
@@ -210,25 +225,18 @@ public class PhoneLogin {
                 stage = "poll:" + (t.isEmpty() ? "wait" : t);
                 if ("CLICKLOGIN".equals(t)) {
                     if (clicks < 2) { clicks++; stage = "click-login"; h.postDelayed(tickRun, 2500); }
-                    else if (tries >= 12) { if (!manual) { manual = true; stage = "manual-wait"; } h.postDelayed(tickRun, 1800); }
+                    else if (tries >= 25) { deliver(err("login_timeout", "Portal login form nahi khula — dobara try karein.")); }
                     else h.postDelayed(tickRun, 1800);
                     return;
                 }
-                if (d != null && d.optBoolean("nocap", false)) {
-                    captchaSrc = "";
-                    deliver(err("captcha_missing", "Login page par captcha image nahi mila (form mila). ☁️ Cloud mode try karein."));
-                    return;
-                }
-                if ("WAIT".equals(t) && tries >= 12) {
-                    // Page pehchana nahi gaya -> MainActivity ke login overlay me dikha dete hain (alag screen nahi),
-                    // user captcha/OTP dalega, phir wahi flow aage badhega.
-                    if (!manual) {
-                        manual = true;
-                        stage = "manual-wait";
-                        if (act instanceof MainActivity) {
-                            ((MainActivity) act).setLoginOverlayVisible(true);
-                        }
+                if ("CAPWAIT".equals(t)) {
+                    // Form mil gaya hai, par captcha image abhi load ho rahi hai — turant fail mat karo
+                    if (tries >= 18) {
+                        deliver(err("captcha_missing", "Login page par captcha image load nahi hui — dobara 🔄 Re-Fetch dabayein."));
+                        return;
                     }
+                    h.postDelayed(tickRun, 1400);
+                    return;
                 }
                 if ("CAPTCHA".equals(t)) {
                     captchaSrc = d.optString("src", "");
@@ -236,9 +244,8 @@ public class PhoneLogin {
                     return;
                 }
                 if ("IN".equals(t)) {
-                    if (act instanceof MainActivity) {
-                        ((MainActivity) act).setLoginOverlayVisible(false);
-                    }
+                    lastLoggedInUser = username;
+                    try { CookieManager.getInstance().flush(); } catch (Throwable ignored) { }
                     deliver(ok("loggedIn"));
                     return;
                 }
@@ -252,24 +259,25 @@ public class PhoneLogin {
                     wrongCapPending = true;
                     phase = PHASE_FIND_CAPTCHA;
                     tries = 0;
-                    h.postDelayed(tickRun, 900);
+                    h.postDelayed(tickRun, 1200);
                     return;
                 }
                 if ("ERRMSG".equals(t)) {
                     deliver(err("login_failed",
-                            "Portal ne login rok diya: " + d.optString("msg", "wajah pata nahi chali")));
+                            "Portal ne login rok diya: " + d.optString("msg", "ID/password check karein")));
                     return;
                 }
                 if (wrongCapPending && tries >= 4) {
                     wrongCapPending = false;
-                    if (wv != null) wv.reload();
-                    h.postDelayed(tickRun, 1500);
+                    if (wv != null) wv.loadUrl(LOGIN_URL);
+                    h.postDelayed(tickRun, 1800);
                     return;
                 }
-                if (tries >= (manual ? 220 : 40)) {
+                if (tries >= 45) {
                     deliver(err("login_timeout",
-                            "Phone login: portal ne form/Dashboard hi nahi diya (aakhri: " + (raw.length() > 160 ? raw.substring(0, 160) : raw)
-                                    + "). ☁️ Cloud mode try karein."));
+                            "Phone login: portal ne form/Dashboard nahi diya (aakhri: "
+                                    + (raw.length() > 140 ? raw.substring(0, 140) : raw)
+                                    + "). Dobara try karein ya ☁️ Cloud mode use karein."));
                     return;
                 }
                 h.postDelayed(tickRun, 1600);
@@ -347,7 +355,7 @@ public class PhoneLogin {
         String js = "(function(){try{"
                 + "function set(el,v){if(!el)return false;try{var d=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');"
                 + "d.set.call(el,v);}catch(e){el.value=v;}"
-                + "el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true;}"
+                + "el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return true;}"
                 + "function byId(ids){for(var i=0;i<ids.length;i++){var e=document.getElementById(ids[i]);if(e)return e;}return null;}"
                 + "var u=byId(['username','user_name','userid','login_name','userId'])||document.querySelector('input[name*=user i],input[id*=user i]');"
                 + "var p=byId(['user_pass','password','pwd','userPassword_u'])||document.querySelector('input[type=password]');"
@@ -404,9 +412,15 @@ public class PhoneLogin {
 
     private String buildFindCaptchaScript() {
         return "(function(){try{"
-                + "function q(s){return !!document.querySelector(s);}"
                 + "function vis(e){try{return !!(e&&(e.offsetParent!==null||(e.getClientRects&&e.getClientRects().length)));}catch(x){return false;}}"
                 + "function txt(e){return String((e&&(e.innerText||e.textContent))||'').replace(/\\s+/g,' ').trim();}"
+                + "function imgToDataUrl(im){try{"
+                + "if(!im)return '';"
+                + "if(im.tagName==='CANVAS')return im.toDataURL('image/png');"
+                + "if(!im.complete||!im.naturalWidth||!im.naturalHeight)return '';"
+                + "var cv=document.createElement('canvas');cv.width=im.naturalWidth;cv.height=im.naturalHeight;"
+                + "cv.getContext('2d').drawImage(im,0,0);return cv.toDataURL('image/png');"
+                + "}catch(e){return (im&&im.src)?im.src:'';}}"
                 + "var body=txt(document.body||document.documentElement);"
                 + "var inputs=[].slice.call(document.querySelectorAll('input'));"
                 + "var pw=null,user=null,capField=null;"
@@ -417,13 +431,13 @@ public class PhoneLogin {
                 + "var imgs=[].slice.call(document.querySelectorAll('img,canvas'));"
                 + "var capSrc='';"
                 + "for(var j=0;j<imgs.length;j++){var im=imgs[j];"
-                + "if(im.tagName==='CANVAS'){try{capSrc=im.toDataURL('image/png');}catch(e){}if(capSrc)break;continue;}"
+                + "if(im.tagName==='CANVAS'){var c1=imgToDataUrl(im);if(c1){capSrc=c1;break;}continue;}"
                 + "var id=((im.id||'')+' '+(im.name||'')+' '+(im.className||'')+' '+(im.src||'')+' '+(im.alt||'')).toLowerCase();"
-                + "if(/captcha/.test(id)&&im.src){capSrc=im.src;break;}}"
+                + "if(/captcha/.test(id)){capSrc=imgToDataUrl(im);if(capSrc)break;}}"
                 + "if(!capSrc&&capField){var box=capField.closest?capField.closest('div,td,li,section,form'):null;if(box){var bi=[].slice.call(box.querySelectorAll('img,canvas'));"
-                + "for(var k=0;k<bi.length;k++){var e2=bi[k];if(e2.tagName==='CANVAS'){try{capSrc=e2.toDataURL('image/png');}catch(e){}}else if(e2.src){capSrc=e2.src;}if(capSrc)break;}}}"
+                + "for(var k=0;k<bi.length;k++){var c2=imgToDataUrl(bi[k]);if(c2){capSrc=c2;break;}}}}"
                 + "if(pw&&capSrc) return JSON.stringify({t:'CAPTCHA',src:capSrc});"
-                + "if(pw&&!capSrc) return JSON.stringify({t:'CAPTCHA',src:'',nocap:true});"
+                + "if(pw&&!capSrc) return JSON.stringify({t:'CAPWAIT'});"
                 + "if(!pw&&/dashboard|logout|sign out|return dashboard/i.test(body)) return JSON.stringify({t:'IN'});"
                 // login page par ho par form na mile -> "LOGIN/PROCEED/CONTINUE" dabao
                 + "var btns=[].slice.call(document.querySelectorAll('button,a,input[type=button],input[type=submit]'));"
@@ -440,10 +454,10 @@ public class PhoneLogin {
                 + "var otp=document.querySelector('input[name*=otp i],input[id*=otp i],input[placeholder*=OTP i]');"
                 + "if(otp) return JSON.stringify({t:'OTPREQ'});"
                 + "var hasPw=!!document.querySelector('input[type=password]');"
-                + "if(!hasPw&&/dashboard|logout|sign out/i.test(body)) return JSON.stringify({t:'IN'});"
-                + "if(/invalid\\s+captcha|wrong\\s+captcha|captcha.*(mismatch|incorrect|invalid)/i.test(body))"
+                + "if(!hasPw&&/dashboard|logout|sign out|return dashboard/i.test(body)) return JSON.stringify({t:'IN'});"
+                + "if(/invalid\\s+captcha|wrong\\s+captcha|captcha.*(mismatch|incorrect|invalid)|enter\\s+valid\\s+characters/i.test(body))"
                 + "  return JSON.stringify({t:'WRONGCAP'});"
-                + "if(/invalid\\s+(user\\s*id|username|password)|user\\s*id.*not\\s*(valid|exist)|incorrect\\s+password/i.test(body))"
+                + "if(/invalid\\s+(user\\s*id|username|password)|user\\s*id.*not\\s*(valid|exist)|incorrect\\s+password|account\\s+locked/i.test(body))"
                 + "  return JSON.stringify({t:'ERRMSG',msg:body.slice(0,140)});"
                 + "return JSON.stringify({t:'WAIT',u:String(location.href||'')});"
                 + "}catch(e){return JSON.stringify({t:'WAIT'});}})()";

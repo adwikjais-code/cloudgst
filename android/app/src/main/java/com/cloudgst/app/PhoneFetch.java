@@ -130,7 +130,12 @@ public class PhoneFetch {
     // ============================ hidden webview ============================
 
     private void ensureWeb(ViewGroup host) {
-        if (wv != null) return;
+        if (wv != null) {
+            wv.setAlpha(0f);
+            wv.setClickable(false);
+            wv.setFocusable(false);
+            return;
+        }
         final WebView v = new WebView(act);
         WebSettings s = v.getSettings();
         s.setJavaScriptEnabled(true);
@@ -177,9 +182,8 @@ public class PhoneFetch {
                 onClickedDownload(url, userAgent);
             }
         });
-        // Poora size + app ke WebView ke PEECHHE (index 0) — page asli tarah render hota hai
-        // (1dp invisible WebView me Android layout/paint hi nahi karta tha, isliye page "khali" lagta tha),
-        // aur upar app ka apna WebView hai isliye user ko portal kabhi dikhta nahi.
+        // Poora size + app ke WebView ke PEECHHE (index 0) + alpha=0 — 100% hidden render
+        v.setAlpha(0f);
         v.setClickable(false);
         v.setFocusable(false);
         v.setVerticalScrollBarEnabled(false);
