@@ -1,4 +1,4 @@
-/* GST Cloud Bridge — version dynamically read from package.json (currently v1.29.2)
+/* GST Cloud Bridge — version dynamically read from package.json (currently v1.29.3)
  * Recent fixes: strict ALLOWED_ORIGIN CORS, busy-safe memory watchdog, serialized upload-gstr1,
  * ZIP method/bomb bounds, graceful SIGTERM/SIGINT shutdown, and updated Railway/Render env hints.
  * Historical notes (v1.9.6 - v1.20.0):
@@ -555,32 +555,35 @@ const RETURNS_DASHBOARD_URL = "https://return.gst.gov.in/returns/auth/dashboard"
 const GST_AUTH_DASHBOARD_URL = "https://services.gst.gov.in/services/auth/dashboard";
 
 async function dismissModals(page) {
+  // Pehle 1 hi DOM check me dekh lo modal/dialog hai bhi ya nahi — har step par 10 selectors poll karna time waste tha
+  const domInfo = await page.evaluate(() => ({
+    hasAnyModal: !!document.querySelector(".modal, [role='dialog'], .modal-dialog, .sweet-alert"),
+    hasOpenModal: !!document.querySelector(".modal.in, .modal.show, .modal[style*='display: block'], [role='dialog'], .sweet-alert.visible")
+  })).catch(() => ({ hasAnyModal: false, hasOpenModal: false }));
+
   const safeGlobal = ["button:has-text('Remind me later')", ".modal .close", "[role='dialog'] .close"];
-  const modalScoped = [
+  const modalScoped = domInfo && domInfo.hasAnyModal ? [
     ".modal button:has-text('CLOSE')", "[role='dialog'] button:has-text('CLOSE')",
     ".modal button:has-text('OK')", "[role='dialog'] button:has-text('OK')",
     ".modal button:has-text('Proceed')", "[role='dialog'] button:has-text('Proceed')",
     ".modal button:has-text('Continue')", "[role='dialog'] button:has-text('Continue')",
     ".modal button:has-text('I Agree')", "[role='dialog'] button:has-text('I Agree')",
     ".sweet-alert button:has-text('OK')", ".sweet-alert button:has-text('CLOSE')"
-  ];
+  ] : [];
   for (const sel of [...safeGlobal, ...modalScoped]) {
     const btn = page.locator(sel).first();
     if (await btn.isVisible().catch(() => false)) {
       await btn.click().catch(() => {});
-      await page.waitForTimeout(350);
+      await page.waitForTimeout(200);
     }
   }
   // Sirf tab Esc dabao jab sach me modal khula ho (warna dropdown/menu band ho sakta hai)
   try {
-    const hasOpenModal = await page.evaluate(() =>
-      !!document.querySelector(".modal.in, .modal.show, .modal[style*='display: block'], [role='dialog'], .sweet-alert.visible")
-    ).catch(() => false);
-    if (hasOpenModal && page.keyboard) await page.keyboard.press("Escape");
+    if (domInfo && domInfo.hasOpenModal && page.keyboard) await page.keyboard.press("Escape");
   } catch (_) {}
 }
 
-// Dropdown ke options page par der se aate hain (Angular/AJAX) — isliye polling wala select.
+// Dropdown ke options page par der se aate hain (Angular/AJAX) — isliye fast polling wala select (300ms ticks).
 // `also` = alternative labels (Quarter "Q3"/"Oct - Dec", month "Oct-2026"), `selectIndex` = sirf usi select me.
 async function selectDropdownByText(page, targetText, opts) {
   const o = opts || {};
@@ -590,7 +593,7 @@ async function selectDropdownByText(page, targetText, opts) {
   if (!texts.length) return { matched: false, reason: "empty" };
   const index = Number.isInteger(o.selectIndex) ? o.selectIndex : -1;
   const timeoutMs = Number(o.timeoutMs) || 0;
-  const maxTries = timeoutMs ? Math.max(1, Math.ceil(timeoutMs / 600)) : 1;
+  const maxTries = timeoutMs ? Math.max(1, Math.ceil(timeoutMs / 300)) : 1;
   let last = { matched: false };
   for (let i = 1; i <= maxTries; i++) {
     last = await page.evaluate((args) => {
@@ -614,7 +617,7 @@ async function selectDropdownByText(page, targetText, opts) {
       return { matched: false, tryNo: args.tryNo, seen: pool.map(x => Array.from(x.options).map(y => (y.text || "").trim()).slice(0, 6)) };
     }, { texts, index, tryNo: i });
     if (last.matched) return last;
-    if (i < maxTries) await page.waitForTimeout(600);
+    if (i < maxTries) await page.waitForTimeout(300);
   }
   return last;
 }
@@ -654,7 +657,7 @@ async function waitForPeriodSelect(page, timeoutMs) {
     dump = await readSelectOptions(page);
     if (hasPeriodSelect(dump)) return { ok: true, dump, tries };
     if (Date.now() - started >= limit) break;
-    await page.waitForTimeout(700);
+    await page.waitForTimeout(350);
   }
   return { ok: false, dump, tries };
 }
@@ -668,9 +671,9 @@ async function revealPeriodDropdown(page) {
     const btn = page.locator(`button:has-text('${name}'), a:has-text('${name}'), input[value='${name}']`).first();
     if (!(await btn.count().catch(() => 0))) continue;
     if (!(await btn.isVisible().catch(() => false))) continue;
-    await btn.click({ force: true, timeout: 8000 }).catch(() => {});
+    await btn.click({ force: true, timeout: 5000 }).catch(() => {});
     clicked.push(name);
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(1000);
     if (clicked.length >= 2) break;
   }
   return { clicked };
@@ -799,7 +802,7 @@ async function waitForLoginForm(page, timeoutMs) {
       return { ok: true, userSel, passSel };
     }
     if (Date.now() - started >= limit) break;
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(300);
   }
   return { ok: false };
 }
@@ -872,9 +875,9 @@ async function adoptNewPopupPage(context, currentPage, pagesBefore) {
  */
 async function waitForAuthDashboardReady(page, timeoutMs) {
   if (isReturnsDashboardUrl(page.url())) return { ready: true, reason: "already_returns" };
-  try { await page.waitForLoadState("networkidle", { timeout: Math.min(Number(timeoutMs) || 8000, 5000) }); } catch (_) {}
-  const limit = Number(timeoutMs) || 0;
-  const maxTries = limit > 0 ? Math.min(18, Math.max(2, Math.ceil(limit / 700))) : 1;
+  // Blocking networkidle nahi — har 250ms par DOM dekho, button dikhte hi turant aage badho
+  const limit = Number(timeoutMs) || 4000;
+  const maxTries = limit > 0 ? Math.min(20, Math.max(2, Math.ceil(limit / 250))) : 1;
   const started = Date.now();
   for (let i = 0; i < maxTries; i++) {
     const state = await page.evaluate(() => {
@@ -891,7 +894,7 @@ async function waitForAuthDashboardReady(page, timeoutMs) {
       return { ready: state !== "access_denied", reason: state || "unknown" };
     }
     if (Date.now() - started >= limit) break;
-    await page.waitForTimeout(700);
+    await page.waitForTimeout(250);
   }
   return { ready: false, reason: "timeout" };
 }
@@ -914,7 +917,7 @@ async function clickReturnsDashboardLink(page) {
   return viaAnchor;
 }
 
-// 3-level GST navbar: Services -> Returns -> Returns Dashboard
+// 3-level GST navbar: Services -> Returns -> Returns Dashboard (fast polling: menu dikhe to turant click, na mile to aage)
 async function openServicesMenuReturnsDashboard(page) {
   const clickOrHoverByText = async (selectorList, reSrc, reFlags) => {
     return await page.evaluate(({ sels, src, flags }) => {
@@ -928,57 +931,61 @@ async function openServicesMenuReturnsDashboard(page) {
       return true;
     }, { sels: selectorList, src: reSrc, flags: reFlags }).catch(() => false);
   };
+  const clickVisibleReturnsDash = () => page.evaluate(() => {
+    const a = Array.from(document.querySelectorAll("a")).find(x => x.offsetParent !== null && (/^\s*returns\s+dashboard\s*$/i.test((x.textContent || "").trim()) || (x.getAttribute("href") || "").includes("/returns/auth/dashboard")));
+    if (a) { a.click(); return true; }
+    return false;
+  }).catch(() => false);
 
   const s1 = await clickOrHoverByText("a, button, span, li", "^\\s*services\\s*$", "i");
   if (!s1) return { clicked: false, step: "no_services" };
-  await page.waitForTimeout(900);
 
-  // Level 2: Returns submenu (agar pehle se Returns Dashboard na dikh raha ho)
-  const directAfterServices = await page.evaluate(() => {
-    const a = Array.from(document.querySelectorAll("a")).find(x => x.offsetParent !== null && (/^\s*returns\s+dashboard\s*$/i.test((x.textContent || "").trim()) || (x.getAttribute("href") || "").includes("/returns/auth/dashboard")));
-    if (a) { a.click(); return true; }
-    return false;
-  }).catch(() => false);
-  if (directAfterServices) return { clicked: true, step: "services_direct" };
-
-  const s2 = await clickOrHoverByText("a, button, span, li", "^\\s*returns\\s*$", "i");
+  let s2 = false;
+  for (let i = 0; i < 8; i++) {
+    if (await clickVisibleReturnsDash()) return { clicked: true, step: "services_direct" };
+    s2 = await clickOrHoverByText("a, button, span, li", "^\\s*returns\\s*$", "i");
+    if (s2) break;
+    await page.waitForTimeout(150);
+  }
   if (!s2) return { clicked: false, step: "no_returns_submenu" };
-  await page.waitForTimeout(900);
 
-  const s3 = await page.evaluate(() => {
-    const a = Array.from(document.querySelectorAll("a")).find(x => x.offsetParent !== null && (/^\s*returns\s+dashboard\s*$/i.test((x.textContent || "").trim()) || (x.getAttribute("href") || "").includes("/returns/auth/dashboard")));
-    if (a) { a.click(); return true; }
-    return false;
-  }).catch(() => false);
-  return { clicked: !!s3, step: s3 ? "services_returns_dashboard" : "no_dashboard_item" };
+  for (let i = 0; i < 8; i++) {
+    if (await clickVisibleReturnsDash()) return { clicked: true, step: "services_returns_dashboard" };
+    await page.waitForTimeout(150);
+  }
+  return { clicked: false, step: "no_dashboard_item" };
 }
 
-// 40s andha wait karne ke bajay poll karte raho: select aaye to turant true; access denied ya stall par jaldi bahar
-async function waitForReturnsSelectsSmart(page, context, pagesBefore, timeoutMs) {
-  const limit = Number(timeoutMs) || 25000;
-  const maxTries = Math.min(Math.max(2, Math.ceil(limit / 1000)), 45);
+// Fast polling: select aaye to turant true; kuch click nahi hua / access denied / stall ho to jaldi bahar ("na mile to aage badho")
+async function waitForReturnsSelectsSmart(page, context, pagesBefore, timeoutMs, opts) {
+  const limit = Number(timeoutMs) || 10000;
+  const maxTries = Math.min(Math.max(2, Math.ceil(limit / 450)), 25);
+  const nothingClicked = !!(opts && opts.clicked === false);
   const started = Date.now();
   let curPage = page;
   let lastSnap = null;
   for (let i = 1; i <= maxTries; i++) {
     curPage = await adoptNewPopupPage(context, curPage, pagesBefore);
-    if (await waitForDashboardSelects(curPage, 800)) {
+    if (await waitForDashboardSelects(curPage, 250)) {
       return { ok: true, page: curPage, earlyReason: null, snap: null };
     }
-    // Pehle 2 checks ke baad dekh lo kahin Access Denied page to nahi aa gaya (40s waste mat karo)
-    if (i >= 3) {
+    if (i >= 2) {
       lastSnap = await pageSnapshotBrief(curPage).catch(() => null);
       const kind = classifyStuckPage(lastSnap).kind;
       if (kind === "access_denied" || kind === "concurrent_session" || kind === "session_expired") {
         return { ok: false, page: curPage, earlyReason: kind, snap: lastSnap };
       }
-      // 14s baad bhi agar services/auth/ par hi atka hai (click se navigation hua hi nahi) to retry karo
-      if (i >= 14 && /services\.gst\.gov\.in\/services\/auth\//i.test(String(curPage.url() || ""))) {
+      // Button/link mila hi nahi tha aur 2 checks me select bhi nahi aaya -> seedha agla rasta try karo
+      if (nothingClicked && i >= 3) {
+        return { ok: false, page: curPage, earlyReason: "nothing_clicked", snap: lastSnap };
+      }
+      // ~3.5-4s baad bhi agar services/auth/ par hi atka hai (click se navigation hua hi nahi) to turant retry/menu karo
+      if (i >= 8 && /services\.gst\.gov\.in\/services\/auth\//i.test(String(curPage.url() || ""))) {
         return { ok: false, page: curPage, earlyReason: "stalled_on_auth_dashboard", snap: lastSnap };
       }
     }
     if (Date.now() - started >= limit) break;
-    await curPage.waitForTimeout(800);
+    await curPage.waitForTimeout(250);
   }
   return { ok: false, page: curPage, earlyReason: "timeout", snap: lastSnap };
 }
@@ -988,48 +995,48 @@ async function ensureReturnsDashboard(page, context, pagesBefore, dbg, tag) {
   const step = (k, v) => { if (dbg && dbg.steps) dbg.steps[t + "_" + k] = v; };
   if (isReturnsDashboardUrl(page.url())) return { page, ok: true, how: "already" };
 
-  // Access Denied page par hain to pehle services dashboard par wapas (thoda cool down ke baad)
+  // Access Denied page par hain to thoda cool down karke services dashboard par wapas
   let snap = await pageSnapshotBrief(page).catch(() => null);
   if (classifyStuckPage(snap).kind === "access_denied") {
     step("recoverFromAccessDenied", true);
-    await page.waitForTimeout(7000);
+    await page.waitForTimeout(2500);
     await page.goto(GST_AUTH_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
-    await waitForAuthDashboardReady(page, 10000);
+    await waitForAuthDashboardReady(page, 4500);
     await dismissModals(page).catch(() => {});
     page = await adoptNewPopupPage(context, page, pagesBefore);
   } else {
-    await waitForAuthDashboardReady(page, 8000);
+    await waitForAuthDashboardReady(page, 4000);
     await dismissModals(page).catch(() => {});
   }
 
   let how = await clickReturnsDashboardLink(page);
-  await page.waitForTimeout(3500);
-  let w1 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 22000);
+  if (how) await page.waitForTimeout(350);
+  let w1 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 9000, { clicked: !!how });
   page = w1.page;
   let ok = w1.ok;
 
   if (!ok) {
     // Agar click ne sach me Access Denied URL par bheja to menu se pehle wapas Auth Dashboard par aao
     if (w1.earlyReason === "access_denied" && /accessdenied/i.test(String(page.url() || ""))) {
-      await page.waitForTimeout(6000);
+      await page.waitForTimeout(2500);
       await page.goto(GST_AUTH_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
-      await waitForAuthDashboardReady(page, 10000);
+      await waitForAuthDashboardReady(page, 4500);
       await dismissModals(page).catch(() => {});
     }
     const menuRes = await openServicesMenuReturnsDashboard(page);
     step("menuClick", menuRes);
-    await page.waitForTimeout(3500);
-    const w2 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 22000);
+    if (menuRes.clicked) await page.waitForTimeout(350);
+    const w2 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 10000, { clicked: !!menuRes.clicked });
     page = w2.page;
     ok = w2.ok;
     if (ok) how = (how || "") + "+menu(" + menuRes.step + ")";
     else {
       // Aakhri option: direct URL with Referer (WAF ko lagta hai dashboard se aaya)
-      await page.waitForTimeout(3500);
+      await page.waitForTimeout(700);
       await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded", referer: GST_AUTH_DASHBOARD_URL }).catch(() => {});
-      await page.waitForTimeout(3000);
+      await page.waitForTimeout(350);
       await dismissModals(page).catch(() => {});
-      const w3 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 20000);
+      const w3 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 9000, { clicked: true });
       page = w3.page;
       ok = w3.ok;
       if (ok) how = (how || "") + "+directUrl";
@@ -1040,34 +1047,36 @@ async function ensureReturnsDashboard(page, context, pagesBefore, dbg, tag) {
 }
 
 /* Returns Dashboard kholna + FY/Quarter/Month select karna.
- * Fail hone par WAF-safe retries (button -> 3-level Services>Returns>Returns Dashboard -> cool-down Auth Dashboard ->
- * last-resort direct URL), aur phir bhi fail ho to ASLI page ka diagnostic error deta hai.
+ * Fast polling: button/menu/URL jo mil jaye us par turant aage badho, warna jaldi next fallback / saaf error.
  * Returns: page (popup adopt hua ho to naya page) — caller ko isi page se aage kaam karna chahiye.
  */
-async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
+async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag, onProgress) {
   const t = tag || "ret";
   const step = (k, v) => { if (dbg && dbg.steps) dbg.steps[t + "_" + k] = v; };
+  const prog = (k, msg) => { try { if (typeof onProgress === "function") onProgress(k, msg); } catch (_) {} };
   const context = typeof page.context === "function" ? page.context() : null;
   const pagesBefore = context && typeof context.pages === "function" ? (context.pages() || []).length : 0;
   const startedOn = page;
 
+  let initHow = null;
   if (!isReturnsDashboardUrl(page.url())) {
-    await waitForAuthDashboardReady(page, 10000);
+    await waitForAuthDashboardReady(page, 4500);
     await dismissModals(page);
-    await clickReturnsDashboardLink(page);
-    await page.waitForTimeout(3500);
+    initHow = await clickReturnsDashboardLink(page);
+    if (initHow) await page.waitForTimeout(350);
     page = await adoptNewPopupPage(context, page, pagesBefore);
   }
   await dismissModals(page);
   if (page !== startedOn) step("adoptedPopup", page.url());
   step("urlBeforeSelect", page.url());
 
-  const smart1 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 32000);
+  const smart1 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 10000, { clicked: isReturnsDashboardUrl(page.url()) || !!initHow });
   page = smart1.page;
   let ok = smart1.ok;
   let stuck = smart1.snap || null;
   if (!ok) {
-    // Retry 1: WAF/portal slow hone par ya angular click miss hone par WAF-safe recovery
+    // Retry 1: fast WAF-safe recovery (Auth button -> 3-level menu -> direct URL)
+    prog("ret_menu", "Returns menu se Dashboard khol rahe hain…");
     const snap1 = stuck || await pageSnapshotBrief(page);
     step("selectTimeoutAt", Object.assign({ url: page.url(), earlyReason: smart1.earlyReason, kind: classifyStuckPage(snap1).kind }, snap1));
     const ens1 = await ensureReturnsDashboard(page, context, pagesBefore, dbg, t);
@@ -1080,30 +1089,30 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
     const cls = classifyStuckPage(stuck);
     step("stuck", Object.assign({ kind: cls.kind }, stuck));
 
-    // Retry 2 (Access Denied / concurrent session par): portal ko lamba cool-down do, phir
-    // Auth Dashboard par wait karke RETURN DASHBOARD + 3-level menu dono try karo.
+    // Retry 2 (Access Denied / concurrent session par): chhota cool-down, phir Auth Dashboard + menu
     if (cls.kind === "access_denied" || cls.kind === "concurrent_session") {
-      await page.waitForTimeout(cls.kind === "concurrent_session" ? 5000 : 10000);
+      prog("ret_retry", "Portal block hata kar dobara Dashboard khol rahe hain…");
+      await page.waitForTimeout(cls.kind === "concurrent_session" ? 2000 : 3000);
       await page.goto(GST_AUTH_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
-      await waitForAuthDashboardReady(page, 12000);
+      await waitForAuthDashboardReady(page, 4500);
       await dismissModals(page);
       page = await adoptNewPopupPage(context, page, pagesBefore);
-      await clickReturnsDashboardLink(page);
-      await page.waitForTimeout(4500);
-      const smart2 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 22000);
+      const retryHow = await clickReturnsDashboardLink(page);
+      if (retryHow) await page.waitForTimeout(350);
+      const smart2 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 9000, { clicked: !!retryHow });
       page = smart2.page;
       ok = smart2.ok;
       if (!ok) {
         if (smart2.earlyReason === "access_denied" && /accessdenied/i.test(String(page.url() || ""))) {
-          await page.waitForTimeout(5000);
+          await page.waitForTimeout(2000);
           await page.goto(GST_AUTH_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
-          await waitForAuthDashboardReady(page, 10000);
+          await waitForAuthDashboardReady(page, 4500);
           await dismissModals(page);
         }
         const menuRetry2 = await openServicesMenuReturnsDashboard(page);
         step("retry2Menu", menuRetry2);
-        await page.waitForTimeout(3500);
-        const smart3 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 20000);
+        if (menuRetry2.clicked) await page.waitForTimeout(350);
+        const smart3 = await waitForReturnsSelectsSmart(page, context, pagesBefore, 9000, { clicked: !!menuRetry2.clicked });
         page = smart3.page;
         ok = smart3.ok;
       }
@@ -1120,25 +1129,24 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
     }
   }
 
-  // Har dropdown ko pehchan kar select karna (options der se aate hain, isliye polling) + ek retry
+  // Har dropdown ko pehchan kar fast select karna (options der se aate hain, isliye polling) + ek retry
+  prog("ret_period", "FY / Month select kar rahe hain…");
   let periodHost = null; // period selection kahan hui (main page ya andar ka iframe)
   const periodAttempt = async (attempt) => {
     let dump = await readSelectOptions(page);
     if (attempt === 1) step("selects", dump);
-    let fyRes = await selectDropdownByText(page, fy, { selectIndex: guessSelectIndex(dump, "fy"), timeoutMs: 9000 });
-    await page.waitForTimeout(1200);
+    let fyRes = await selectDropdownByText(page, fy, { selectIndex: guessSelectIndex(dump, "fy"), timeoutMs: 4500 });
 
-    // FY set hone ke baad Month/Quarter dropdown der se aata hai (AJAX, ya poore page reload ke baad).
-    // Production me yahan sirf FY wala select mila tha (select0: 2019-20/2020-21/...) -> month gayab.
-    let wait = await waitForPeriodSelect(page, attempt === 1 ? 12000 : 15000);
+    // FY set hone ke baad bina andhe sleep ke turant period dropdown poll karo
+    let wait = await waitForPeriodSelect(page, attempt === 1 ? 6000 : 8000);
     if (!wait.ok) {
       const snap = await pageSnapshotBrief(page);
       step("periodWait" + attempt, { ok: false, dump: wait.dump, url: snap.url || page.url(), title: snap.title, buttons: (snap.buttons || []).slice(0, 12) });
       // Page reload ho gaya ho (selects gayab) to dashboard dobara wait, phir aage badhne wale button try
-      if (!(await waitForDashboardSelects(page, 20000))) { /* phir bhi try karte hain */ }
+      if (!(await waitForDashboardSelects(page, 6000))) { /* phir bhi try karte hain */ }
       const revealed = await revealPeriodDropdown(page);
       step("periodReveal" + attempt, revealed);
-      if (revealed.clicked.length) wait = await waitForPeriodSelect(page, 8000);
+      if (revealed.clicked.length) wait = await waitForPeriodSelect(page, 5000);
     }
     dump = (wait.dump && wait.dump.length) ? wait.dump : await readSelectOptions(page);
 
@@ -1153,9 +1161,9 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
         periodHost = host;
         // Poore dropdowns frame me ho sakte hain -> FY wahan dobara set karte hain
         if (guessSelectIndex(dump, "fy") >= 0) {
-          const fyInFrame = await selectDropdownByText(host, fy, { selectIndex: guessSelectIndex(dump, "fy"), timeoutMs: 6000 });
+          const fyInFrame = await selectDropdownByText(host, fy, { selectIndex: guessSelectIndex(dump, "fy"), timeoutMs: 3500 });
           if (fyInFrame.matched) fyRes = fyInFrame;
-          await page.waitForTimeout(1000);
+          await page.waitForTimeout(300);
           dump = await readSelectOptions(host);
         }
       }
@@ -1165,16 +1173,16 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
     const qIdx = guessSelectIndex(dump, "quarter");
     // Quarter optional: kuch dashboard par hota hi nahi, kuch par label "Q3"/"Oct - Dec" hota hai
     const qRes = qIdx >= 0
-      ? await selectDropdownByText(host, getQuarterForMonth(monthNum), { also: quarterAliases(monthNum), selectIndex: qIdx, timeoutMs: 6000 })
+      ? await selectDropdownByText(host, getQuarterForMonth(monthNum), { also: quarterAliases(monthNum), selectIndex: qIdx, timeoutMs: 3500 })
       : { matched: false, reason: "no-quarter-select" };
-    await page.waitForTimeout(1200);
+    if (qRes.matched) await page.waitForTimeout(350);
 
     dump = await readSelectOptions(host);
     const mIdx = guessSelectIndex(dump, "month");
     const mRes = mIdx >= 0
-      ? await selectDropdownByText(host, getMonthName(monthNum), { also: monthAliases(monthNum, fy), selectIndex: mIdx, timeoutMs: 9000 })
+      ? await selectDropdownByText(host, getMonthName(monthNum), { also: monthAliases(monthNum, fy), selectIndex: mIdx, timeoutMs: 5000 })
       : { matched: false, reason: "no-month-select" };
-    await page.waitForTimeout(800);
+    if (mRes.matched) await page.waitForTimeout(250);
     return { fyRes, qRes, mRes, dump };
   };
 
@@ -1202,8 +1210,7 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
   let per = await periodAttempt(1);
   if (!per.fyRes.matched || !per.mRes.matched) {
     // Doosri koshish — password change/redirect ke baad portal ka dashboard der se bharta hai.
-    // Pehle page ko fresh karte hain (reload ya galat page se returns dashboard) — isse month dropdown wapas aa jata hai.
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(600);
     await dismissModals(page).catch(() => {});
     try {
       if (isReturnsDashboardUrl(page.url())) {
@@ -1214,10 +1221,10 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
         step("retry2Ensure", { ok: ens2.ok, how: ens2.how });
       }
     } catch (_) {}
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(800);
     await dismissModals(page).catch(() => {});
     page = await adoptNewPopupPage(context, page, pagesBefore);
-    await waitForDashboardSelects(page, 25000);
+    await waitForDashboardSelects(page, 10000);
     step("urlBeforeRetry2", page.url());
     per = await periodAttempt(2);
   }
@@ -1247,16 +1254,31 @@ async function openReturnsDashboardAndSearch(page, fy, monthNum, dbg, tag) {
   }
   if (!qRes.matched) step("quarterSkipped", qRes);
 
+  prog("ret_search", "Period Search ho raha hai…");
   const searchHost = periodHost || page;
+  let searchClicked = false;
   const searchBtn = searchHost.locator("button:has-text('SEARCH'), button[type='submit']").first();
   if (await searchBtn.count().catch(() => 0)) {
     await searchBtn.click({ force: true }).catch(() => {});
-    await page.waitForTimeout(4000);
+    searchClicked = true;
   } else if (searchHost !== page) {
     const mainSearch = page.locator("button:has-text('SEARCH'), button[type='submit']").first();
     if (await mainSearch.count().catch(() => 0)) {
       await mainSearch.click({ force: true }).catch(() => {});
-      await page.waitForTimeout(4000);
+      searchClicked = true;
+    }
+  }
+  if (searchClicked) {
+    // Blind 4s sleep ki jagah har 350ms me check: tiles/2B/not-generated dikhte hi turant aage
+    const sStarted = Date.now();
+    for (let k = 0; k < 14; k++) {
+      await page.waitForTimeout(350);
+      const readyAfterSearch = await page.evaluate(() => {
+        const txt = String((document.body && document.body.innerText) || "");
+        if (/GSTR-?2B|GSTR-?1|GSTR-?3B|could\s+not\s+be\s+generated|not\s+generated|no\s+record/i.test(txt)) return true;
+        return Array.from(document.querySelectorAll("button, a")).some(el => el.offsetParent !== null && /\bDOWNLOAD\b/i.test(el.textContent || ""));
+      }).catch(() => true);
+      if (readyAfterSearch || Date.now() - sStarted >= 5000) break;
     }
   }
   step("dashboard", { url: page.url(), fyRes, qRes, mRes });
@@ -1511,10 +1533,10 @@ function startServer() {
         const url = attempt === 1 ? loginUrl : loginUrl + "?_=" + Date.now();
         await page.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});
         await dismissModals(page).catch(() => {});
-        loginInfo = await waitForLoginForm(page, attempt === 1 ? 30000 : 20000);
+        loginInfo = await waitForLoginForm(page, attempt === 1 ? 15000 : 10000);
         if (!loginInfo.ok) {
           loginSnap = await pageSnapshotBrief(page);
-          if (attempt < 3) await page.waitForTimeout(2500);
+          if (attempt < 3) await page.waitForTimeout(1000);
         }
       }
       if (!loginInfo.ok) {
@@ -1528,9 +1550,9 @@ function startServer() {
       const userSel = loginInfo.userSel;
       const passSel = loginInfo.passSel || LOGIN_PASS_SELECTORS[0];
       await page.click(userSel).catch(() => {});
-      await page.locator(userSel).pressSequentially(String(req.body?.username || "gstuser"), { delay: 60 });
+      await page.locator(userSel).pressSequentially(String(req.body?.username || "gstuser"), { delay: 30 });
       await page.click(passSel).catch(() => {});
-      await page.waitForTimeout(800);
+      await page.waitForTimeout(300);
 
       const captchaSelector = "#imgCaptcha, img[src*='captcha' i], img[id*='captcha' i]";
       await page.waitForSelector(captchaSelector, { state: "visible", timeout: 25000 });
@@ -1581,10 +1603,22 @@ function startServer() {
       await page.fill(userSel, String(username || "").trim());
       await page.fill(passSel, String(password || ""));
       if (capSel) await page.fill(capSel, String(captcha || "").trim());
-      await Promise.all([
-        page.click(submitSel || LOGIN_SUBMIT_SELECTORS[0]),
-        page.waitForTimeout(5000)
-      ]);
+      await page.click(submitSel || LOGIN_SUBMIT_SELECTORS[0]);
+
+      // Blind 5s wait ke bajay fast polling: redirect, OTP box, ya login error dikhte hi turant aage
+      const loginWaitStart = Date.now();
+      while (Date.now() - loginWaitStart < 6500) {
+        const uNow = page.url();
+        if (uNow.includes("/auth/") || uNow.includes("fowelcome") || uNow.includes("dashboard")) break;
+        const otpQuick = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]");
+        if (otpQuick && await otpQuick.isVisible().catch(() => false)) break;
+        const hasErrQuick = await page.evaluate(() => {
+          const el = document.querySelector(".err, .alert-danger, .text-danger, [ng-if*='err']");
+          return !!(el && el.innerText && el.innerText.trim());
+        }).catch(() => false);
+        if (hasErrQuick) break;
+        await page.waitForTimeout(250);
+      }
 
       const otpInput = await page.$("input[name='otp'], #otp, input[placeholder*='OTP' i]");
       if (otpInput && await otpInput.isVisible()) {
@@ -1592,8 +1626,8 @@ function startServer() {
       }
       const url = page.url();
       if (url.includes("/auth/") || url.includes("fowelcome") || url.includes("dashboard")) {
-        // Login ke baad fowelcome / auth dashboard par Angular & session cookies settle hone dein
-        await page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => {});
+        // Login ke baad fowelcome / auth dashboard par cookies settle hone dein (max 1.5s)
+        await page.waitForLoadState("networkidle", { timeout: 1500 }).catch(() => {});
         s.loggedIn = true;
         return res.json({ ok: true, status: "logged_in", url: page.url() });
       }
@@ -1624,10 +1658,15 @@ function startServer() {
       if (!otpInput) return res.status(400).json({ ok: false, error: "OTP input box nahi mila." });
       await otpInput.fill(String(otp || "").trim());
       await page.click("button:has-text('VALIDATE'), button:has-text('SUBMIT'), button[type='submit']");
-      await page.waitForTimeout(4500);
+      const otpWaitStart = Date.now();
+      while (Date.now() - otpWaitStart < 5500) {
+        const uNow = page.url();
+        if (uNow.includes("/auth/") || uNow.includes("fowelcome") || uNow.includes("dashboard")) break;
+        await page.waitForTimeout(250);
+      }
       const url = page.url();
       if (url.includes("/auth/") || url.includes("fowelcome") || url.includes("dashboard")) {
-        await page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => {});
+        await page.waitForLoadState("networkidle", { timeout: 1500 }).catch(() => {});
         s.loggedIn = true;
         return res.json({ ok: true, status: "logged_in", url: page.url() });
       }
@@ -1759,7 +1798,7 @@ function startServer() {
           delete dbg.steps.gstr2bError;
         }
         try {
-          page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, isRetryAfterTcs ? "gstr2b_retry" : "gstr2b");
+          page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, isRetryAfterTcs ? "gstr2b_retry" : "gstr2b", (k, msg) => setProgress(s, k, msg));
           s.page = page;
           {
             const earlyText = await page.locator("body").innerText().catch(() => "");
@@ -1783,8 +1822,15 @@ function startServer() {
           } else {
             setProgress(s, "gstr2b_click", "GSTR-2B ka DOWNLOAD dabaya ja raha hai…");
             await downloadBtn.click({ force: true });
-            await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-            await page.waitForTimeout(1200);
+            // Blocking 15s networkidle nahi — button/error banner dikhte hi turant aage
+            const offlineStart = Date.now();
+            while (Date.now() - offlineStart < 7000) {
+              const tOffline = await page.locator("body").innerText().catch(() => "");
+              if (gstr2bPageSaysNotGenerated(tOffline) || gstr2bPageSaysSessionExpired(tOffline)) break;
+              const readyBtn = await page.locator("button:has-text('GENERATE JSON'), a:has-text('GENERATE JSON'), a:has-text('Click here to download'), a:has-text('File 1')").count().catch(() => 0);
+              if (readyBtn > 0) break;
+              await page.waitForTimeout(300);
+            }
             dbg.steps.gstr2bPageUrl = page.url();
 
             // ===== Asli portal process (26-Nov screenshots) =====
@@ -1812,19 +1858,19 @@ function startServer() {
                 if (await genBtn.count().catch(() => 0)) {
                   setProgress(s, "gstr2b_generate", "GSTR-2B JSON download kiya ja raha hai…");
                   genClicked = true;
-                  await genBtn.click({ force: true, timeout: 10000 }).catch(() => {});
+                  await genBtn.click({ force: true, timeout: 6000 }).catch(() => {});
                 } else {
                   // purane layout me seedha download link bhi hota tha
                   const l = page.locator("a:has-text('Click here to download'), a:has-text('File 1')").first();
                   if (await l.count().catch(() => 0)) {
                     genClicked = true;
-                    await l.click({ force: true, timeout: 8000 }).catch(() => {});
+                    await l.click({ force: true, timeout: 5000 }).catch(() => {});
                   }
                 }
-                // 10 second tak dekho: file aayi ya error banner aaya (dono turant aate hain)
+                // 10 second tak fast poll (300ms): file aaye ya error banner aaye to turant niklo
                 const started = Date.now();
                 while (genClicked && Date.now() - started < 10000 && !downloads.length) {
-                  await page.waitForTimeout(700);
+                  await page.waitForTimeout(300);
                   const t = await page.locator("body").innerText().catch(() => "");
                   if (gstr2bPageSaysNotGenerated(t)) { setGstr2bNotGenerated(t); break; }
                   if (gstr2bPageSaysSessionExpired(t)) { setStatus("gstr2b", "failed", "Portal session expire ho gaya — dobara fetch karein."); break; }
@@ -1897,7 +1943,7 @@ function startServer() {
       if (opts.tcs && !opts.gstr2b) {
         // 2B chala hi nahi -> pehle returns dashboard kholna zaroori hai
         try {
-          page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "tcs");
+          page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "tcs", (k, msg) => setProgress(s, k, msg));
           s.page = page;
         } catch (e) { dbg.steps.tcsDashboardError = e.message; }
       }
@@ -1926,7 +1972,7 @@ function startServer() {
         }
         if (!menu) {
           await page.goto(RETURNS_DASHBOARD_URL, { waitUntil: "domcontentloaded" }).catch(() => {});
-          await page.waitForTimeout(3500);
+          await page.waitForTimeout(1000);
           await dismissModals(page);
           menu = await clickTcsMenu();
         }
@@ -1941,22 +1987,26 @@ function startServer() {
           throw new Error("Menu me 'TDS and TCS credit received' link nahi mila." + (hint ? " (Page par ye links mile: " + hint + ")" : "") + " Debug me tcsLinks dekhein.");
         }
         await page.waitForLoadState("domcontentloaded").catch(() => {});
-        await page.waitForSelector("select", { timeout: 20000 });
-        await page.waitForTimeout(1500);
+        await page.waitForSelector("select", { timeout: 12000 });
+        await page.waitForTimeout(400);
 
         const dumpTcs = await readSelectOptions(page);
-        const fyRes = await selectDropdownByText(page, result.fy, { selectIndex: guessSelectIndex(dumpTcs, "fy"), timeoutMs: 9000 });
-        await page.waitForTimeout(800);
+        const fyRes = await selectDropdownByText(page, result.fy, { selectIndex: guessSelectIndex(dumpTcs, "fy"), timeoutMs: 4500 });
+        await page.waitForTimeout(300);
         const dumpTcs2 = await readSelectOptions(page);
         const mRes = await selectDropdownByText(page, getMonthName(result.month), {
-          also: monthAliases(result.month, result.fy), selectIndex: guessSelectIndex(dumpTcs2, "month"), timeoutMs: 9000
+          also: monthAliases(result.month, result.fy), selectIndex: guessSelectIndex(dumpTcs2, "month"), timeoutMs: 4500
         });
         mark("period", { fyRes, mRes, selects: dumpTcs2 });
         if (!fyRes.matched || !mRes.matched) throw new Error(`TCS page par FY/Month select nahi ho paya (FY:${fyRes.matched}, Month:${mRes.matched}).`);
-        await page.locator("button:has-text('SEARCH'):visible").first().click({ timeout: 10000 });
-        await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        // v1.21 wala proven wait: portal ka TCS page AJAX se bharta hai, jaldi check karne par button nahi milta
-        await page.waitForTimeout(3500);
+        await page.locator("button:has-text('SEARCH'):visible").first().click({ timeout: 8000 });
+        // Poll every 350ms for PREPARE ONLINE / VIEW instead of 15s networkidle + 3.5s blind sleep
+        const prepPollStart = Date.now();
+        while (Date.now() - prepPollStart < 6500) {
+          const cntPrep = await page.locator("button:has-text('PREPARE ONLINE'):visible, a:has-text('PREPARE ONLINE'):visible").count().catch(() => 0);
+          if (cntPrep > 0) break;
+          await page.waitForTimeout(350);
+        }
 
         let prep = page.locator("button:has-text('PREPARE ONLINE'):visible, a:has-text('PREPARE ONLINE'):visible").first();
         if (!(await prep.count())) {
@@ -1968,11 +2018,15 @@ function startServer() {
           if (!(await prep.count())) throw new Error("'TDS and TCS credit received' page par PREPARE ONLINE (ya VIEW) button nahi mila. Debug me tcsPageExcerpt dekhein.");
           mark("usingViewButton");
         }
-        await prep.click({ timeout: 10000 });
-        await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        await page.waitForTimeout(4500);
-
+        await prep.click({ timeout: 8000 });
+        // Card page render hote hi turant aage (max 6.5s)
+        const cardPollStart = Date.now();
         let snap = await snapshotPage(page);
+        while (Date.now() - cardPollStart < 6500) {
+          if (/TCS\s+credit\s+received/i.test(snap.bodyText || "")) break;
+          await page.waitForTimeout(350);
+          snap = await snapshotPage(page);
+        }
         mark("cardsPage", { buttons: snap.buttons });
         dbg.steps.tcsCardsExcerpt = snap.bodyText.slice(0, 1500);
         const cnt = parseTcsRecordCount(snap.bodyText);
@@ -2009,11 +2063,13 @@ function startServer() {
             const c = await clickCard(mode);
             attempts.push(c);
             if (!c) continue;
-            await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-            // Card par click ke baad summary AJAX se khulti hai — "number of records" cards page par bhi hota hai,
-            // isliye us par jaldi aage badhna galat tha (yahi "summary page khul nahi payi" ka reason bana).
-            await page.waitForTimeout(4000);
-            snap = await snapshotPage(page);
+            // Summary table dikhte hi turant ruk jao (blind 15s networkidle + 4s wait nahi)
+            const sumPollStart = Date.now();
+            while (Date.now() - sumPollStart < 5500) {
+              await page.waitForTimeout(350);
+              snap = await snapshotPage(page);
+              if (isSummary(snap)) break;
+            }
             if (isSummary(snap)) break;
           }
           dbg.steps.tcsCardClickAttempts = attempts;
@@ -2058,10 +2114,16 @@ function startServer() {
           if (target) { target.click(); return (target.textContent || "").trim(); }
           return null;
         });
-        await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-        await page.waitForTimeout(5000);
-        await dismissModals(page);
-        const snap = await snapshotPage(page);
+        let snap = await snapshotPage(page);
+        if (clickedNotice) {
+          const nStart = Date.now();
+          while (Date.now() - nStart < 6000) {
+            await page.waitForTimeout(350);
+            await dismissModals(page);
+            snap = await snapshotPage(page);
+            if (snap.tables.length || /Notice\/Demand\s+Order\s+Id|no\s+(records?|notices?|orders?|data|additional)|not\s+found/i.test(snap.bodyText || "")) break;
+          }
+        }
         dbg.steps.notices = { clickedNotice, url: snap.url, tableCount: snap.tables.length, buttons: snap.buttons, bodyExcerpt: snap.bodyText.slice(0, 1800) };
 
         if (!clickedNotice) {
@@ -2071,9 +2133,14 @@ function startServer() {
           if (result.notices.length) setStatus("notices", "ok", `${result.notices.length} notice/order row mili.`);
           else if (/no\s+(records?|notices?|orders?|data|additional)|not\s+found|there\s+(is|are)\s+no|no\s+.{0,30}\s+(available|found)/i.test(snap.bodyText)) setStatus("notices", "empty", "Portal par koi notice/order nahi hai.");
           else if (/Notice\/Demand\s+Order\s+Id/i.test(snap.bodyText)) {
-            // Table ke headers dikhe par row nahi — lazy load ho sakta hai, isliye ek baar aur wait karke dekhte hain
-            await page.waitForTimeout(6000);
-            const snap2 = await snapshotPage(page);
+            // Table ke headers dikhe par row nahi — lazy load ho sakta hai, 2.5s poll karke dekhte hain
+            const nLazyStart = Date.now();
+            let snap2 = snap;
+            while (Date.now() - nLazyStart < 2500) {
+              await page.waitForTimeout(400);
+              snap2 = await snapshotPage(page);
+              if (parseNoticeTables(snap2.tables).length) break;
+            }
             result.notices = parseNoticeTables(snap2.tables);
             dbg.steps.notices.retryRows = result.notices.length;
             dbg.steps.notices.retryExcerpt = snap2.bodyText.slice(0, 1200);
