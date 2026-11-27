@@ -119,10 +119,12 @@ jobs:
           3. Icon **J&A (CloudGST)** kholein. Pehle se install hai to seedha update ho jayega
              (data/settings safe rahenge).
           EOF
+          (cd android/app/src/main/assets && zip -r9 "$GITHUB_WORKSPACE/CloudGST_web_v5_9_14.zip" app)
+          ls -lh "CloudGST_web_v5_9_14.zip"
           cat verify.md >> notes.md
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
-          gh release create "$RELEASE_TAG" "CloudGST.apk" \
+          gh release create "$RELEASE_TAG" "CloudGST.apk" "CloudGST_web_v5_9_14.zip" \
             --target "$GITHUB_SHA" \
-            --title "CloudGST Android v5.9.14 (APK)" \
+            --title "CloudGST Android v5.9.14 (APK + Web Bundle)" \
             --notes-file notes.md
