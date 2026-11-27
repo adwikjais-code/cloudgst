@@ -1,16 +1,20 @@
-# Testing — GST Cloud Bridge (`server.js`)
+# Testing — CloudGST (`server.js`, `web/`, `APPS_SCRIPT_AppSync.gs`)
 
 ```bash
-npm install     # pehli baar (express, cors, playwright)
-npm test        # 60 tests, ~8 second, browser ki zaroorat nahi
+npm install         # pehli baar (express, cors, playwright + devDependencies)
+npm run build:web   # modular web/ + vendor assets -> android/app/src/main/assets/app/
+npm test            # Node test suite (helpers, api, portal, web, apps_script)
 ```
 
-`npm test` do files chalata hai:
+`npm test` ye test files chalata hai:
 
 | File | Kya check hota hai |
 |------|--------------------|
-| `test/helpers.test.js` | Saare pure helpers — period math, amount parsing, table/header parsing, 2B summary + B2B sellers, ZIP JSON reader, file-name safety, regex |
-| `test/api.test.js` | Server ko asli process ki tarah chala kar HTTP layer — `/health`, secret auth (401/503), CORS, session checks, input validation, 404/error JSON, 25MB body limit |
+| `test/helpers.test.js` | Saare pure helpers — period math, amount parsing, table/header parsing, 2B summary + B2B sellers, ZIP JSON reader (including oversize caps), file-name safety, regex |
+| `test/api.test.js` | Server ko asli process ki tarah chala kar HTTP layer — `/health`, secret auth (401/503), strict `ALLOWED_ORIGIN` CORS, session checks/caps, input validation, 404/error JSON, 25MB body limit, `SIGTERM` graceful shutdown |
+| `test/portal.test.js` | Portal selectors, session cleanup, notices/TCS contract shapes |
+| `test/web.test.js` | `web/js/*.js` syntax validity, `web/js/gstr2b-parser.js` (`iamt`/`camt`/`samt`/`csamt` extraction), `scripts/build-web.js` bundle & embedded `APPS_SCRIPT_AppSync.gs` parity, zero external CDNs, zero leaked secret/PIN defaults |
+| `test/apps_script.test.js` | `APPS_SCRIPT_AppSync.gs` sandbox checks — `SYNC_SECRET` auth (`doGet` read-only allowlist vs `doPost`), empty `APP_PIN` fallback, `gstr2bStatus` column handling, `FEE_REVISION` + `FEE_DELETED_RECEIPTS` tombstones |
 
 **Kya test NAHI hota (kyunki sandbox me GST portal nahi hai):** asli login (captcha/OTP), portal ke buttons
 (`DOWNLOAD`, `GENERATE JSON`, `PREPARE ONLINE`), aur live tables ki reading. Wo hissa sirf real portal par verify hoga —

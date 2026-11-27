@@ -474,6 +474,18 @@ test("readJsonFilesFromBuffer: kharab ZIP par saaf error", () => {
   assert.throws(() => readJsonFilesFromBuffer(buf), /ZIP/i);
 });
 
+test("readJsonFilesFromBuffer: unsupported compression method aur path traversal reject", () => {
+  // Valid deflate zip then corrupt method to 9 (Deflate64) and name to ../evil.json
+  const zipGood = makeZip([{ name: "GSTR2B_1.json", text: "{}" }]);
+  const badMethod = Buffer.from(zipGood);
+  const cdOff = badMethod.readUInt32LE(badMethod.length - 6);
+  badMethod.writeUInt16LE(9, cdOff + 10);
+  assert.throws(() => readJsonFilesFromBuffer(badMethod), /unsupported compression method/i);
+
+  const traversalZip = makeZip([{ name: "../evil.json", text: "{}" }]);
+  assert.throws(() => readJsonFilesFromBuffer(traversalZip), /unsafe file path/i);
+});
+
 /* ----------------------------- normalizePeriod --------------------------- */
 test("normalizePeriod: default, padding aur valid FY", () => {
   assert.deepEqual(normalizePeriod(undefined, undefined), { ok: true, fy: "2026-27", month: "10", period: "102026" });

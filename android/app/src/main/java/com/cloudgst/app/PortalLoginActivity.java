@@ -23,6 +23,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONObject;
+import java.util.Locale;
 
 /**
  * GST portal app ke andar: ID + password pehle se bhare hue, aapko sirf captcha dalna hai.
@@ -162,8 +163,12 @@ public class PortalLoginActivity extends Activity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri u = request.getUrl();
-                String host = u.getHost() == null ? "" : u.getHost();
-                if (host.contains("gst.gov.in")) return false;
+                String host = u.getHost() == null ? "" : u.getHost().toLowerCase(Locale.US);
+                String scheme = u.getScheme() == null ? "" : u.getScheme().toLowerCase(Locale.US);
+                boolean isGstHost = ("https".equals(scheme) || "http".equals(scheme))
+                        && (host.equals("gst.gov.in") || host.endsWith(".gst.gov.in"));
+                if (isGstHost) return false;
+                if (!"https".equals(scheme) && !"http".equals(scheme)) return true;
                 try {
                     startActivity(new Intent(Intent.ACTION_VIEW, u));
                 } catch (Exception ignored) { }
@@ -176,7 +181,14 @@ public class PortalLoginActivity extends Activity {
             public void onDownloadStart(String url, String userAgent, String disposition,
                                         String mime, long size) {
                 try {
-                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                    Uri u = url == null ? null : Uri.parse(url);
+                    String scheme = u == null || u.getScheme() == null ? "" : u.getScheme().toLowerCase(Locale.US);
+                    if (!"https".equals(scheme) && !"http".equals(scheme)) {
+                        Toast.makeText(PortalLoginActivity.this, "Invalid download URI scheme",
+                                Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    startActivity(new Intent(Intent.ACTION_VIEW, u));
                 } catch (Exception e) {
                     Toast.makeText(PortalLoginActivity.this, "Download link khol nahi paye",
                             Toast.LENGTH_SHORT).show();

@@ -4,6 +4,10 @@ android {
     namespace 'com.cloudgst.app'
     compileSdk 34
 
+    buildFeatures {
+        buildConfig true
+    }
+
     defaultConfig {
         applicationId 'com.cloudgst.app'
         minSdk 24
@@ -14,11 +18,13 @@ android {
 
     signingConfigs {
         // repo me hai taaki har build SAME key se sign ho -> naya APK purane ke upar seedha install ho jaye
+        // CI/local env overrides supported via ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD
         release {
-            storeFile file('../keystore.p12')
-            storePassword 'cloudgst2026'
-            keyAlias 'cloudgst'
-            keyPassword 'cloudgst2026'
+            def ksPath = System.getenv('ANDROID_KEYSTORE_PATH') ?: '../keystore.p12'
+            storeFile file(ksPath)
+            storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD') ?: 'cloudgst2026'
+            keyAlias System.getenv('ANDROID_KEY_ALIAS') ?: 'cloudgst'
+            keyPassword System.getenv('ANDROID_KEY_PASSWORD') ?: 'cloudgst2026'
             storeType 'PKCS12'
             enableV1Signing true
             enableV2Signing true

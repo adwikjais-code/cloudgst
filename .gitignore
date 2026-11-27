@@ -2,6 +2,10 @@ node_modules/
 npm-debug.log*
 .env
 *.log
+CloudGST.apk
+CloudGST_web_*.zip
+verify.md
+notes.md
 android/.gradle/
 android/build/
 android/app/build/

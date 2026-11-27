@@ -54,6 +54,8 @@ public class PhoneLogin {
     private int clicks = 0;
     private int phase = 0;                 // 0 = idle, 1 = captcha dhoondh rahe, 2 = submit ke baad
     private boolean finished = false;
+    private boolean awaitingUserInput = false;
+    private boolean wrongCapPending = false;
     private boolean otpMode = false;
     private volatile String stage = "idle";
     private boolean manual = false;
@@ -84,11 +86,16 @@ public class PhoneLogin {
         this.username = user == null ? "" : user.trim();
         this.password = pass == null ? "" : pass;
         finished = false;
+        awaitingUserInput = false;
+        wrongCapPending = false;
         otpMode = false;
         tries = 0;
+        clicks = 0;
         captchaSrc = "";
         phase = PHASE_FIND_CAPTCHA;
         manual = false;
+        h.removeCallbacks(tickRun);
+        h.removeCallbacks(timeoutRun);
         ensureWeb(host);
         // Pehle network check — DNS/internet dikkat ho to saaf message mile
         new Thread(() -> {
@@ -110,8 +117,9 @@ public class PhoneLogin {
     }
 
     private static String preflight(String url) {
+        HttpURLConnection c = null;
         try {
-            HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+            c = (HttpURLConnection) new URL(url).openConnection();
             c.setConnectTimeout((int) PREFLIGHT_TIMEOUT_MS);
             c.setReadTimeout((int) PREFLIGHT_TIMEOUT_MS);
             c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
@@ -121,6 +129,8 @@ public class PhoneLogin {
         } catch (Exception e) {
             String m = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             return m.length() > 90 ? m.substring(0, 90) : m;
+        } finally {
+            if (c != null) try { c.disconnect(); } catch (Exception ignored) { }
         }
     }
 
@@ -159,7 +169,7 @@ public class PhoneLogin {
         v.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
-                if (finished) return;
+                if (finished || awaitingUserInput) return;
                 h.removeCallbacks(tickRun);
                 h.postDelayed(tickRun, 700);
             }
@@ -210,10 +220,15 @@ public class PhoneLogin {
                     return;
                 }
                 if ("WAIT".equals(t) && tries >= 12) {
-                    // Page pehchana nahi gaya -> app ke andar hi portal dikha dete hain (alag screen nahi),
+                    // Page pehchana nahi gaya -> MainActivity ke login overlay me dikha dete hain (alag screen nahi),
                     // user captcha/OTP dalega, phir wahi flow aage badhega.
-                    if (!manual) { manual = true; stage = "manual-wait"; }
-                    if (wv != null) { wv.setAlpha(1f); wv.setClickable(true); wv.setFocusable(true); }
+                    if (!manual) {
+                        manual = true;
+                        stage = "manual-wait";
+                        if (act instanceof MainActivity) {
+                            ((MainActivity) act).setLoginOverlayVisible(true);
+                        }
+                    }
                 }
                 if ("CAPTCHA".equals(t)) {
                     captchaSrc = d.optString("src", "");
@@ -221,25 +236,34 @@ public class PhoneLogin {
                     return;
                 }
                 if ("IN".equals(t)) {
+                    if (act instanceof MainActivity) {
+                        ((MainActivity) act).setLoginOverlayVisible(false);
+                    }
                     deliver(ok("loggedIn"));
                     return;
                 }
                 if ("OTPREQ".equals(t)) {
                     otpMode = true;
-                    deliver(ok("otpRequired"));
+                    emitStep(ok("otpRequired"));
                     return;
                 }
                 if ("WRONGCAP".equals(t)) {
-                    // captcha galat -> naya captcha bhejo
+                    // captcha galat -> bina reload page se naya captcha image grab karke client ko bhejo
+                    wrongCapPending = true;
                     phase = PHASE_FIND_CAPTCHA;
                     tries = 0;
-                    if (wv != null) wv.reload();
-                    h.postDelayed(tickRun, 1500);
+                    h.postDelayed(tickRun, 900);
                     return;
                 }
                 if ("ERRMSG".equals(t)) {
                     deliver(err("login_failed",
                             "Portal ne login rok diya: " + d.optString("msg", "wajah pata nahi chali")));
+                    return;
+                }
+                if (wrongCapPending && tries >= 4) {
+                    wrongCapPending = false;
+                    if (wv != null) wv.reload();
+                    h.postDelayed(tickRun, 1500);
                     return;
                 }
                 if (tries >= (manual ? 220 : 40)) {
@@ -263,13 +287,19 @@ public class PhoneLogin {
             return;
         }
         if (src.startsWith("data:")) {
-            deliver(okCaptcha(src));
+            if (wrongCapPending) {
+                wrongCapPending = false;
+                emitStep(errWithCaptcha("captcha_wrong", "Captcha galat tha — naya captcha daalein.", src));
+            } else {
+                emitStep(okCaptcha(src));
+            }
             return;
         }
         final String url = src.startsWith("http") ? src : "https://services.gst.gov.in" + (src.startsWith("/") ? "" : "/") + src;
         new Thread(() -> {
+            HttpURLConnection c = null;
             try {
-                HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                c = (HttpURLConnection) new URL(url).openConnection();
                 String ck = CookieManager.getInstance().getCookie(url);
                 if (ck != null && !ck.isEmpty()) c.setRequestProperty("Cookie", ck);
                 c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
@@ -281,11 +311,23 @@ public class PhoneLogin {
                     h.post(() -> deliver(err("captcha_failed", "Captcha image HTTP " + code + " — ☁️ Cloud mode try karein.")));
                     return;
                 }
-                byte[] b = readAll(c.getInputStream());
+                byte[] b;
+                try (InputStream in = c.getInputStream()) {
+                    b = readAll(in);
+                }
                 String b64 = "data:image/png;base64," + Base64.encodeToString(b, Base64.NO_WRAP);
-                h.post(() -> deliver(okCaptcha(b64)));
+                h.post(() -> {
+                    if (wrongCapPending) {
+                        wrongCapPending = false;
+                        emitStep(errWithCaptcha("captcha_wrong", "Captcha galat tha — naya captcha daalein.", b64));
+                    } else {
+                        emitStep(okCaptcha(b64));
+                    }
+                });
             } catch (Exception e) {
                 h.post(() -> deliver(err("captcha_failed", "Captcha image nahi aa payi (" + e.getMessage() + ").")));
+            } finally {
+                if (c != null) try { c.disconnect(); } catch (Exception ignored) { }
             }
         }).start();
     }
@@ -295,8 +337,13 @@ public class PhoneLogin {
     public void submitCaptcha(String captcha) {
         stage = "submit-captcha";
         if (wv == null || finished) return;
+        awaitingUserInput = false;
+        wrongCapPending = false;
         phase = PHASE_AFTER_SUBMIT;
         tries = 0;
+        h.removeCallbacks(tickRun);
+        h.removeCallbacks(timeoutRun);
+        h.postDelayed(timeoutRun, 150000);
         String js = "(function(){try{"
                 + "function set(el,v){if(!el)return false;try{var d=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');"
                 + "d.set.call(el,v);}catch(e){el.value=v;}"
@@ -314,16 +361,26 @@ public class PhoneLogin {
                 + "return 'NOTFOUND';}catch(e){return 'ERR';}})()";
         wv.evaluateJavascript(js, value -> {
             Log.i(TAG, "submitCaptcha -> " + value);
-            if (wv != null) wv.reload();          // reload se session/cookie fresh, phir poll
-            h.postDelayed(() -> { phase = PHASE_AFTER_SUBMIT; tries = 0; tickRun.run(); }, 2500);
+            // Bina wv.reload() ke form POST/navigation complete hone dein, phir result poll karein
+            h.postDelayed(() -> {
+                if (!finished && !awaitingUserInput) {
+                    phase = PHASE_AFTER_SUBMIT;
+                    tries = 0;
+                    tickRun.run();
+                }
+            }, 1800);
         });
     }
 
     public void submitOtp(String otp) {
         stage = "submit-otp";
         if (wv == null || finished) return;
+        awaitingUserInput = false;
         phase = PHASE_AFTER_SUBMIT;
         tries = 0;
+        h.removeCallbacks(tickRun);
+        h.removeCallbacks(timeoutRun);
+        h.postDelayed(timeoutRun, 150000);
         String js = "(function(){try{"
                 + "var el=document.querySelector('input[name*=otp i],input[id*=otp i],input[type=tel]')"
                 + "||document.querySelector('input[placeholder*=OTP i]');"
@@ -335,7 +392,12 @@ public class PhoneLogin {
                 + "for(var i=0;i<btns.length;i++){var t=((btns[i].innerText||btns[i].value||'')+'').toUpperCase();"
                 + "if(t.indexOf('VERIFY')>=0||t.indexOf('SUBMIT')>=0||t.indexOf('CONTINUE')>=0){btns[i].click();return 'CLICKED';}}"
                 + "var f=el.form;if(f&&f.submit){f.submit();return 'SUBMITTED';}return 'NOTFOUND';}catch(e){return 'ERR';}})()";
-        wv.evaluateJavascript(js, value -> h.postDelayed(() -> { tries = 0; tickRun.run(); }, 2600));
+        wv.evaluateJavascript(js, value -> h.postDelayed(() -> {
+            if (!finished && !awaitingUserInput) {
+                tries = 0;
+                tickRun.run();
+            }
+        }, 1800));
     }
 
     // ======================= page scripts =======================
@@ -422,9 +484,38 @@ public class PhoneLogin {
         return p.toString();
     }
 
+    private String errWithCaptcha(String code, String message, String captchaB64) {
+        JSONObject p = new JSONObject();
+        try {
+            p.put("ok", false);
+            p.put("source", "phone");
+            p.put("code", code);
+            p.put("error", message);
+            p.put("captchaBase64", captchaB64);
+        } catch (Exception ignored) { }
+        return p.toString();
+    }
+
+    /** Intermediate step (captcha / otpRequired / captcha_wrong) — finished false hi rehta hai taaki submitCaptcha/submitOtp chalein. */
+    private void emitStep(final String payload) {
+        if (finished) return;
+        awaitingUserInput = true;
+        stage = "await-user";
+        h.removeCallbacks(tickRun);
+        h.removeCallbacks(timeoutRun);
+        h.post(() -> {
+            try {
+                if (cb != null) cb.done(payload);
+            } catch (Exception e) {
+                Log.w(TAG, "callback fail", e);
+            }
+        });
+    }
+
     private void deliver(final String payload) {
         if (finished) return;
         finished = true;
+        awaitingUserInput = false;
         stage = "done";
         h.removeCallbacks(tickRun);
         h.removeCallbacks(timeoutRun);
@@ -437,9 +528,9 @@ public class PhoneLogin {
         });
     }
 
-    /** true = login chal raha hai (naya start rokne ke liye). */
+    /** true = login chal raha hai (naya start rokne ke liye); user input ke intezar par false taaki doosra start/retry ho sake. */
     public boolean isBusy() {
-        return !finished && wv != null && phase != PHASE_IDLE;
+        return !finished && !awaitingUserInput && wv != null && phase != PHASE_IDLE;
     }
 
     public void destroy() {

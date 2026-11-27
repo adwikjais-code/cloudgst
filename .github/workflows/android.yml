@@ -2,15 +2,18 @@ name: Android APK
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
     paths:
       - "android/**"
+      - "web/**"
+      - "scripts/**"
+      - "APPS_SCRIPT_AppSync.gs"
+      - "package.json"
       - ".github/workflows/android.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
-  issues: write
 
 env:
   RELEASE_TAG: android-v5.9.14
@@ -20,6 +23,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Build web assets & run tests
+        run: |
+          npm ci --ignore-scripts
+          npm run build:web
+          npm test
 
       - uses: actions/setup-java@v4
         with:
@@ -38,13 +52,10 @@ jobs:
 
       - name: Upload build log on failure
         if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tail -c 55000 build.log > tail.log || true
-          gh issue create \
-            --title "Android build log (auto) $(date -u +%Y-%m-%dT%H:%MZ)" \
-            --body-file tail.log || true
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-log
+          path: build.log
 
       - name: Upload APK artifact
         if: success()
@@ -54,7 +65,7 @@ jobs:
           path: android/app/build/outputs/apk/release/app-release.apk
 
       - name: Publish APK to Release
-        if: success()
+        if: success() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -66,26 +77,29 @@ jobs:
             echo '```'
             sha256sum "CloudGST.apk"
             md5sum "CloudGST.apk"
-            unzip -l "CloudGST.apk" | tail -30
+            unzip -l "CloudGST.apk" | tail -35
             echo "manifest ok: $(unzip -p "CloudGST.apk" AndroidManifest.xml > /dev/null && echo yes)"
             echo "signature files: $(unzip -Z1 "CloudGST.apk" | grep -cE '^META-INF/.*(RSA|SF|MF)$' || true)"
             echo "index.html bytes: $(unzip -p "CloudGST.apk" assets/app/index.html | wc -c)"
-            echo "js back handler: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c cloudGstHandleBack || true)"
-            echo "js bio toggle: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpBioLockBtn || true)"
-            echo "js header fingerprint btn: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativeBioBtn || true)"
-            echo "js bioStatus bridge: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c bioStatus || true)"
+            echo "vendor tailwind css bytes: $(unzip -p "CloudGST.apk" assets/app/vendor/tailwind.min.css | wc -c)"
+            echo "vendor pdf.js bytes: $(unzip -p "CloudGST.apk" assets/app/vendor/pdf.min.js | wc -c)"
+            echo "js modules count: $(unzip -Z1 "CloudGST.apk" | grep -c '^assets/app/js/.*\.js$' || true)"
+            echo "js back handler: $(unzip -p "CloudGST.apk" assets/app/index.html 'assets/app/js/*.js' | grep -c cloudGstHandleBack || true)"
+            echo "js bio toggle: $(unzip -p "CloudGST.apk" assets/app/index.html 'assets/app/js/*.js' | grep -c gpBioLockBtn || true)"
+            echo "js header fingerprint btn: $(unzip -p "CloudGST.apk" assets/app/index.html 'assets/app/js/*.js' | grep -c gpNativeBioBtn || true)"
+            echo "js bioStatus bridge: $(unzip -p "CloudGST.apk" assets/app/index.html 'assets/app/js/*.js' | grep -c bioStatus || true)"
             echo "dex bioStatus: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac bioStatus || true)"
-            echo "js native unlock hook: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c cloudGstNativeUnlocked || true)"
+            echo "js native unlock hook: $(unzip -p "CloudGST.apk" assets/app/index.html 'assets/app/js/*.js' | grep -c cloudGstNativeUnlocked || true)"
             echo "dex native unlock hook: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac cloudGstNativeUnlocked || true)"
-            echo "js source switch: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpSrcSwitch || true)"
-            echo "js phone fetch: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpPhoneFetch2b || true)"
+            echo "js source switch: $(unzip -p "CloudGST.apk" assets/app/index.html 'assets/app/js/*.js' | grep -c gpSrcSwitch || true)"
+            echo "js phone fetch: $(unzip -p "CloudGST.apk" assets/app/index.html 'assets/app/js/*.js' | grep -c gpPhoneFetch2b || true)"
             echo "dex phone fetch: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac phoneFetch2b || true)"
             echo "dex ui-thread start: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac startPhoneFetch || true)"
             echo "dex phone login: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac phoneLoginStart || true)"
             echo "dex phone poll: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac phonePayloadFor || true)"
             echo "dex inapp login overlay: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac phoneLoginVisible || true)"
-            echo "js phone poll: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativePoll || true)"
-            echo "js native portal: $(unzip -p "CloudGST.apk" assets/app/index.html | grep -c gpNativePortalBtn || true)"
+            echo "js phone poll: $(unzip -p "CloudGST.apk" assets/app/index.html 'assets/app/js/*.js' | grep -c gpNativePoll || true)"
+            echo "js native portal: $(unzip -p "CloudGST.apk" assets/app/index.html 'assets/app/js/*.js' | grep -c gpNativePortalBtn || true)"
             echo "dex openPortal: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac openPortal || true)"
             echo "dex CloudGSTNative: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac CloudGSTNative || true)"
             echo "dex BiometricPrompt: $(unzip -p "CloudGST.apk" 'classes*.dex' | grep -ac BiometricPrompt || true)"
@@ -97,30 +111,20 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v5.9.14 — bridge down par auto-retry + banner, error me URL/origin, 2B/E-Com yaad + dono-off guard)
+          ## CloudGST Android APK (v5.9.14)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
           2. Phone me kholein — "Unknown sources / Install anyway" allow karein.
           3. Icon **J&A (CloudGST)** kholein. Pehle se install hai to seedha update ho jayega
              (data/settings safe rahenge).
-
-          Naya kya hai:
-          - **🔒 Fingerprint / Touch ID lock** — Settings me App lock ON/OFF. Ab Android 7 (Nougat)
-            se hi chalta hai; fingerprint na ho to phone ka PIN/pattern bhi chalega.
-          - **Swipe se back** — pehle khula popup band, phir pichhla tab, phir app se bahar (Android 13+ predictive back).
-          - **Logo** — PDF letterhead wala hi navy + gold "J&A" monogram: launcher icon aur app khulte
-            waqt ka splash screen, aur lock screen par bhi.
-          - **Downloads** — app ke JSON / PDF / CSV file seedha phone ke **Downloads** folder me
-            (notification me progress), pehle jaisa "kuch nahi hua" nahi.
-          - **Share** — native share sheet se WhatsApp/Gmail me file bhejein.
-          - **🌐 Portal Login** — portal tab me client ke saamne button; app ke andar GST portal khulta hai
-            ID/password pehle se bhare hue, sirf captcha aapko dalna hai.
-          - App UI bilkul **v5_8 jaisa** (koi naya button/flow nahi).
           EOF
+          (cd android/app/src/main/assets && zip -r9 "$GITHUB_WORKSPACE/CloudGST_web_v5_9_14.zip" app)
+          ls -lh "CloudGST_web_v5_9_14.zip"
           cat verify.md >> notes.md
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
-          gh release create "$RELEASE_TAG" "CloudGST.apk" \
-            --title "CloudGST Android v5.9.14 (APK)" \
+          gh release create "$RELEASE_TAG" "CloudGST.apk" "CloudGST_web_v5_9_14.zip" \
+            --target "$GITHUB_SHA" \
+            --title "CloudGST Android v5.9.14 (APK + Web Bundle)" \
             --notes-file notes.md
