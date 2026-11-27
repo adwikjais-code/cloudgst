@@ -178,3 +178,77 @@ test("built assets/app matches web/ sources, embeds APPS_SCRIPT_AppSync.gs, and 
   assert.equal(/AdwikGst2026/.test(trackerJs), false, "Default bridge secret literal must be removed");
   assert.ok(trackerJs.includes("vendor/pdf.worker.min.js"), "PDF.js worker must load locally");
 });
+
+test("gstr2b-parser: gpMergePortalSaveData keeps failed/NOT_GENERATED flags accurately across retries", () => {
+  const period = "2026-27 / 11";
+
+  // 1. Fresh client: GSTR-2B failed, TCS succeeded -> missing.gstr2b=true, gstr2bStatus="2B_FAILED" (not false ₹0 synced!)
+  const partialFail = {
+    fy: "2026-27",
+    month: "11",
+    status: { gstr2b: { state: "failed", message: "Access Denied" }, tcs: { state: "ok", message: "1 row" } },
+    partial: { gstr2b: true, tcs: false, text: "Adhoora fetch — GSTR-2B: Access Denied" },
+    ecommerceTcs: {
+      totalGrossTaxable: 787849,
+      totalReturned: 0,
+      totalNetValue: 787849,
+      totalTcs: 3939,
+      rows: [{ ecoName: "ETSY", ecoGstin: "9921USA29004OSP", grossTaxableAmount: 787849, tcsIgst: 3939, tcsCgst: 0, tcsSgst: 0 }]
+    }
+  };
+  const m1 = gstr2bParser.gpMergePortalSaveData(null, partialFail, period);
+  assert.equal(m1.localPortalObj.missing.gstr2b, true);
+  assert.equal(m1.localPortalObj.missing.tcs, false);
+  assert.equal(m1.localPortalObj.gstr2bNotGenerated, false);
+  assert.equal(m1.gstr2bStatus, "2B_FAILED");
+  assert.equal(m1.localPortalObj.ecomGross, 787849);
+  assert.equal(m1.localPortalObj.ecomTcs, 3939);
+
+  // 2. Retrying client whose previous same-period attempt ALSO failed 2B -> missing.gstr2b stays true!
+  const m2 = gstr2bParser.gpMergePortalSaveData(m1.localPortalObj, partialFail, period);
+  assert.equal(m2.localPortalObj.missing.gstr2b, true);
+  assert.equal(m2.gstr2bStatus, "2B_FAILED");
+
+  // 3. Client with prior NOT_GENERATED whose 2B fetch fails later -> NOT_GENERATED preserved (not wiped to "")!
+  const prevNotGen = {
+    period,
+    igst: 0, cgst: 0, sgst: 0, cess: 0, ineligible: 0, suppliers: 0,
+    b2bSellers: [],
+    ecomGross: 0, ecomNet: 0, ecomTcs: 0, ecomPlatforms: "", ecoList: [],
+    gstr2bNotGenerated: true,
+    missing: { gstr2b: false, tcs: false }
+  };
+  const m3 = gstr2bParser.gpMergePortalSaveData(prevNotGen, partialFail, period);
+  assert.equal(m3.localPortalObj.gstr2bNotGenerated, true);
+  assert.equal(m3.localPortalObj.missing.gstr2b, false);
+  assert.equal(m3.gstr2bStatus, "NOT_GENERATED");
+  assert.equal(m3.localPortalObj.ecomGross, 787849);
+
+  // 4. Client with valid prior 2B whose 2B retry fails -> preserves valid ITC numbers without overwriting with 0!
+  const prevValid2b = {
+    period,
+    igst: 1200, cgst: 600, sgst: 600, cess: 0, ineligible: 0, suppliers: 2,
+    b2bSellers: [{ name: "SUP", gstin: "09ABCDE1234F1Z5", taxable: 10000 }],
+    gstr2bNotGenerated: false,
+    missing: { gstr2b: false, tcs: false }
+  };
+  const m4 = gstr2bParser.gpMergePortalSaveData(prevValid2b, partialFail, period);
+  assert.equal(m4.localPortalObj.igst, 1200);
+  assert.equal(m4.localPortalObj.suppliers, 2);
+  assert.equal(m4.localPortalObj.missing.gstr2b, false);
+  assert.equal(m4.gstr2bStatus, "");
+
+  // 5. Status token parse/build round-trip
+  assert.deepEqual(gstr2bParser.gpParseGstr2bStatusFlags("NOT_GENERATED|TCS_FAILED"), {
+    gstr2bStatus: "NOT_GENERATED|TCS_FAILED",
+    gstr2bNotGenerated: true,
+    missing: { gstr2b: false, tcs: true },
+    partialNote: "Adhoora fetch — E-Com / TCS portal se fetch nahi hua"
+  });
+  assert.deepEqual(gstr2bParser.gpParseGstr2bStatusFlags("2B_FAILED"), {
+    gstr2bStatus: "2B_FAILED",
+    gstr2bNotGenerated: false,
+    missing: { gstr2b: true, tcs: false },
+    partialNote: "Adhoora fetch — GSTR-2B portal se fetch nahi hua"
+  });
+});

@@ -1861,13 +1861,23 @@ function doGet(e) {
           var ecoArr = []; try { if (pEcoJ) ecoArr = JSON.parse(pEcoJ); } catch (_) {}
           var pDocC = cols.docCollected > 0 ? (rawValues[i][cols.docCollected - 1] === true || String(r[cols.docCollected - 1] || '').toUpperCase() === 'TRUE') : false;
           var p2bSt = cols.gstr2bStatus > 0 ? (r[cols.gstr2bStatus - 1] || '').toString().trim().toUpperCase() : '';
+          var p2bTokens = p2bSt ? p2bSt.split('|').map(function(x) { return x.trim(); }) : [];
+          var has2bNotGen = p2bTokens.indexOf('NOT_GENERATED') > -1 || p2bSt.indexOf('NOT') === 0;
+          var has2bFail = p2bTokens.indexOf('2B_FAILED') > -1;
+          var hasTcsFail = p2bTokens.indexOf('TCS_FAILED') > -1;
+          var partialParts = [];
+          if (has2bFail) partialParts.push('GSTR-2B portal se fetch nahi hua');
+          if (hasTcsFail) partialParts.push('E-Com / TCS portal se fetch nahi hua');
           if (!pPer && !pUpd && !pIgst && !pCgst && !pSgst && !pEGrs && !pNotC && !pDrv && !p2bSt) return null;
           return {
             period: pPer, noticesCount: pNotC, noticesSummary: pNotS,
             igst: pIgst, cgst: pCgst, sgst: pSgst, cess: pCess, ineligible: pInel, suppliers: pSupp,
             ecomGross: pEGrs, ecomNet: pENet, ecomTcs: pETcs, ecomPlatforms: pEPlt,
             driveLink: pDrv, updatedAt: pUpd, b2bSellers: b2bArr, ecoList: ecoArr, docCollected: pDocC,
-            gstr2bNotGenerated: p2bSt.indexOf('NOT') === 0
+            gstr2bStatus: p2bSt,
+            gstr2bNotGenerated: has2bNotGen,
+            missing: (has2bFail || hasTcsFail) ? { gstr2b: has2bFail, tcs: hasTcsFail } : undefined,
+            partialNote: partialParts.length ? ('Adhoora fetch — ' + partialParts.join(' | ')) : ''
           };
         })()
       });
