@@ -299,8 +299,8 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
 
   const gradle = fs.readFileSync(path.join(ROOT, "android", "app", "build.gradle"), "utf8");
   const vcMatch = gradle.match(/versionCode\s+(\d+)/);
-  assert.ok(vcMatch && Number(vcMatch[1]) >= 83, "versionCode must be >= 83 to upgrade cleanly over v6.0.0 (82)");
-  assert.match(gradle, /versionName\s+'6\.0\.1'/);
+  assert.ok(vcMatch && Number(vcMatch[1]) >= 84, "versionCode must be >= 84 to upgrade cleanly over v6.0.1 (83)");
+  assert.match(gradle, /versionName\s+'6\.0\.2'/);
 
   // Portal checkboxes default OFF (GSTR-2B, E-Com, Auto-Next, Drive) & no auto-expand dropdown on fetch completion
   const webHtml = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
@@ -311,4 +311,17 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
   }
   assert.doesNotMatch(portalJs, /nextChk\.checked\s*=\s*true/, "Auto-Next must not auto-check itself");
   assert.doesNotMatch(portalJs, /gpExpanded\.add\(c\.clientKey\)/, "Fetched client details must not auto-expand");
+
+  // v6.0.2: External physical keyboard hides soft IME & Spacebar triggers next Fetch/Re-Fetch on Portal
+  const manifest = fs.readFileSync(path.join(ROOT, "android", "app", "src", "main", "AndroidManifest.xml"), "utf8");
+  assert.match(manifest, /android:configChanges="[^"]*\bkeyboard\b[^"]*"/, "AndroidManifest must handle keyboard configChanges without recreating Activity");
+  assert.match(mainAct, /detectExternalKeyboard/, "MainActivity must detect connected external keyboards");
+  assert.match(mainAct, /InputDeviceListener/, "MainActivity must react dynamically to external keyboard connect/disconnect");
+  assert.match(mainAct, /SOFT_INPUT_STATE_ALWAYS_HIDDEN/, "MainActivity must suppress soft keyboard when external keyboard is connected");
+  assert.match(mainAct, /injectExternalKeyboardGuard/, "MainActivity must inject inputmode=none guard into WebView");
+  assert.match(mainAct, /public boolean hasExternalKeyboard\(\)/, "CloudGSTNative must expose hasExternalKeyboard()");
+  assert.match(mainAct, /public void hideSoftKeyboard\(\)/, "CloudGSTNative must expose hideSoftKeyboard()");
+  assert.match(portalJs, /let gpLastFetchKey\s*=\s*null;/, "portal-module must track gpLastFetchKey for Spacebar next Fetch/Re-Fetch");
+  assert.match(portalJs, /function gpTriggerNextFetchBySpace\(\)/, "portal-module must define gpTriggerNextFetchBySpace()");
+  assert.match(portalJs, /e\.code !== "Space"/, "portal-module must bind Space keydown shortcut on Portal");
 });

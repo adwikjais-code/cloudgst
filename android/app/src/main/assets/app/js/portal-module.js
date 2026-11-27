@@ -10,6 +10,7 @@
       let gpActiveWaTpl = "etsy";
       let gpActiveFetches = 0;
       let gpActiveB2bKey = null;
+      let gpLastFetchKey = null;
       const gpExpanded = new Set();
       const gpExpandTimers = new Map();
       const GP_AUTO_HIDE_MS = 45000; // 45 sec baad expanded detail apne aap hide ho jayega
@@ -251,7 +252,10 @@
         try { window.addEventListener("pageshow", () => setTimeout(resetUnchecked, 50)); } catch (_) {}
         try { window.addEventListener("pageshow", () => setTimeout(resetUnchecked, 400)); } catch (_) {}
         for (const id of ["gpOpt2b", "gpOptTcs", "gpAutoNextChk", "gpAutoDriveChk"]) {
-          document.getElementById(id)?.addEventListener("change", gpSaveOptions);
+          document.getElementById(id)?.addEventListener("change", (e) => {
+            gpSaveOptions();
+            try { e.target && e.target.blur && e.target.blur(); } catch (_) {}
+          });
         }
       }
 
@@ -1249,6 +1253,7 @@
             return gpToast("⏳ Sabhi " + gpPhoneMaxSlots() + " tabs busy hain — ek finish hote hi agla chalega.");
           }
           st.phoneSlot = slot;
+          if (mode !== "UPLOAD") gpLastFetchKey = clientKey;
           // 📱 Phone mode (Multi-Profile): har client ko apna alag hidden WebView tab (0..4)
           st.sessionId = "PHONE";
           st.captchaBase64 = "";
@@ -1281,6 +1286,7 @@
           gpRenderSerialList(clientKey);
           return;
         }
+        if (mode !== "UPLOAD") gpLastFetchKey = clientKey;
         st.phase = "loading_cap";
         st.note = "";
         st._capDraft = "";
@@ -2452,8 +2458,8 @@
       document.getElementById("gpClearFolderBtn")?.addEventListener("click", () => { gpMatchedJsons.clear(); gpUpdateFolderBanner(); gpRenderSerialList(); });
       document.getElementById("gpToggleCredsModeBtn")?.addEventListener("click", () => { gpCredsMode = !gpCredsMode; gpRenderSerialList(); });
       document.getElementById("gpClearSheetMonthBtn")?.addEventListener("click", gpClearOldMonthInSheet);
-      document.getElementById("gpFySel")?.addEventListener("change", () => { gpExpanded.clear(); gpUpdateFolderBanner(); gpRenderSerialList(); });
-      document.getElementById("gpMonSel")?.addEventListener("change", () => { gpExpanded.clear(); gpUpdateFolderBanner(); gpRenderSerialList(); });
+      document.getElementById("gpFySel")?.addEventListener("change", (e) => { gpExpanded.clear(); gpUpdateFolderBanner(); gpRenderSerialList(); try { e.target.blur(); } catch (_) {} });
+      document.getElementById("gpMonSel")?.addEventListener("change", (e) => { gpExpanded.clear(); gpUpdateFolderBanner(); gpRenderSerialList(); try { e.target.blur(); } catch (_) {} });
       document.querySelectorAll("#gpWaDocModalOverlay .gp-wa-tpl-btn").forEach(b => b.addEventListener("click", () => {
         gpActiveWaTpl = b.getAttribute("data-gp-wa-tpl") || "etsy";
         gpUpdateWaTplUI();
@@ -2499,6 +2505,70 @@
         if (up.ok) { gpBridgeMark(true); gpToast("✅ Bridge wapas aa gaya (v" + ((up.data && up.data.version) || "?") + ") — ab Re-Fetch karein."); }
         else { gpBridgeMark(false); gpToast("❌ Bridge abhi bhi down: " + ((up.last && up.last.reason) || "no response")); }
       });
+      function gpTriggerNextFetchBySpace() {
+        const portalPage = document.getElementById("pagePortalMain");
+        if (!portalPage || portalPage.classList.contains("hidden")) return false;
+        if (gpCredsMode) return false;
+        if (document.querySelector(".fixed.inset-0:not(.hidden)")) return false;
+        const tbody = document.getElementById("gpSerialTableBody");
+        if (!tbody) return false;
+        const btnByKey = new Map();
+        tbody.querySelectorAll(".gp-load-cap-btn").forEach((btn) => {
+          if (btn.disabled) return;
+          const k = btn.getAttribute("data-k");
+          if (k && !btnByKey.has(k)) btnByKey.set(k, btn);
+        });
+        if (!btnByKey.size) {
+          gpToast("ℹ️ Abhi koi agla Fetch / Re-Fetch client ready nahi hai.");
+          return true;
+        }
+        const list = gpGetFilteredClients();
+        let targetBtn = null;
+        if (list.length) {
+          const lastIdx = gpLastFetchKey ? list.findIndex(c => c.clientKey === gpLastFetchKey) : -1;
+          for (let offset = 1; offset <= list.length; offset++) {
+            const c = list[(lastIdx + offset) % list.length];
+            if (c && btnByKey.has(c.clientKey)) {
+              targetBtn = btnByKey.get(c.clientKey);
+              break;
+            }
+          }
+        }
+        if (!targetBtn) targetBtn = btnByKey.values().next().value;
+        if (!targetBtn) return false;
+        try {
+          const row = targetBtn.closest("tr") || targetBtn;
+          if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        } catch (_) {}
+        targetBtn.click();
+        return true;
+      }
+
+      document.addEventListener("keydown", (e) => {
+        if (!e || (e.code !== "Space" && e.key !== " ")) return;
+        if (e.ctrlKey || e.altKey || e.metaKey) return;
+        const portalPage = document.getElementById("pagePortalMain");
+        if (!portalPage || portalPage.classList.contains("hidden")) return;
+        if (gpCredsMode) return;
+        if (document.querySelector(".fixed.inset-0:not(.hidden)")) return;
+        const t = e.target;
+        if (t && t.nodeType === 1) {
+          const tag = (t.tagName || "").toUpperCase();
+          if (t.isContentEditable || tag === "TEXTAREA" || tag === "SELECT") return;
+          if (tag === "INPUT") {
+            const isCapOrOtp = t.classList && (t.classList.contains("gp-cap-inp") || t.classList.contains("gp-otp-inp"));
+            if (!isCapOrOtp) {
+              const ty = (t.type || "text").toLowerCase();
+              if (ty !== "button" && ty !== "submit") return;
+            }
+          }
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
+        gpTriggerNextFetchBySpace();
+      }, true);
+
       gpBridgeHealth(6000);
       window.renderPortalPage();
     })();
