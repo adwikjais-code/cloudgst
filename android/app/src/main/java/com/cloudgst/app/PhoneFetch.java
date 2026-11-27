@@ -42,9 +42,10 @@ public class PhoneFetch {
 
     private static final String TAG = "PhoneFetch";
     private static final String AUTH_DASHBOARD = "https://services.gst.gov.in/services/auth/dashboard";
-    private static final String RETURNS_DASHBOARD = "https://returns.gst.gov.in/returns/auth/dashboard";
+    private static final String RETURNS_DASHBOARD = "https://return.gst.gov.in/returns/auth/dashboard";
     private static final long TICK_MS = 2600L;
     private static final long HARD_TIMEOUT_MS = 165000L;
+    private static final int MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 
     private final Activity act;
     private final Callback cb;
@@ -145,6 +146,7 @@ public class PhoneFetch {
             @Override
             public void onPageFinished(WebView view, String url) {
                 if (finished) return;
+                injectBlobShim(view);
                 h.removeCallbacks(tickRun);
                 h.postDelayed(tickRun, 900);
             }
@@ -286,24 +288,38 @@ public class PhoneFetch {
                 + "var href=String(location.href||'').toLowerCase();"
                 + "if(href.indexOf('/login')>=0||document.querySelector('input[type=password]')) return out('LOGIN');"
                 + "var body=flat(document.body||document.documentElement);"
-                + "if(/not\\s+generated/i.test(body)&&/2B/i.test(body)) return out('NOTGEN');"
-                // ---- 2B card ka DOWNLOAD (search ke baad) ----
+                + "if(/(not\\s+generated|could\\s+not\\s+be\\s+generated)/i.test(body)&&/2B/i.test(body)) return out('NOTGEN');"
+                // ---- 2B card ka DOWNLOAD ya gstr2b.gst.gov.in ka GENERATE JSON FILE TO DOWNLOAD ----
                 + "var btns=[].slice.call(document.querySelectorAll('button,a,input[type=button]'));"
+                + "for(var gi=0;gi<btns.length;gi++){var gb=btns[gi];if(!vis(gb))continue;"
+                + "if(/GENERATE\\s+JSON\\s+FILE\\s+TO\\s+DOWNLOAD/i.test(flat(gb))){try{gb.scrollIntoView({block:'center'});}catch(x){}gb.click();return out('CLICKED');}}"
                 + "for(var i=0;i<btns.length;i++){var b=btns[i];if(!vis(b))continue;"
                 + "if(!/DOWNLOAD/i.test(flat(b)))continue;"
                 + "var p=b.parentNode,hops=0,hit=false;"
                 + "while(p&&hops<5){if(/GSTR-?2B/i.test(flat(p))){hit=true;break;}p=p.parentNode;hops++;}"
                 + "if(hit){try{b.scrollIntoView({block:'center'});}catch(x){}b.click();return out('CLICKED');}}"
-                // ---- dashboard: FY + Month select, phir SEARCH ----
+                // ---- dashboard: FY + Quarter + Month select (sirf jab selectedIndex badle), phir SEARCH ----
                 + "var sels=[].slice.call(document.querySelectorAll('select'));"
-                + "if(sels.length){var fySet=false,monSet=false;"
+                + "if(sels.length){var changed=false;"
+                + "var qMap={APR:'1',MAY:'1',JUN:'1',JUL:'2',AUG:'2',SEP:'2',OCT:'3',NOV:'3',DEC:'3',JAN:'4',FEB:'4',MAR:'4'};"
+                + "var qRng={1:/APR\\s*-\\s*JUN/i,2:/JUL\\s*-\\s*SEP/i,3:/OCT\\s*-\\s*DEC/i,4:/JAN\\s*-\\s*MAR/i};"
+                + "var QNUM=qMap[MONS]||'';"
+                + "var monRe=MONS.length>=3?new RegExp('(^|[^A-Z])'+MONS+'([^A-Z]|$)'):null;"
                 + "for(var s=0;s<sels.length;s++){var ops=[].slice.call(sels[s].options||[]);"
-                + "for(var o=0;o<ops.length;o++){var ot=((ops[o].text||'')+'').toUpperCase();var otn=ot.replace(/\\s+/g,'');"
-                + "if(!fySet&&FY&&otn.indexOf(FY.replace(/\\s+/g,''))>=0){sels[s].selectedIndex=o;"
-                + "sels[s].dispatchEvent(new Event('change',{bubbles:true}));fySet=true;}"
-                + "else if(!monSet&&((MONF&&ot.indexOf(MONF)>=0)||(MONS.length>=3&&ot.replace(/[^A-Z]/g,'').indexOf(MONS)>=0))){"
-                + "sels[s].selectedIndex=o;sels[s].dispatchEvent(new Event('change',{bubbles:true}));monSet=true;}}}"
-                + "if(fySet||monSet) return out('SETTING');"
+                + "var allTxt=ops.map(function(op){return ((op.text||'')+'').toUpperCase().trim();}).join('|');"
+                + "var isFy=/\\b20\\d{2}\\s*-\\s*\\d{2,4}\\b/.test(allTxt);"
+                + "var isQ=/QUARTER\\s*[1-4]|\\bQ[1-4]\\b|APR\\s*-\\s*JUN|JUL\\s*-\\s*SEP|OCT\\s*-\\s*DEC|JAN\\s*-\\s*MAR/i.test(allTxt);"
+                + "var isM=/JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER/.test(allTxt);"
+                + "for(var o=0;o<ops.length;o++){var ot=((ops[o].text||'')+'').toUpperCase().trim();"
+                + "if(!ot||/^SELECT/.test(ot))continue;"
+                + "var otn=ot.replace(/\\s+/g,'');"
+                + "var pick=false;"
+                + "if(isFy&&FY&&otn.indexOf(FY.replace(/\\s+/g,''))>=0)pick=true;"
+                + "else if(isQ&&QNUM&&(ot.indexOf('QUARTER '+QNUM)>=0||/\\bQ/.test(ot)&&ot.indexOf('Q'+QNUM)>=0||(qRng[QNUM]&&qRng[QNUM].test(ot))))pick=true;"
+                + "else if((isM||(!isFy&&!isQ))&&((MONF&&ot.indexOf(MONF)>=0)||(monRe&&monRe.test(ot))))pick=true;"
+                + "if(pick){if(sels[s].selectedIndex!==o){sels[s].selectedIndex=o;"
+                + "sels[s].dispatchEvent(new Event('change',{bubbles:true}));changed=true;}break;}}}"
+                + "if(changed) return out('SETTING');"
                 + "for(var k=0;k<btns.length;k++){var t=btns[k];if(!vis(t))continue;"
                 + "if(/^SEARCH$/i.test(flat(t))){t.click();return out('SEARCHED');}}"
                 + "return out('DASH');}"
@@ -321,12 +337,34 @@ public class PhoneFetch {
 
     // ============================ download ============================
 
+    private void injectBlobShim(WebView view) {
+        if (view == null) return;
+        String shim = "(function(){try{"
+                + "if(window.__cgBlobShim)return;window.__cgBlobShim=1;"
+                + "var map={};var origCreate=URL.createObjectURL;"
+                + "URL.createObjectURL=function(b){var u=origCreate.call(URL,b);"
+                + "try{if(b&&b.size){map[u]=b;var fr=new FileReader();fr.onload=function(){"
+                + "window.__cgBlobB64=String(fr.result||'').split(',')[1]||'';};fr.readAsDataURL(b);}}catch(e){}"
+                + "return u;};"
+                + "var origClick=HTMLAnchorElement.prototype.click;"
+                + "HTMLAnchorElement.prototype.click=function(){"
+                + "try{var h=this.getAttribute('href')||'';if(h.indexOf('blob:')===0){"
+                + "if(map[h]){var fr=new FileReader();fr.onload=function(){"
+                + "window.__cgBlobB64=String(fr.result||'').split(',')[1]||'';};fr.readAsDataURL(map[h]);}"
+                + "else if(window.fetch){fetch(h).then(function(r){return r.blob();}).then(function(b){"
+                + "var fr=new FileReader();fr.onload=function(){window.__cgBlobB64=String(fr.result||'').split(',')[1]||'';};"
+                + "fr.readAsDataURL(b);}).catch(function(){});}"
+                + "}}catch(e){}return origClick.call(this);};"
+                + "}catch(e){}})()";
+        view.evaluateJavascript(shim, null);
+    }
+
     private void onClickedDownload(String url, String ua) {
         stage = "download";
         if (url == null || url.isEmpty()) return;
         String agent = (ua == null || ua.isEmpty()) ? cachedUa : ua;
         if (url.startsWith("blob:")) {
-            readBlobChunk(0, new StringBuilder(), agent);
+            readBlobChunk(0, new StringBuilder(), agent, 0);
             return;
         }
         String cookie = "";
@@ -334,24 +372,25 @@ public class PhoneFetch {
         fetchUrl(url, agent, cookie);
     }
 
-    /** Portal kai baar blobar URL deta hai -> JS se base64 chunks me padhte hain. */
-    private void readBlobChunk(final int offset, final StringBuilder acc, final String ua) {
+    /** Portal kai baar blob URL deta hai -> injected shim ke __cgBlobB64 ko chunks me padhte hain. */
+    private void readBlobChunk(final int offset, final StringBuilder acc, final String ua, final int retries) {
         if (finished || wv == null) return;
         final int CH = 200000;
         final int from = offset;
         wv.evaluateJavascript("(function(){try{var s=window.__cgBlobB64||'';return s.slice(" + from
                 + "," + (from + CH) + ");}catch(e){return '';}})()", value -> {
+            if (finished) return;
             String chunk = unquote(value);
             if (chunk.isEmpty()) {
                 if (acc.length() > 100) {
                     handleBytes(Base64.decode(acc.toString(), Base64.DEFAULT), ua);
+                } else if (offset == 0 && retries < 15) {
+                    h.postDelayed(() -> {
+                        if (!finished) readBlobChunk(0, acc, ua, retries + 1);
+                    }, 1000);
                 } else {
-                    // blob abhi taiyar nahi -> thoda ruk kar dobara (max 15 baar)
-                    if (offset == 0 && ticks < 60) {
-                        h.postDelayed(() -> {
-                            if (!finished) readBlobChunk(0, acc, ua);
-                        }, 1500);
-                    }
+                    deliver(reqId, err("download_failed",
+                            "Phone mode: portal blob download data padh nahi paye. Dobara try karein ya ☁️ Cloud mode use karein."));
                 }
                 return;
             }
@@ -359,20 +398,21 @@ public class PhoneFetch {
             if (chunk.length() < CH) {
                 handleBytes(Base64.decode(acc.toString(), Base64.DEFAULT), ua);
             } else {
-                readBlobChunk(offset + CH, acc, ua);
+                readBlobChunk(offset + CH, acc, ua, retries);
             }
         });
     }
 
     private void fetchUrl(final String url, final String ua, final String cookie) {
         new Thread(() -> {
+            HttpURLConnection c = null;
             try {
                 final String agent = (ua == null || ua.isEmpty()) ? "Mozilla/5.0" : ua;
                 String ck = cookie;
-                HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                c = (HttpURLConnection) new URL(url).openConnection();
                 c.setRequestProperty("User-Agent", agent);
                 if (ck != null && !ck.isEmpty()) c.setRequestProperty("Cookie", ck);
-                c.setRequestProperty("Referer", "https://returns.gst.gov.in/");
+                c.setRequestProperty("Referer", "https://return.gst.gov.in/");
                 c.setConnectTimeout(30000);
                 c.setReadTimeout(120000);
                 c.setInstanceFollowRedirects(true);
@@ -382,11 +422,17 @@ public class PhoneFetch {
                             + " — portal login/session check karein ya ☁️ Cloud mode use karein."));
                     return;
                 }
-                handleBytes(readAll(c.getInputStream()), agent);
+                byte[] bodyBytes;
+                try (InputStream in = c.getInputStream()) {
+                    bodyBytes = readAll(in);
+                }
+                handleBytes(bodyBytes, agent);
             } catch (Exception e) {
                 Log.w(TAG, "fetchUrl fail", e);
                 deliver(reqId, err("download_failed",
                         "Phone mode: 2B file download nahi hui (" + e.getMessage() + "). ☁️ Cloud mode try karein."));
+            } finally {
+                if (c != null) try { c.disconnect(); } catch (Exception ignored) { }
             }
         }).start();
     }
@@ -442,7 +488,14 @@ public class PhoneFetch {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];
         int n;
-        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        int total = 0;
+        while ((n = in.read(buf)) > 0) {
+            total += n;
+            if (total > MAX_DOWNLOAD_BYTES) {
+                throw new Exception("File 25MB limit se badi hai");
+            }
+            out.write(buf, 0, n);
+        }
         return out.toByteArray();
     }
 

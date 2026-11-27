@@ -61,7 +61,7 @@ import java.util.concurrent.Executor;
 public class MainActivity extends FragmentActivity {
 
     public static final String APP_URL = "https://appassets.androidplatform.net/assets/app/index.html";
-    public static final String APP_VERSION = "android-5.9.14";
+    public static final String APP_VERSION = "android-" + BuildConfig.VERSION_NAME;
 
     private static final int REQ_FILE = 1001;
     private static final int REQ_STORAGE = 1002;
@@ -78,9 +78,12 @@ public class MainActivity extends FragmentActivity {
     private PhoneFetch phoneFetch;
     private PhoneLogin phoneLogin;
     private String phoneLoginId = "";
-    /** Phone-mode fetch ka poora JSON payload (JS chunks me kheenchta hai). */
-    private String phonePayload = "";
-    private String phonePayloadId = "";
+    private final Object phoneLock = new Object();
+    /** Phone-mode login aur fetch payloads alag-alag (ek doosre ko overwrite na karein). */
+    private String phoneLoginPayload = "";
+    private String phoneLoginPayloadId = "";
+    private String phoneFetchPayload = "";
+    private String phoneFetchPayloadId = "";
     private SharedPreferences prefs;
 
     /** Storage permission ke baad pending save (sirf Android 7/8 ke liye). */
@@ -397,7 +400,8 @@ public class MainActivity extends FragmentActivity {
             prompt.authenticate(b.build());
         } catch (Throwable t) {
             Log.w(TAG, "biometric prompt fail", t);
-            unlockApp();
+            // Fail-closed: prompt fail hone par app khula na chhodein
+            toastUi("Fingerprint/PIN prompt nahi khul paya — Unlock button se dobara try karein");
         }
     }
 
@@ -559,16 +563,20 @@ public class MainActivity extends FragmentActivity {
         final String id = "pf" + System.currentTimeMillis();
         final String fy = fyLabel == null ? "" : fyLabel;
         final String mon = monLabel == null ? "" : monLabel;
+        synchronized (phoneLock) {
+            phoneFetchPayload = "";
+            phoneFetchPayloadId = id;
+        }
         runOnUiThread(() -> {
             try {
                 if (phoneFetch == null) {
                     phoneFetch = new PhoneFetch(this, (rid, payload) -> runOnUiThread(
-                            () -> deliverPhonePayload(rid, payload)));
+                            () -> deliverPhoneFetchPayload(rid, payload)));
                 }
                 phoneFetch.start(id, fy, mon, rootView);
             } catch (Throwable t) {
                 Log.e(TAG, "phone fetch start fail", t);
-                deliverPhonePayload(id, "{\"ok\":false,\"source\":\"phone\",\"code\":\"start_failed\","
+                deliverPhoneFetchPayload(id, "{\"ok\":false,\"source\":\"phone\",\"code\":\"start_failed\","
                         + "\"error\":\"Phone mode start nahi ho paya (" + String.valueOf(t.getMessage())
                         + "). ☁️ Cloud mode try karein.\"}");
             }
@@ -576,17 +584,40 @@ public class MainActivity extends FragmentActivity {
         return id;
     }
 
-    /** Phone-mode result app JS ko deta hai (chunks me, kyunki 2B JSON bada hota hai). */
-    void deliverPhonePayload(String id, String payload) {
+    /** Phone-mode fetch result app JS ko deta hai (chunks me, kyunki 2B JSON bada hota hai). */
+    void deliverPhoneFetchPayload(String id, String payload) {
         try {
-            phonePayload = payload == null ? "" : payload;
-            phonePayloadId = id == null ? "" : id;
+            final String fid = id == null ? "" : id;
+            synchronized (phoneLock) {
+                phoneFetchPayload = payload == null ? "" : payload;
+                phoneFetchPayloadId = fid;
+            }
             if (web == null) return;
             web.evaluateJavascript(
                     "(function(){try{if(window.gpPhoneFetchReady)window.gpPhoneFetchReady("
-                            + org.json.JSONObject.quote(phonePayloadId) + ");}catch(e){}})()", null);
+                            + org.json.JSONObject.quote(fid) + ");}catch(e){}})()", null);
         } catch (Throwable t) {
-            Log.e(TAG, "deliverPhonePayload fail", t);
+            Log.e(TAG, "deliverPhoneFetchPayload fail", t);
+        }
+    }
+
+    void deliverPhoneLoginPayload(String id, String payload) {
+        try {
+            final String lid = id == null ? "" : id;
+            synchronized (phoneLock) {
+                phoneLoginPayload = payload == null ? "" : payload;
+                phoneLoginPayloadId = lid;
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "deliverPhoneLoginPayload fail", t);
+        }
+    }
+
+    void clearPhoneLoginPayload(String id) {
+        synchronized (phoneLock) {
+            if (id == null || id.isEmpty() || id.equals(phoneLoginPayloadId)) {
+                phoneLoginPayload = "";
+            }
         }
     }
 
@@ -595,25 +626,30 @@ public class MainActivity extends FragmentActivity {
     void startPhoneLogin(final String id, final String user, final String pass) {
         try {
             phoneLoginId = id == null ? "" : id;
+            synchronized (phoneLock) {
+                phoneLoginPayload = "";
+                phoneLoginPayloadId = phoneLoginId;
+            }
             if (phoneLogin == null) {
                 phoneLogin = new PhoneLogin(this, payload -> runOnUiThread(
-                        () -> deliverPhonePayload(phoneLoginId, payload)));
+                        () -> deliverPhoneLoginPayload(phoneLoginId, payload)));
             }
             if (phoneLogin.isBusy()) {
-                deliverPhonePayload(phoneLoginId, "{\"ok\":false,\"source\":\"phone\",\"code\":\"busy\","
+                deliverPhoneLoginPayload(phoneLoginId, "{\"ok\":false,\"source\":\"phone\",\"code\":\"busy\","
                         + "\"error\":\"Phone login pehle se chal raha hai — thoda rukein.\"}");
                 return;
             }
             phoneLogin.start(phoneLoginId, user, pass, rootView);
         } catch (Throwable t) {
             Log.e(TAG, "phone login start fail", t);
-            deliverPhonePayload(phoneLoginId, "{\"ok\":false,\"source\":\"phone\",\"code\":\"start_failed\","
+            deliverPhoneLoginPayload(phoneLoginId, "{\"ok\":false,\"source\":\"phone\",\"code\":\"start_failed\","
                     + "\"error\":\"Phone login start nahi ho paya. ☁️ Cloud mode try karein.\"}");
         }
     }
 
     void phoneLoginSubmitCaptcha(final String captcha) {
         try {
+            clearPhoneLoginPayload(phoneLoginId);
             if (phoneLogin == null) return;
             phoneLogin.submitCaptcha(captcha);
         } catch (Throwable t) {
@@ -623,6 +659,7 @@ public class MainActivity extends FragmentActivity {
 
     void phoneLoginSubmitOtp(final String otp) {
         try {
+            clearPhoneLoginPayload(phoneLoginId);
             if (phoneLogin == null) return;
             phoneLogin.submitOtp(otp);
         } catch (Throwable t) {
@@ -692,6 +729,9 @@ public class MainActivity extends FragmentActivity {
                 if (phoneLogin != null && phoneLogin.web() != null && loginBody != null) {
                     WebView wv = phoneLogin.web();
                     loginBody.removeAllViews();
+                    wv.setClickable(false);
+                    wv.setFocusable(false);
+                    wv.setFocusableInTouchMode(false);
                     if (wv.getParent() == null) {
                         rootView.addView(wv, 0, new FrameLayout.LayoutParams(
                                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -706,8 +746,12 @@ public class MainActivity extends FragmentActivity {
     /** App JS poll karta hai — push (evaluateJavascript) fail ho jaye to bhi jawab pahunchta hai. */
     String phonePayloadFor(String id) {
         try {
-            if (id == null || !id.equals(phonePayloadId)) return "";
-            return phonePayload == null ? "" : phonePayload;
+            if (id == null || id.isEmpty()) return "";
+            synchronized (phoneLock) {
+                if (id.equals(phoneLoginPayloadId)) return phoneLoginPayload == null ? "" : phoneLoginPayload;
+                if (id.equals(phoneFetchPayloadId)) return phoneFetchPayload == null ? "" : phoneFetchPayload;
+            }
+            return "";
         } catch (Throwable t) {
             return "";
         }
@@ -726,11 +770,18 @@ public class MainActivity extends FragmentActivity {
 
     String phonePayloadChunk(String id, int offset, int len) {
         try {
-        if (id == null || !id.equals(phonePayloadId) || phonePayload == null) return "";
-        int L = Math.max(1, Math.min(len, 400000));
-        if (offset < 0 || offset >= phonePayload.length()) return "";
-        int end = Math.min(phonePayload.length(), offset + L);
-        return phonePayload.substring(offset, end);
+            if (id == null || id.isEmpty()) return "";
+            String payload;
+            synchronized (phoneLock) {
+                if (id.equals(phoneFetchPayloadId)) payload = phoneFetchPayload;
+                else if (id.equals(phoneLoginPayloadId)) payload = phoneLoginPayload;
+                else return "";
+            }
+            if (payload == null) return "";
+            int L = Math.max(1, Math.min(len, 400000));
+            if (offset < 0 || offset >= payload.length()) return "";
+            int end = Math.min(payload.length(), offset + L);
+            return payload.substring(offset, end);
         } catch (Throwable t) {
             return "";
         }
@@ -858,18 +909,26 @@ public class MainActivity extends FragmentActivity {
         @JavascriptInterface
         public String phoneLoginStart(final String user, final String pass) {
             final String id = "pl" + System.currentTimeMillis();
+            act.clearPhoneLoginPayload("");
             act.runOnUiThread(() -> act.startPhoneLogin(id, user, pass));
             return id;
         }
 
         @JavascriptInterface
         public void phoneLoginCaptcha(final String captcha) {
+            act.clearPhoneLoginPayload("");
             act.runOnUiThread(() -> act.phoneLoginSubmitCaptcha(captcha));
         }
 
         @JavascriptInterface
         public void phoneLoginOtp(final String otp) {
+            act.clearPhoneLoginPayload("");
             act.runOnUiThread(() -> act.phoneLoginSubmitOtp(otp));
+        }
+
+        @JavascriptInterface
+        public void clearPhonePayload(final String id) {
+            act.clearPhoneLoginPayload(id);
         }
 
         @JavascriptInterface

@@ -1,6 +1,7 @@
-/* GST Cloud Bridge — v1.20.0 (live fetch progress) / v1.19.0 (login: portal downtime par khud retry) / v1.18.0 (login page robust) / v1.17.0 (period dropdown wait/iframe fix) / v1.16.0 (period select fix) / v1.15.0 (access-denied handling) / v1.14.0 (returns-dashboard retry + diagnostics) / v1.13.0 (app-contract) / v1.12.0 (parsing fixes)
- * Base: v1.9.6
- * v1.20.0 (app v5_6 ke saath): GET /api/gst/fetch-status -> chal rahe fetch ka step (session.progress).
+/* GST Cloud Bridge — version dynamically read from package.json (currently v1.29.1)
+ * Recent fixes: strict ALLOWED_ORIGIN CORS, busy-safe memory watchdog, serialized upload-gstr1,
+ * ZIP method/bomb bounds, graceful SIGTERM/SIGINT shutdown, and updated Railway/Render env hints.
+ * Historical notes (v1.9.6 - v1.20.0):
  *  App har 5s par poochh kar "2B generate ho rahi hai… 42s" dikhata hai, isliye user beech me
  *  Re-Fetch nahi dabata (jo portal ke WAF ko block karata tha).
  * v1.19.0 fixes (portal downtime / WAF ke baad login page khulta hi nahi tha):
@@ -321,6 +322,8 @@ const OK_TEXT_RE = /success|uploaded|processed|generated|saved|complet/i;
 
 /* ---- GSTR-2B download kabhi plain JSON, kabhi ZIP (PK...) aata hai: dono padhta hai ---- */
 const zlib = require("zlib");
+const MAX_ZIP_ENTRY_BYTES = 25 * 1024 * 1024;
+const MAX_ZIP_TOTAL_BYTES = 50 * 1024 * 1024;
 function readJsonFilesFromBuffer(buf) {
   const isZip = buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b;
   if (!isZip) return { isZip: false, files: [{ name: "gstr2b.json", text: buf.toString("utf8").replace(/^\uFEFF/, "") }] };
@@ -331,21 +334,49 @@ function readJsonFilesFromBuffer(buf) {
   if (eocd < 0) throw new Error("ZIP file kharab hai (end record nahi mila)");
   const count = buf.readUInt16LE(eocd + 10);
   let p = buf.readUInt32LE(eocd + 16);
+  if (p < 0 || p >= buf.length) throw new Error("ZIP file kharab hai (central directory galat hai)");
   const files = [];
+  let totalBytes = 0;
   for (let n = 0; n < count; n++) {
-    if (buf.readUInt32LE(p) !== 0x02014b50) break;
+    if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) break;
     const method = buf.readUInt16LE(p + 10);
     const compSize = buf.readUInt32LE(p + 20);
+    const uncompSize = buf.readUInt32LE(p + 24);
     const nameLen = buf.readUInt16LE(p + 28), extraLen = buf.readUInt16LE(p + 30), commLen = buf.readUInt16LE(p + 32);
     const localOff = buf.readUInt32LE(p + 42);
-    const name = buf.slice(p + 46, p + 46 + nameLen).toString("utf8");
+    if (p + 46 + nameLen > buf.length) throw new Error("ZIP file kharab hai (entry header truncated)");
+    const rawName = buf.slice(p + 46, p + 46 + nameLen).toString("utf8");
     p += 46 + nameLen + extraLen + commLen;
-    if (!/\.json$/i.test(name)) continue;
+    if (!/\.json$/i.test(rawName)) continue;
+    if (/(^|[\\/])\.\.([\\/]|$)/.test(rawName) || rawName.includes("\0")) {
+      throw new Error("ZIP ke andar unsafe file path mila");
+    }
+    if (method !== 0 && method !== 8) {
+      throw new Error(`ZIP entry "${safeFileName(rawName, "entry.json")}" me unsupported compression method (${method}) hai`);
+    }
+    if (uncompSize > MAX_ZIP_ENTRY_BYTES) {
+      throw new Error(`ZIP entry "${safeFileName(rawName, "entry.json")}" 25MB limit se badi hai`);
+    }
+    if (localOff < 0 || localOff + 30 > buf.length || buf.readUInt32LE(localOff) !== 0x04034b50) {
+      throw new Error("ZIP file kharab hai (local file header galat hai)");
+    }
     const lNameLen = buf.readUInt16LE(localOff + 26), lExtraLen = buf.readUInt16LE(localOff + 28);
     const start = localOff + 30 + lNameLen + lExtraLen;
+    if (start < 0 || compSize < 0 || start + compSize > buf.length) {
+      throw new Error("ZIP file kharab hai (compressed data out of bounds)");
+    }
     const raw = buf.slice(start, start + compSize);
-    const data = method === 0 ? raw : zlib.inflateRawSync(raw);
-    files.push({ name, text: data.toString("utf8").replace(/^\uFEFF/, "") });
+    let data;
+    try {
+      data = method === 0 ? raw : zlib.inflateRawSync(raw, { maxOutputLength: MAX_ZIP_ENTRY_BYTES });
+    } catch (e) {
+      throw new Error("ZIP entry decompress nahi hui (" + (e && e.message ? e.message : "corrupt/too large") + ")");
+    }
+    totalBytes += data.length;
+    if (totalBytes > MAX_ZIP_TOTAL_BYTES) {
+      throw new Error("ZIP ke andar JSON files ka total size 50MB limit se zyada hai");
+    }
+    files.push({ name: safeFileName(rawName, "gstr2b.json"), text: data.toString("utf8").replace(/^\uFEFF/, "") });
   }
   if (!files.length) throw new Error("ZIP ke andar koi JSON file nahi mili");
   return { isZip: true, files };
@@ -1136,14 +1167,14 @@ function startServer() {
   const ALLOWED_ORIGIN = (process.env.ALLOWED_ORIGIN || "https://adwikjais-code.github.io").trim();
 
   if (!API_SECRET && !ALLOW_NO_SECRET) {
-    console.warn("⚠️  API_SECRET set nahi hai — health ke alawa saare endpoints band rahenge. Render > Environment me API_SECRET daalein.");
+    console.warn("⚠️  API_SECRET set nahi hai — health ke alawa saare endpoints band rahenge. Railway / Render Environment variables me API_SECRET daalein.");
   }
 
   const allowedList = ALLOWED_ORIGIN.split(",").map(x => x.trim()).filter(Boolean);
   app.use(cors({
     origin: (origin, cb) => {
       if (!origin || ALLOWED_ORIGIN === "*") return cb(null, true);
-      if (allowedList.includes(origin) || /^https:\/\/[a-z0-9.-]+\.(workers|pages)\.dev$/i.test(origin)) return cb(null, true);
+      if (allowedList.includes(origin)) return cb(null, true);
       return cb(null, false);
     },
     methods: ["GET", "POST", "OPTIONS"],
@@ -1156,7 +1187,7 @@ function startServer() {
     if (req.path === "/health") return next();
     if (!API_SECRET) {
       if (ALLOW_NO_SECRET) return next();
-      return res.status(503).json({ ok: false, error: "Server par API_SECRET set nahi hai. Render > Environment me API_SECRET daalein, wahi secret app ki Cloud Server Settings me bhi daalein." });
+      return res.status(503).json({ ok: false, error: "Server par API_SECRET set nahi hai. Railway / Render Environment variables me API_SECRET daalein, wahi secret app ki Cloud Server Settings me bhi daalein." });
     }
     if (!timingSafeEq(String(req.headers["x-api-secret"] || "").trim(), API_SECRET)) {
       return res.status(401).json({ ok: false, error: "Unauthorized: x-api-secret galat hai." });
@@ -1200,15 +1231,17 @@ function startServer() {
     sessions.delete(sessionId);
     try { await s.context.close(); } catch (_) {}
   }
-  setInterval(() => {
+  const cleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [id, s] of sessions.entries()) if (now - s.lastActive > SESSION_TTL_MS && !s.busy) closeSession(id);
   }, 60 * 1000);
+  if (typeof cleanupTimer.unref === "function") cleanupTimer.unref();
 
-  // ===== Memory watchdog: RAM bharte hi purane session/Chromium chhod do (server girne se pehle) =====
+  // ===== Memory watchdog: RAM bharte hi purane idle session/Chromium chhod do (active busy fetch/upload ko kabhi mat todo) =====
   const MEM_LIMIT_MB = Number(process.env.MEM_LIMIT_MB || 1200);
   const MAX_SESSIONS = Number(process.env.MAX_SESSIONS || 6);
-  setInterval(async () => {
+  const MAX_UNLOGGED_SESSIONS = Math.max(2, Number(process.env.MAX_UNLOGGED_SESSIONS || 5));
+  const watchdogTimer = setInterval(async () => {
     let rssMB = 0;
     try { rssMB = Math.round(process.memoryUsage().rss / 1048576); } catch (_) {}
     // Bahut zyada sessions -> sabse purane idle band karo
@@ -1222,11 +1255,17 @@ function startServer() {
     }
     if (rssMB > MEM_LIMIT_MB) {
       for (const [id] of sessions.entries()) { const x = sessions.get(id); if (x && !x.busy) await closeSession(id); }
-      try { if (sharedBrowser) { await sharedBrowser.close(); sharedBrowser = null; } } catch (_) {}
-      lastDebug = { message: `RAM ${rssMB}MB > ${MEM_LIMIT_MB}MB — sessions + Chromium band kiye (agla fetch naya Chromium banayega)`, at: new Date().toISOString() };
+      const hasBusy = Array.from(sessions.values()).some(x => x && x.busy);
+      if (!hasBusy) {
+        try { if (sharedBrowser) { await sharedBrowser.close(); sharedBrowser = null; } } catch (_) {}
+        lastDebug = { message: `RAM ${rssMB}MB > ${MEM_LIMIT_MB}MB — idle sessions + Chromium band kiye (agla fetch naya Chromium banayega)`, at: new Date().toISOString() };
+      } else {
+        lastDebug = { message: `RAM ${rssMB}MB > ${MEM_LIMIT_MB}MB — idle sessions band kiye (active busy session chal raha hai, Chromium rakha)`, at: new Date().toISOString() };
+      }
       console.warn("[bridge] memory watchdog:", lastDebug.message);
     }
   }, 45 * 1000);
+  if (typeof watchdogTimer.unref === "function") watchdogTimer.unref();
 
   function getSession(sessionId) {
     const s = sessions.get(sessionId);
@@ -1279,9 +1318,21 @@ function startServer() {
         // Chalta hua (busy) session kabhi band nahi karte
         for (const [oldId, os_] of Array.from(sessions.entries())) if (!os_.busy) await closeSession(oldId);
       } else {
-        // Zyada se zyada 2 idle bina-login captcha sessions rakho (RAM safe)
-        const unlogged = Array.from(sessions.entries()).filter(([, x]) => !x.loggedIn && !x.busy);
-        while (unlogged.length >= 2) { const [oldId] = unlogged.shift(); await closeSession(oldId); }
+        // Purane bina-login captcha sessions cap karo (default 5 taaki 3+ parallel captchas na kheinche)
+        const unlogged = Array.from(sessions.entries())
+          .filter(([, x]) => !x.loggedIn && !x.busy)
+          .sort((a, b) => a[1].lastActive - b[1].lastActive);
+        while (unlogged.length >= MAX_UNLOGGED_SESSIONS) { const [oldId] = unlogged.shift(); await closeSession(oldId); }
+      }
+      if (sessions.size >= MAX_SESSIONS) {
+        const oldestIdle = Array.from(sessions.entries())
+          .filter(([, x]) => !x.busy)
+          .sort((a, b) => a[1].lastActive - b[1].lastActive)[0];
+        if (oldestIdle) {
+          await closeSession(oldestIdle[0]);
+        } else {
+          return res.status(429).json({ ok: false, error: `Server par abhi ${sessions.size} active sessions chal rahe hain — thoda wait karke dobara try karein.` });
+        }
       }
       browser = await ensureBrowser();
       context = await browser.newContext({
@@ -1470,8 +1521,10 @@ function startServer() {
 
   // Card (tile) dhundh kar uska visible button dabata hai; "View e-Filed Returns" jaise page-level links ko chhodta hai
   async function clickCardButton(page, reSource) {
-    return await page.evaluate((src) => {
-      const re = new RegExp(src, "i");
+    const src = reSource instanceof RegExp ? reSource.source : String(reSource || "");
+    const flags = reSource instanceof RegExp ? (reSource.flags.includes("i") ? reSource.flags : reSource.flags + "i") : "i";
+    return await page.evaluate(({ pattern, flags: fl }) => {
+      const re = new RegExp(pattern, fl);
       const vis = el => el.offsetParent !== null;
       const hits = Array.from(document.querySelectorAll("div,section,h1,h2,h3,h4,h5,span,p,li"))
         .filter(e => vis(e) && re.test(e.innerText || "") && (e.innerText || "").length < 600)
@@ -1488,7 +1541,7 @@ function startServer() {
         }
       }
       return null;
-    }, reSource);
+    }, { pattern: src, flags });
   }
   const shortErr = e => String((e && e.message) || e).split("\n")[0].slice(0, 200);
 
@@ -1892,6 +1945,7 @@ function startServer() {
     s.busy = true;
     let page = s.page;
     const tmpFile = path.join(os.tmpdir(), `${crypto.randomUUID()}_${safeFileName(fileName, "GSTR1.json")}`);
+    const release = await acquireFetchSlot();
     try {
       fs.writeFileSync(tmpFile, JSON.stringify(obj, null, 2), "utf8");
       page = await openReturnsDashboardAndSearch(page, per.fy, per.month, null, "gstr1");
@@ -1926,6 +1980,7 @@ function startServer() {
       res.status(500).json({ ok: false, error: err.message });
     } finally {
       s.busy = false;
+      release();
       try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch (_) {}
     }
   });
@@ -1955,6 +2010,23 @@ function startServer() {
     res.status(status).json({ ok: false, error: msg });
   });
 
+  const httpServer = app.listen(PORT, () => console.log(`GST Cloud Bridge v${VERSION} running on port ${PORT}`));
+
+  let shuttingDown = false;
+  async function gracefulShutdown(signal, exitCode = 0) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.warn(`[bridge] ${signal} received — shutting down cleanly...`);
+    clearInterval(cleanupTimer);
+    clearInterval(watchdogTimer);
+    try { await new Promise((resolve) => httpServer.close(() => resolve())); } catch (_) {}
+    for (const [id] of Array.from(sessions.entries())) {
+      await closeSession(id);
+    }
+    try { if (sharedBrowser) { await sharedBrowser.close(); sharedBrowser = null; } } catch (_) {}
+    process.exit(exitCode);
+  }
+
   // Crash ka asli reason /debug me dikhe (Railway logs me dhoondhna na pade)
   process.on("unhandledRejection", (e) => {
     lastDebug = { message: "unhandledRejection: " + ((e && e.message) || String(e)), at: new Date().toISOString() };
@@ -1963,9 +2035,10 @@ function startServer() {
   process.on("uncaughtException", (e) => {
     lastDebug = { message: "uncaughtException: " + ((e && e.message) || String(e)), at: new Date().toISOString() };
     console.error("[bridge] uncaughtException:", (e && e.stack) || e);
+    gracefulShutdown("uncaughtException", 1);
   });
-
-  app.listen(PORT, () => console.log(`GST Cloud Bridge v${VERSION} running on port ${PORT}`));
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM", 0));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT", 0));
 }
 
 module.exports = {

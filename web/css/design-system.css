@@ -1,0 +1,186 @@
+    :root {
+      --bg-canvas: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-subtle: #f1f5f9;
+      --border-subtle: #e2e8f0;
+      --border-strong: #cbd5e1;
+      --text-primary: #0f172a;
+      --text-secondary: #475569;
+      --text-muted: #64748b;
+      --brand-primary: #4f46e5;
+      --brand-hover: #4338ca;
+      --shadow-card: 0 1px 3px 0 rgba(15, 23, 42, 0.04), 0 1px 2px -1px rgba(15, 23, 42, 0.03);
+      --shadow-elevated: 0 10px 25px -5px rgba(15, 23, 42, 0.06), 0 8px 10px -6px rgba(15, 23, 42, 0.04);
+    }
+
+    html {
+      scroll-behavior: smooth;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: var(--text-primary);
+      background-color: var(--bg-canvas);
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+      background-color: #f4f6fb !important;
+      background-image: radial-gradient(at 50% 0%, rgba(79, 70, 229, 0.05) 0px, transparent 60%) !important;
+      color: #0f172a !important;
+      letter-spacing: -0.011em;
+    }
+
+    .font-mono, code, pre, input.font-mono {
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.015em;
+    }
+
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar {
+      width: 7px;
+      height: 7px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+
+    /* Unified Enterprise Form Controls */
+    input[type="text"],
+    input[type="number"],
+    input[type="url"],
+    input[type="password"],
+    input[type="date"],
+    select {
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease !important;
+    }
+    input[type="text"]:focus,
+    input[type="number"]:focus,
+    input[type="url"]:focus,
+    input[type="password"]:focus,
+    input[type="date"]:focus,
+    select:focus {
+      outline: none !important;
+      border-color: #4f46e5 !important;
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14) !important;
+    }
+
+    /* Clean Enterprise Table System */
+    table {
+      border-collapse: separate !important;
+      border-spacing: 0 !important;
+      width: 100%;
+    }
+    table thead tr {
+      background-color: #f8fafc !important;
+      border-bottom: 1px solid #e2e8f0 !important;
+    }
+    table thead th {
+      background-color: #f8fafc !important;
+      color: #475569 !important;
+      font-weight: 700 !important;
+      font-size: 11px !important;
+      letter-spacing: 0.035em !important;
+      text-transform: uppercase !important;
+      padding-top: 11px !important;
+      padding-bottom: 11px !important;
+      border-bottom: 1px solid #e2e8f0 !important;
+      vertical-align: middle !important;
+    }
+    table tbody tr {
+      transition: background-color 0.12s ease !important;
+    }
+    table tbody tr:hover {
+      background-color: #f8fafc !important;
+    }
+    table tbody td {
+      vertical-align: middle !important;
+      border-bottom: 1px solid #f1f5f9 !important;
+    }
+    table tfoot tr {
+      background-color: #0f172a !important;
+      color: #f8fafc !important;
+    }
+    table tfoot td {
+      padding-top: 11px !important;
+      padding-bottom: 11px !important;
+    }
+
+    /* Clean Spreadsheet Inline Inputs (Master Etsy & GSTR-1 Table 6A) */
+    .master-ord-inp,
+    .topinv-edit-inp,
+    .master-fee-inp,
+    .month-tabs-line{display:flex;flex-wrap:nowrap;align-items:center;gap:5px;overflow-x:auto;overflow-y:hidden;white-space:nowrap;max-width:100%;padding:2px 2px 6px;scrollbar-width:thin}
+    .month-tab-btn{flex:0 0 auto;border:1px solid #c7d2fe;background:#eef2ff;color:#1e1b4b;border-radius:9px;padding:6px 9px;font-size:11px;font-weight:800;line-height:1.2;transition:.15s}
+    .month-tab-btn:hover{background:#e0e7ff;border-color:#818cf8}.month-tab-btn.is-active{background:#4f46e5;color:#fff;border-color:#4338ca;box-shadow:0 2px 6px #4338ca33}
+    .json-exp-inline-inp,
+    .nil-matrix-inp {
+      background-color: #ffffff !important;
+      border: 1px solid #cbd5e1 !important;
+      border-radius: 7px !important;
+      padding: 4px 7px !important;
+      font-size: 11.5px !important;
+      color: #0f172a !important;
+      box-shadow: 0 1px 1px rgba(15, 23, 42, 0.02) !important;
+    }
+    .master-ord-inp:hover,
+    .topinv-edit-inp:hover,
+    .master-fee-inp:hover,
+    .json-exp-inline-inp:hover,
+    .nil-matrix-inp:hover {
+      border-color: #94a3b8 !important;
+    }
+    .master-ord-inp[data-ord-field="invDate"] {
+      border-color: #f59e0b !important;
+      background-color: #fffbeb !important;
+    }
+    .master-ord-inp[data-ord-field="invNo"],
+    .json-exp-inline-inp[data-json-exp-field="inum"] {
+      border-color: #c7d2fe !important;
+      background-color: #eef2ff !important;
+      color: #3730a3 !important;
+    }
+    .json-exp-inline-inp[data-json-exp-field="txval"] {
+      border-color: #a7f3d0 !important;
+      background-color: #ecfdf5 !important;
+      color: #065f46 !important;
+    }
+
+    /* Remove noisy cell background tints inside spreadsheet tables */
+    #masterOrdersTableBody td,
+    #masterTopInvoicesTableBody td,
+    #masterFeesTableBody td,
+    #jsonExpTableBody td {
+      background-color: transparent !important;
+    }
+
+    /* Card Polish & Elevation */
+    .bg-white.rounded-2xl {
+      box-shadow: var(--shadow-card) !important;
+      border-color: #e2e8f0 !important;
+    }
+
+    /* Button Micro-interactions */
+    button, label.cursor-pointer {
+      transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    }
+    button:active:not(:disabled) {
+      transform: translateY(0.5px);
+    }
+
+    /* Section Panels inside JSON Generator */
+    [id^="jsonSecPanel_"] {
+      border-bottom: 1px solid #e2e8f0 !important;
+      background-color: #ffffff;
+    }
+  
+    /* ===== Sheet references toggle (v19) ===== */
+    body:not(.show-srefs) .sref,
+    body:not(.show-srefs) .sref-col { display: none !important; }
+    .sref-toggle input { accent-color: #fbbf24; }

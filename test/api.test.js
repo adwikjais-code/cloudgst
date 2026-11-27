@@ -11,22 +11,44 @@ const { isGstr2bNotGenerated, isGstr2bNotGeneratedFast, gstr2bPageSaysNotGenerat
 const ROOT = path.join(__dirname, "..");
 const SECRET = "test-secret-123";
 
-function waitForHealth(base, tries = 100) {
+function waitForHealth(base, child, getLog, tries = 100) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      child.off("exit", onExit);
+      child.off("error", onError);
+      reject(err);
+    };
+    const onExit = (code, sig) => fail(new Error(`server exited early (${code ?? sig}): ${getLog().trim().slice(-400)}`));
+    const onError = (err) => fail(err);
+    child.once("exit", onExit);
+    child.once("error", onError);
+    if (child.exitCode !== null) return onExit(child.exitCode, null);
+
     const tick = async (n) => {
+      if (settled) return;
       try {
         const r = await fetch(base + "/health");
-        if (r.ok) return resolve();
+        if (r.ok) {
+          settled = true;
+          child.off("exit", onExit);
+          child.off("error", onError);
+          return resolve();
+        }
       } catch (_) {}
-      if (n <= 0) return reject(new Error("server start nahi hua"));
-      setTimeout(() => tick(n - 1), 100);
+      if (n <= 0) return fail(new Error("server start nahi hua: " + getLog().trim().slice(-400)));
+      timer = setTimeout(() => tick(n - 1), 100);
     };
     tick(tries);
   });
 }
 
 async function withServer(env, fn) {
-  const port = 3900 + Math.floor(Math.random() * 80);
+  const port = 3900 + Math.floor(Math.random() * 500);
   const child = spawn(process.execPath, ["server.js"], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(port), ...env },
@@ -37,10 +59,10 @@ async function withServer(env, fn) {
   child.stderr.on("data", d => { log += d; });
   const base = "http://127.0.0.1:" + port;
   try {
-    await waitForHealth(base);
+    await waitForHealth(base, child, () => log);
     await fn(base, () => log);
   } finally {
-    child.kill("SIGKILL");
+    if (child.exitCode === null) child.kill("SIGKILL");
   }
 }
 
@@ -116,10 +138,14 @@ test("CORS: allowed origin ko header milta hai, anjaan origin ko nahi", async ()
   });
 });
 
-test("CORS: workers.dev origin bhi allowed hai", async () => {
+test("CORS: strict ALLOWED_ORIGIN enforcement — unknown workers.dev reject, explicit ALLOWED_ORIGIN allow", async () => {
   await withServer({ API_SECRET: SECRET, ALLOWED_ORIGIN: "https://adwikjais-code.github.io" }, async (base) => {
-    const r = await fetch(base + "/api/gst/ping", auth({ headers: { "x-api-secret": SECRET, origin: "https://my-proxy.username.workers.dev" } }));
-    assert.equal(r.headers.get("access-control-allow-origin"), "https://my-proxy.username.workers.dev");
+    const bad = await fetch(base + "/api/gst/ping", auth({ headers: { "x-api-secret": SECRET, origin: "https://arbitrary-attacker.workers.dev" } }));
+    assert.equal(bad.headers.get("access-control-allow-origin"), null);
+  });
+  await withServer({ API_SECRET: SECRET, ALLOWED_ORIGIN: "https://adwikjais-code.github.io,https://my-proxy.username.workers.dev" }, async (base) => {
+    const ok = await fetch(base + "/api/gst/ping", auth({ headers: { "x-api-secret": SECRET, origin: "https://my-proxy.username.workers.dev" } }));
+    assert.equal(ok.headers.get("access-control-allow-origin"), "https://my-proxy.username.workers.dev");
   });
 });
 
@@ -402,4 +428,30 @@ test("classifyStuckPage: access denied page par recovery hint milta hai", () => 
   const cls = classifyStuckPage({ url: "https://services.gst.gov.in/services/error/accessdenied", text: "Access Denied" });
   assert.equal(cls.kind, "access_denied");
   assert.ok(cls.hint.length > 10);
+});
+
+test("SIGTERM: server exits cleanly with exit code 0 within 5s", async () => {
+  const port = 4500 + Math.floor(Math.random() * 500);
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(port), API_SECRET: SECRET },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let log = "";
+  child.stdout.on("data", d => { log += d; });
+  child.stderr.on("data", d => { log += d; });
+  try {
+    await waitForHealth("http://127.0.0.1:" + port, child, () => log);
+    const exitCode = await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("SIGTERM shutdown timed out")), 5000);
+      child.once("exit", (code, sig) => {
+        clearTimeout(t);
+        resolve(code !== null ? code : sig);
+      });
+      child.kill("SIGTERM");
+    });
+    assert.equal(exitCode, 0);
+  } finally {
+    if (child.exitCode === null) child.kill("SIGKILL");
+  }
 });

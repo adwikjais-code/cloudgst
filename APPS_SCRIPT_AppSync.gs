@@ -115,7 +115,7 @@ function getTabCols(sheet) {
     cols.portalPeriod, cols.portalNoticesCount, cols.portalNotices,
     cols.gstr2bIgst, cols.gstr2bCgst, cols.gstr2bSgst, cols.gstr2bCess, cols.gstr2bIneligible, cols.gstr2bSuppliers,
     cols.ecomGross, cols.ecomNet, cols.ecomTcs, cols.ecomPlatforms, cols.b2bSellersJson, cols.ecoListJson,
-    cols.gstr2bDriveLink, cols.portalUpdatedAt, cols.docCollected
+    cols.gstr2bDriveLink, cols.portalUpdatedAt, cols.docCollected, cols.gstr2bStatus
   );
   return cols;
 }
@@ -1385,9 +1385,60 @@ function getOrCreateFeeSheet(ss, tabName, headers) {
   return sh;
 }
 
-function readFeeData(ss) {
-  var out = { supported: true, ledger: [], profiles: {}, customFees: {}, rates: null };
+// ---- SYNC_SECRET Auth & Safe GET Helpers ----
+function getSyncSecret_() {
   try {
+    return String(PropertiesService.getScriptProperties().getProperty('SYNC_SECRET') || '').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+function timingSafeEqualStr_(a, b) {
+  var s1 = String(a || '');
+  var s2 = String(b || '');
+  var diff = s1.length ^ s2.length;
+  var maxLen = Math.max(s1.length, s2.length);
+  for (var i = 0; i < maxLen; i++) {
+    var c1 = i < s1.length ? s1.charCodeAt(i) : 0;
+    var c2 = i < s2.length ? s2.charCodeAt(i) : 0;
+    diff |= (c1 ^ c2);
+  }
+  return diff === 0;
+}
+
+function isAppsScriptAuthorized_(e, data) {
+  var expected = getSyncSecret_();
+  if (!expected) return true; // Backward compat: unconfigured Sheet tab tak open rehta hai jab tak SYNC_SECRET set na ho
+  var provided = '';
+  if (data && data.syncSecret !== undefined && data.syncSecret !== null) {
+    provided = String(data.syncSecret).trim();
+  } else if (e && e.parameter) {
+    provided = String(e.parameter.syncSecret || e.parameter.secret || '').trim();
+  }
+  return Boolean(provided) && timingSafeEqualStr_(provided, expected);
+}
+
+function isSafeGetAction_(action) {
+  return action === 'getAllRov' || action === 'getEtsyMasterUrl' || action === 'listGstr1Json' || action === 'readGstr1Json';
+}
+
+function getDeletedReceiptTombstones_() {
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty('FEE_DELETED_RECEIPTS') || '[]';
+    var arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.map(function(x) { return String(x || '').trim(); }).filter(Boolean) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function readFeeData(ss) {
+  var out = { supported: true, ledger: [], profiles: {}, customFees: {}, rates: null, revision: 0, deletedReceipts: [] };
+  try {
+    var props = PropertiesService.getScriptProperties();
+    out.revision = Number(props.getProperty('FEE_REVISION') || 0) || 0;
+    out.deletedReceipts = getDeletedReceiptTombstones_();
     var lSh = ss.getSheetByName('_FeeLedger');
     if (lSh && lSh.getLastRow() >= 2) {
       var lColCount = Math.max(lSh.getLastColumn(), 14);
@@ -1460,14 +1511,74 @@ function saveFeeData(ss, data) {
   var lock = LockService.getScriptLock();
   try { lock.waitLock(15000); } catch (le) { return { status: 'error', message: 'Script busy, dobara try karein' }; }
   try {
+    var props = PropertiesService.getScriptProperties();
     var nowIso = new Date().toISOString();
+    var curRev = Number(props.getProperty('FEE_REVISION') || 0) || 0;
+    var baseRev = (data.baseRevision !== undefined && data.baseRevision !== null && data.baseRevision !== '')
+      ? Number(data.baseRevision) : null;
+
+    var storedDeleted = getDeletedReceiptTombstones_();
+    var incomingDeleted = Array.isArray(data.deletedReceipts) ? data.deletedReceipts : [];
+    var deletedSet = {};
+    var nextDeleted = [];
+    storedDeleted.concat(incomingDeleted).forEach(function(id) {
+      var clean = String(id || '').trim();
+      if (clean && !deletedSet[clean]) {
+        deletedSet[clean] = true;
+        nextDeleted.push(clean);
+      }
+    });
+    if (nextDeleted.length > 500) nextDeleted = nextDeleted.slice(-500);
+
+    var incomingLedger = Array.isArray(data.ledger) ? data.ledger : [];
+    var incomingProfiles = (data.profiles && typeof data.profiles === 'object') ? data.profiles : {};
+    var incomingCustom = (data.customFees && typeof data.customFees === 'object') ? data.customFees : {};
+    var incomingRates = data.rates || null;
+
+    var merged = false;
+    var ledger = [];
+    var profiles = {};
+    var customFees = {};
+    var finalRates = incomingRates;
+
+    if (baseRev !== null && !isNaN(baseRev) && curRev > baseRev && !data.forceOverwrite) {
+      // Concurrent device ne naya fee revision save kiya tha — blind overwrite ke bajaye safe merge
+      merged = true;
+      var cur = readFeeData(ss);
+      var seenSig = {};
+      var addRow = function(item) {
+        if (!item) return;
+        var rNo = String(item.receiptNo || '').trim();
+        if (rNo && deletedSet[rNo]) return;
+        var sig = rNo ? ('R:' + rNo) : ('S:' + String(item.clientKey || item.client || '') + '|' + String(item.date || '') + '|' + String(item.amount || 0));
+        if (seenSig[sig]) return;
+        seenSig[sig] = true;
+        ledger.push(item);
+      };
+      incomingLedger.forEach(addRow);
+      (cur.ledger || []).forEach(addRow);
+
+      Object.keys(cur.profiles || {}).forEach(function(k) { profiles[k] = cur.profiles[k]; });
+      Object.keys(incomingProfiles).forEach(function(k) { profiles[k] = incomingProfiles[k]; });
+
+      Object.keys(cur.customFees || {}).forEach(function(k) { customFees[k] = cur.customFees[k]; });
+      Object.keys(incomingCustom).forEach(function(k) { customFees[k] = incomingCustom[k]; });
+      if (!finalRates && cur.rates) finalRates = cur.rates;
+    } else {
+      ledger = incomingLedger.filter(function(item) {
+        var rNo = item && item.receiptNo ? String(item.receiptNo).trim() : '';
+        return !(rNo && deletedSet[rNo]);
+      });
+      profiles = incomingProfiles;
+      customFees = incomingCustom;
+    }
+
     var lHeaders = ['ReceiptNo', 'ClientKey', 'ClientName', 'Firm', 'PayDate', 'Months', 'Amount', 'Mode', 'NewPtDate', 'Remarks', 'GSTIN', 'UpdatedAt', 'ActivePaidMonths', 'SaleMonthTag'];
     var lSh = getOrCreateFeeSheet(ss, '_FeeLedger', lHeaders);
     lSh.getRange(1, 1, 1, lHeaders.length).setValues([lHeaders]).setFontWeight('bold');
     if (lSh.getLastRow() >= 2) {
       lSh.getRange(2, 1, lSh.getLastRow() - 1, Math.max(lSh.getLastColumn(), 14)).clearContent();
     }
-    var ledger = Array.isArray(data.ledger) ? data.ledger : [];
     if (ledger.length > 0) {
       var lRows = ledger.map(function(item) {
         return [
@@ -1500,8 +1611,6 @@ function saveFeeData(ss, data) {
     if (pSh.getLastRow() >= 2) {
       pSh.getRange(2, 1, pSh.getLastRow() - 1, Math.max(pSh.getLastColumn(), 11)).clearContent();
     }
-    var profiles = (data.profiles && typeof data.profiles === 'object') ? data.profiles : {};
-    var customFees = (data.customFees && typeof data.customFees === 'object') ? data.customFees : {};
     var clientNamesMap = (data.clientNames && typeof data.clientNames === 'object') ? data.clientNames : {};
     var keysMap = {};
     Object.keys(profiles).forEach(function(k) { keysMap[k] = true; });
@@ -1526,14 +1635,14 @@ function saveFeeData(ss, data) {
         Math.max(0, Number(pr.activeDueMon) || 0),
         cf,
         nowIso,
-        i === 0 && data.rates ? 'DEFAULT_RATES' : '',
-        i === 0 && data.rates ? JSON.stringify(data.rates) : '',
+        i === 0 && finalRates ? 'DEFAULT_RATES' : '',
+        i === 0 && finalRates ? JSON.stringify(finalRates) : '',
         Math.max(0, Number(pr.activePaidMon) || 0),
         actJson
       ]);
     }
-    if (pRows.length === 0 && data.rates) {
-      pRows.push(['', '', '', '', '', '', nowIso, 'DEFAULT_RATES', JSON.stringify(data.rates), 0, '']);
+    if (pRows.length === 0 && finalRates) {
+      pRows.push(['', '', '', '', '', '', nowIso, 'DEFAULT_RATES', JSON.stringify(finalRates), 0, '']);
     }
     if (pRows.length > 0) {
       pSh.getRange(2, 1, pRows.length, 2).setNumberFormat('@');
@@ -1541,11 +1650,14 @@ function saveFeeData(ss, data) {
       pSh.getRange(2, 11, pRows.length, 1).setNumberFormat('@');
       pSh.getRange(2, 1, pRows.length, 11).setValues(pRows);
     }
-    if (data.rates && Number(data.rates.apne || 0) === 0) {
+    if (finalRates && Number(finalRates.apne || 0) === 0) {
       syncApneFreeAccountsInSheet(ss, 0);
     }
+    var nextRev = curRev + 1;
+    props.setProperty('FEE_REVISION', String(nextRev));
+    props.setProperty('FEE_DELETED_RECEIPTS', JSON.stringify(nextDeleted));
     SpreadsheetApp.flush();
-    return { status: 'ok', feeSaved: true, ledgerCount: ledger.length, profileCount: allKeys.length };
+    return { status: 'ok', feeSaved: true, revision: nextRev, deletedReceipts: nextDeleted, merged: merged, ledgerCount: ledger.length, profileCount: allKeys.length };
   } catch (err) {
     return { status: 'error', message: String(err) };
   } finally {
@@ -1611,23 +1723,35 @@ function getAllRov(data) {
   }
 }
 
-// 3. doGet: Sheet -> App Sync
+// 3. doGet: Sheet -> App Sync (safe read-only; mutations blocked; SYNC_SECRET enforced when set)
 function doGet(e) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
   if (e && e.parameter && e.parameter.payload) {
     try {
       var data = JSON.parse(decodeURIComponent(e.parameter.payload));
-      if (data && data.action === 'etsyStatement') { return jsonOut(processEtsyStatement(data)); }
-      if (data && data.action === 'getEtsyMasterUrl') { return jsonOut(getEtsyMasterUrl(data)); }
-      if (data && data.action === 'getAllRov') { return jsonOut(getAllRov(data)); }
-      if (data && data.action === 'saveFeeData') { return jsonOut(saveFeeData(ss, data)); }
-      return jsonOut(handleSyncAction(ss, data));
+      if (!isAppsScriptAuthorized_(e, data)) {
+        return jsonOut({ status: 'error', code: 'unauthorized', message: 'SYNC_SECRET required or mismatch.' });
+      }
+      var act = data && data.action ? String(data.action) : '';
+      if (!isSafeGetAction_(act)) {
+        return jsonOut({ status: 'error', code: 'method_not_allowed', message: 'Mutations POST request se bhejein (GET sirf read-only sync ke liye hai).' });
+      }
+      if (act === 'getEtsyMasterUrl') { return jsonOut(getEtsyMasterUrl(data)); }
+      if (act === 'getAllRov') { return jsonOut(getAllRov(data)); }
+      if (act === 'listGstr1Json') { return jsonOut(listGstr1Json(data)); }
+      if (act === 'readGstr1Json') { return jsonOut(readGstr1Json(data)); }
+      return jsonOut({ status: 'error', code: 'method_not_allowed', message: 'Unsupported GET action.' });
     } catch(err) {
       return jsonOut({ status: 'error', message: String(err) });
     }
   }
 
+  if (!isAppsScriptAuthorized_(e, null)) {
+    return jsonOut({ status: 'error', code: 'unauthorized', message: 'SYNC_SECRET required or mismatch.' });
+  }
+
+  var hasSyncSecret = Boolean(getSyncSecret_());
   var feeData = readFeeData(ss);
   var apneRate = (feeData && feeData.rates && feeData.rates.apne !== undefined) ? Number(feeData.rates.apne) : 0;
   if (apneRate === 0) {
@@ -1737,7 +1861,7 @@ function doGet(e) {
           var ecoArr = []; try { if (pEcoJ) ecoArr = JSON.parse(pEcoJ); } catch (_) {}
           var pDocC = cols.docCollected > 0 ? (rawValues[i][cols.docCollected - 1] === true || String(r[cols.docCollected - 1] || '').toUpperCase() === 'TRUE') : false;
           var p2bSt = cols.gstr2bStatus > 0 ? (r[cols.gstr2bStatus - 1] || '').toString().trim().toUpperCase() : '';
-          if (!pPer && !pUpd && !pIgst && !pCgst && !pSgst && !pEGrs && !pNotC && !pDrv) return null;
+          if (!pPer && !pUpd && !pIgst && !pCgst && !pSgst && !pEGrs && !pNotC && !pDrv && !p2bSt) return null;
           return {
             period: pPer, noticesCount: pNotC, noticesSummary: pNotS,
             igst: pIgst, cgst: pCgst, sgst: pSgst, cess: pCess, ineligible: pInel, suppliers: pSupp,
@@ -1751,9 +1875,9 @@ function doGet(e) {
   });
 
   var props = PropertiesService.getScriptProperties();
-  var cloudPin = props.getProperty('APP_PIN') || '123456';
+  var cloudPin = props.getProperty('APP_PIN') || '';
   var vaultSalt = props.getProperty('VAULT_SALT') || '';
-  return ContentService.createTextOutput(JSON.stringify({ status: 'ok', appPin: cloudPin, vaultSalt: vaultSalt, clients: result, feeData: feeData }))
+  return ContentService.createTextOutput(JSON.stringify({ status: 'ok', appPin: cloudPin, vaultSalt: vaultSalt, hasSyncSecret: hasSyncSecret, clients: result, feeData: feeData }))
     .setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -1762,6 +1886,14 @@ function handleSyncAction(ss, data) {
   if (data && data.action === 'scanGstCerts') { return scanGstCertFolder(data); }
   if (data && data.action === 'setGstCertFolder') { return setGstCertFolder(data); }
   if (!data) return { status: 'error', message: 'Empty or invalid payload' };
+
+  if (data.action === 'setSyncSecret') {
+    var nextSec = String(data.newSyncSecret !== undefined ? data.newSyncSecret : '').trim();
+    var propsSec = PropertiesService.getScriptProperties();
+    if (nextSec) propsSec.setProperty('SYNC_SECRET', nextSec);
+    else propsSec.deleteProperty('SYNC_SECRET');
+    return { status: 'ok', hasSyncSecret: Boolean(nextSec) };
+  }
 
   if (data.action === 'savePin' && data.pin) {
     PropertiesService.getScriptProperties().setProperty('APP_PIN', String(data.pin));
@@ -1956,7 +2088,7 @@ function handleSyncAction(ss, data) {
         'portalPeriod', 'portalNoticesCount', 'portalNotices',
         'gstr2bIgst', 'gstr2bCgst', 'gstr2bSgst', 'gstr2bCess', 'gstr2bIneligible', 'gstr2bSuppliers',
         'ecomGross', 'ecomNet', 'ecomTcs', 'ecomPlatforms', 'b2bSellersJson', 'ecoListJson',
-        'gstr2bDriveLink', 'portalUpdatedAt', 'docCollected'
+        'gstr2bDriveLink', 'portalUpdatedAt', 'docCollected', 'gstr2bStatus'
       ];
       ['PAID CLINTS', 'Apne'].forEach(function(tabName) {
         var sh = ss.getSheetByName(tabName);
@@ -2586,6 +2718,9 @@ function doPost(e) {
   }
 
   if (!data) return jsonOut({ status: 'error', message: 'Invalid JSON payload' });
+  if (!isAppsScriptAuthorized_(e, data)) {
+    return jsonOut({ status: 'error', code: 'unauthorized', message: 'SYNC_SECRET required or mismatch.' });
+  }
   if (data.action === 'etsyStatement') { return jsonOut(processEtsyStatement(data)); }
   if (data.action === 'getEtsyMasterUrl') { return jsonOut(getEtsyMasterUrl(data)); }
   if (data.action === 'uploadDocument') { return jsonOut(uploadClientDocument(data)); }
