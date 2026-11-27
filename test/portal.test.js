@@ -12,7 +12,7 @@ const {
   openServicesMenuReturnsDashboard, waitForReturnsSelectsSmart,
   guessSelectIndex, quarterAliases, monthAliases,
   isMonthOption, isQuarterOption, hasPeriodSelect, waitForPeriodSelect, findPeriodFrame,
-  firstVisibleSelector, waitForLoginForm, classifyLoginPage, LOGIN_USER_SELECTORS, LOGIN_PASS_SELECTORS,
+  firstVisibleSelector, waitForLoginForm, classifyLoginPage, isAuthLoggedInUrl, isUsableAuthWelcomePage, LOGIN_USER_SELECTORS, LOGIN_PASS_SELECTORS,
   LOGIN_RETRY_KINDS,
   RETURNS_DASHBOARD_URL, GST_AUTH_DASHBOARD_URL
 } = require("../server.js");
@@ -551,6 +551,20 @@ test("classifyLoginPage: login page ki jagah kaun sa page aaya — wajah + hint 
   assert.deepEqual(LOGIN_RETRY_KINDS, ["portal_down", "blank_page"]);
   assert.equal(LOGIN_RETRY_KINDS.includes(classifyLoginPage({ text: "Site under maintenance" }).kind), true);
   assert.equal(LOGIN_RETRY_KINDS.includes(classifyLoginPage({ url: "https://services.gst.gov.in/services/error/accessdenied" }).kind), false);
+});
+
+test("isAuthLoggedInUrl / isUsableAuthWelcomePage: fowelcome login false-positive vs real concurrent block", () => {
+  assert.equal(isAuthLoggedInUrl("https://services.gst.gov.in/services/auth/fowelcome"), true);
+  assert.equal(isAuthLoggedInUrl("https://services.gst.gov.in/services/auth/dashboard"), true);
+  assert.equal(isAuthLoggedInUrl("https://services.gst.gov.in/services/error/accessdenied"), false);
+  assert.equal(isAuthLoggedInUrl("https://services.gst.gov.in/services/login"), false);
+  // GST portal normal 'Last logged in from IP' must NOT trigger concurrent_session
+  assert.equal(classifyLoginPage({ url: "https://services.gst.gov.in/services/auth/fowelcome", text: "Welcome NAAZ CARPET DESIGN. Last logged in from 103.21.45.6 on 27/11/2026" }).kind, "already_logged_in");
+  assert.equal(isUsableAuthWelcomePage({ url: "https://services.gst.gov.in/services/auth/fowelcome", text: "Welcome NAAZ CARPET DESIGN. Last logged in from 103.21.45.6", buttons: ["RETURN DASHBOARD"] }), true);
+  // Real blocking concurrent-session page without dashboard nav
+  assert.equal(isUsableAuthWelcomePage({ url: "https://services.gst.gov.in/services/auth/fowelcome", text: "User is already logged in from another device", buttons: ["LOGOUT"] }), false);
+  // Concurrent banner WITH dashboard buttons is still usable
+  assert.equal(isUsableAuthWelcomePage({ url: "https://services.gst.gov.in/services/auth/fowelcome", text: "You were logged in from another session", buttons: ["RETURN DASHBOARD", "FILE RETURNS"] }), true);
 });
 
 test("openServicesMenuReturnsDashboard: Services -> Returns -> Returns Dashboard 3-level click", async () => {
