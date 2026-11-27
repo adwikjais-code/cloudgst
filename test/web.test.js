@@ -299,8 +299,8 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
 
   const gradle = fs.readFileSync(path.join(ROOT, "android", "app", "build.gradle"), "utf8");
   const vcMatch = gradle.match(/versionCode\s+(\d+)/);
-  assert.ok(vcMatch && Number(vcMatch[1]) >= 85, "versionCode must be >= 85 to upgrade cleanly over v6.0.2 (84)");
-  assert.match(gradle, /versionName\s+'6\.0\.3'/);
+  assert.ok(vcMatch && Number(vcMatch[1]) >= 86, "versionCode must be >= 86 to upgrade cleanly over v6.0.3 (85)");
+  assert.match(gradle, /versionName\s+'6\.1\.0'/);
 
   // Portal checkboxes default OFF (GSTR-2B, E-Com, Auto-Next, Drive) & no auto-expand dropdown on fetch completion
   const webHtml = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
@@ -330,4 +330,16 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
   assert.match(portalJs, /let gpLastFetchKey\s*=\s*null;/, "portal-module must track gpLastFetchKey for Spacebar next Fetch/Re-Fetch");
   assert.match(portalJs, /function gpTriggerNextFetchBySpace\(\)/, "portal-module must define gpTriggerNextFetchBySpace()");
   assert.match(portalJs, /e\.code !== "Space"/, "portal-module must bind Space keydown shortcut on Portal");
+
+  // v6.1.0: Phone Mode GSTR-1 JSON Upload + APK-only hides PC/Cloud options while Web App keeps them
+  assert.match(phoneFetch, /public void startUploadGstr1\(/, "PhoneFetch must implement startUploadGstr1()");
+  assert.match(phoneFetch, /buildUploadTickScript/, "PhoneFetch must implement buildUploadTickScript() for GSTR-1 PREPARE OFFLINE");
+  assert.match(phoneFetch, /PREPARE\\\\s\+OFFLINE/, "PhoneFetch upload script must target GSTR-1 PREPARE OFFLINE");
+  assert.match(phoneFetch, /DataTransfer/, "PhoneFetch upload script must attach JSON file via DataTransfer");
+  assert.match(mainAct, /public String phoneUploadGstr1Slot\(/, "CloudGSTNative must expose phoneUploadGstr1Slot()");
+  assert.match(mainAct, /public boolean phoneUploadInit\(/, "CloudGSTNative must expose chunked phoneUploadInit()");
+  assert.match(mainAct, /public boolean phoneUploadAppend\(/, "CloudGSTNative must expose chunked phoneUploadAppend()");
+  assert.match(portalJs, /function gpPhoneUploadGstr1\(/, "portal-module must implement gpPhoneUploadGstr1()");
+  assert.match(portalJs, /if \(!gpPhoneAvailable\(\)\) gpBridgeHealth\(6000\);/, "APK must not ping Cloud Bridge on startup");
+  assert.match(portalJs, /if \(!isApk\) return;/, "Web App must keep PC/Cloud options visible while APK hides them");
 });

@@ -393,10 +393,15 @@
       }
 
       function gpUpdateQuickButtons() {
-        const cur = gpGetBridgeUrl();
-        const isPc = cur.includes("localhost") || cur.includes("127.0.0.1") || cur.includes("trycloudflare.com");
         const pcBtn = document.getElementById("gpQuickPcBtn");
         const clBtn = document.getElementById("gpQuickCloudBtn");
+        if (typeof gpPhoneAvailable === "function" && gpPhoneAvailable()) {
+          if (pcBtn) pcBtn.classList.add("hidden");
+          if (clBtn) clBtn.classList.add("hidden");
+          return;
+        }
+        const cur = gpGetBridgeUrl();
+        const isPc = cur.includes("localhost") || cur.includes("127.0.0.1") || cur.includes("trycloudflare.com");
         if (pcBtn) pcBtn.className = "px-3 py-1.5 rounded-xl text-xs font-semibold border transition " + (isPc ? "bg-emerald-600 border-emerald-600 text-white" : "bg-emerald-50 border-emerald-200 text-emerald-800");
         if (clBtn) clBtn.className = "px-3 py-1.5 rounded-xl text-xs font-semibold border transition " + (!isPc && cur ? "bg-sky-600 border-sky-600 text-white" : "bg-sky-50 border-sky-200 text-sky-800");
       }
@@ -1265,9 +1270,12 @@
           try {
             const pres = await gpPhoneLoginStart(c, (pwCheck && pwCheck.pw) || "", st.phoneSlot || 0, st);
             gpPhoneDbg("login reply: " + JSON.stringify(pres).slice(0, 200));
-            if (pres && pres.loggedIn) {          // session pehle se zinda hai -> seedha fetch
+            if (pres && pres.loggedIn) {          // session pehle se zinda hai -> seedha fetch ya upload
               st.phase = "idle";
               gpRenderSerialList();
+              if (st.pendingAction === "UPLOAD") {
+                return gpTriggerGstr1UploadInBackground(c, st);
+              }
               return gpTriggerFetchInBackground(c, st);
             }
             st.captchaBase64 = (pres && pres.captchaBase64) || "";
@@ -1588,33 +1596,65 @@
       function gpTriggerGstr1UploadInBackground(c, st) {
         const mj = c.gstin ? gpMatchedJsons.get(c.gstin) : null;
         if (!mj || !mj.jsonObj) {
+          gpFreePhoneSlot(c.clientKey);
           st.phase = "error"; st.note = "Matched GSTR-1 JSON nahi mili."; gpRenderSerialList(); return;
         }
-        st.phase = "fetching";
-        st.note = "";
-        gpActiveFetches++;
-        gpRenderSerialList();
         const fy = document.getElementById("gpFySel").value;
         const month = document.getElementById("gpMonSel").value;
-        gpCallBridge("/api/gst/upload-gstr1", {
-          sessionId: st.sessionId,
-          fy, month,
-          jsonContent: mj.jsonObj,
-          fileName: mj.fileName
-        })
+        const wantFp = gpGetSelectedFp();
+        if (mj.jsonObj.fp && String(mj.jsonObj.fp) !== wantFp) {
+          gpFreePhoneSlot(c.clientKey);
+          st.phase = "error";
+          st.note = `JSON ka period (${mj.jsonObj.fp}) aur selected period (${wantFp}) alag hain — upload roka gaya.`;
+          gpToast("⚠️ " + st.note);
+          gpRenderSerialList();
+          return;
+        }
+        const _phoneMode = gpPhoneModeNow() || st.sessionId === "PHONE";
+        st.phase = "fetching";
+        st.note = "";
+        st.progressText = _phoneMode
+          ? `📱 Phone se GSTR-1 JSON upload ho rahi hai (Tab ${(st.phoneSlot || 0) + 1})…`
+          : "☁️ GSTR-1 JSON upload ho rahi hai…";
+        gpActiveFetches++;
+        gpRenderSerialList();
+
+        const runUpload = _phoneMode
+          ? gpPhoneUploadGstr1(
+              fy,
+              (typeof gpGetSelectedMonthDisplay === "function" ? gpGetSelectedMonthDisplay() : ""),
+              mj.fileName || "GSTR1.json",
+              mj.jsonObj,
+              st.phoneSlot || 0
+            )
+          : gpCallBridge("/api/gst/upload-gstr1", {
+              sessionId: st.sessionId,
+              fy, month,
+              jsonContent: mj.jsonObj,
+              fileName: mj.fileName
+            });
+
+        runUpload
           .then(res => {
             mj.uploaded = true;
             st.phase = "done";
             st.pendingAction = "FETCH";
-            gpToast(`🎉 ${c.clientName}: ${res.message || "GSTR-1 JSON upload ho gaya!"}`);
+            st.progressText = "";
+            gpToast(`🎉 ${c.clientName}: ${(res && res.message) || "GSTR-1 JSON upload ho gaya!"}`);
           })
           .catch(err => {
             st.phase = "error";
+            st.progressText = "";
             st.note = "GSTR-1 Upload: " + err.message;
+            gpErrLogAdd(c.clientKey, st.note);
             gpToast(`❌ ${c.clientName} GSTR-1 Upload: ${err.message}`);
           })
           .finally(() => {
-            if (st.sessionId) gpCallBridge("/api/gst/logout", { sessionId: st.sessionId }).catch(() => {});
+            if (_phoneMode) {
+              gpFreePhoneSlot(c.clientKey);
+            } else if (st.sessionId) {
+              gpCallBridge("/api/gst/logout", { sessionId: st.sessionId }).catch(() => {});
+            }
             st.sessionId = null;
             gpActiveFetches = Math.max(0, gpActiveFetches - 1);
             gpUpdateFolderBanner();
@@ -1818,6 +1858,12 @@
               if (pres && pres.otpRequired) {
                 st.phase = "otp";
                 gpRenderSerialList(clientKey);
+              } else if (st.pendingAction === "UPLOAD") {
+                st.phase = "idle";
+                st.note = "";
+                gpRenderSerialList();
+                gpTriggerGstr1UploadInBackground(c, st);
+                gpAutoOpenNextSerialCaptcha(clientKey, "UPLOAD");
               } else {
                 st.phase = "idle";
                 st.note = "";
@@ -1901,8 +1947,13 @@
               st.phase = "idle";
               st.note = "";
               gpRenderSerialList();
-              gpTriggerFetchInBackground(c, st);
-              gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
+              if (st.pendingAction === "UPLOAD") {
+                gpTriggerGstr1UploadInBackground(c, st);
+                gpAutoOpenNextSerialCaptcha(clientKey, "UPLOAD");
+              } else {
+                gpTriggerFetchInBackground(c, st);
+                gpAutoOpenNextSerialCaptcha(clientKey, "FETCH");
+              }
             } catch (e) {
               gpFreePhoneSlot(clientKey);
               st.phase = "error";
@@ -2370,7 +2421,46 @@
         });
       }
 
-      // Phone-Only Mode badge (Cloud mode hata diya gaya hai)
+      function gpPhoneUploadAvailable() {
+        try { return !!(window.CloudGSTNative && CloudGSTNative.phoneUploadGstr1Slot); } catch (_) { return false; }
+      }
+      function gpUtf8ToBase64(str) {
+        const bytes = new TextEncoder().encode(String(str || ""));
+        let bin = "";
+        const CH = 32768;
+        for (let i = 0; i < bytes.length; i += CH) {
+          bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+        }
+        return btoa(bin);
+      }
+      function gpPhoneUploadGstr1(fy, mon, fileName, jsonObj, slot) {
+        return new Promise((resolve, reject) => {
+          if (!gpPhoneUploadAvailable()) {
+            return reject(new Error("Phone mode GSTR-1 upload is app version me available nahi hai — naya APK install karein."));
+          }
+          const s = Number(slot) || 0;
+          let id = "";
+          try {
+            const b64 = gpUtf8ToBase64(JSON.stringify(jsonObj, null, 2));
+            window.CloudGSTNative.phoneUploadInit(s);
+            const CH = 180000;
+            for (let off = 0; off < b64.length; off += CH) {
+              window.CloudGSTNative.phoneUploadAppend(s, b64.slice(off, off + CH));
+            }
+            id = String(window.CloudGSTNative.phoneUploadGstr1Slot(s, String(fy || ""), String(mon || ""), String(fileName || "GSTR1.json")) || "");
+          } catch (e) {
+            return reject(new Error("Phone GSTR-1 upload start nahi ho paya: " + (e && e.message ? e.message : e)));
+          }
+          if (!id) return reject(new Error("Phone GSTR-1 upload start nahi ho paya — dobara try karein."));
+          gpPhoneDbg("T" + (s + 1) + " gstr1 upload start (" + fy + ")");
+          gpNativePoll(id, "Phone GSTR-1 Upload (Tab " + (s + 1) + ")", 200000).then(
+            (r) => { gpPhoneDbg("T" + (s + 1) + " gstr1 upload ok"); resolve(r); },
+            (e) => { gpPhoneDbg("T" + (s + 1) + " gstr1 upload fail: " + (e && e.message)); reject(e); }
+          );
+        });
+      }
+
+      // APK: sirf Phone Mode (Cloud aur PC options hide); Web App: Cloud aur PC options full available
       (function gpInitSrcSwitch() {
         const lockBtn = document.getElementById("lockAppBtn");
         if (!lockBtn || document.getElementById("gpSrcSwitch")) return;
@@ -2378,27 +2468,32 @@
         wrap.id = "gpSrcSwitch";
         wrap.className = "inline-flex items-center rounded-xl overflow-hidden border border-emerald-600/60 bg-emerald-900/60 text-emerald-100 text-[11px] font-bold px-2.5 py-2";
         wrap.textContent = gpPhoneMaxSlots() > 1 ? ("📱 Phone (" + gpPhoneMaxSlots() + " Tabs)") : "📱 Phone Mode";
-        wrap.title = "100% Phone Mode — background fetch bina screen par portal khole";
+        wrap.title = "100% Phone Mode — Fetch aur GSTR-1 Upload seedha phone se";
         lockBtn.parentNode.insertBefore(wrap, lockBtn);
-        window.__gpPaintSrcSwitch = function () {
-          wrap.classList.toggle("hidden", !gpPhoneAvailable());
+        const applyApkOnlyUi = function () {
+          const isApk = gpPhoneAvailable();
+          wrap.classList.toggle("hidden", !isApk);
+          if (!isApk) return;
+          // APK me PC / Cloud buttons aur Bridge settings hata do (web app me sab intact rahega)
+          try {
+            const pcBtn = document.getElementById("gpQuickPcBtn");
+            if (pcBtn) pcBtn.classList.add("hidden");
+            const clBtn = document.getElementById("gpQuickCloudBtn");
+            if (clBtn) clBtn.classList.add("hidden");
+            const bb = document.getElementById("gpBridgeOfflineBanner");
+            if (bb) bb.classList.add("hidden");
+            const sd = document.getElementById("gpSettingsDrawer");
+            if (sd) {
+              Array.from(sd.children).forEach(row => {
+                if (row.id !== "gpBioLockRow" && !row.querySelector("#gpBioLockBtn")) {
+                  row.classList.add("hidden");
+                }
+              });
+            }
+          } catch (_) {}
         };
-        window.__gpPaintSrcSwitch();
-        // Cloud bridge settings / offline banner chhupa do
-        try {
-          const bb = document.getElementById("gpBridgeOfflineBanner");
-          if (bb) bb.classList.add("hidden");
-          const sd = document.getElementById("gpSettingsDrawer");
-          if (sd) {
-            sd.querySelectorAll("input, label, button").forEach(el => {
-              const t = (el.textContent || el.placeholder || el.id || "").toLowerCase();
-              if (/bridge|railway|secret|cloud/.test(t)) {
-                const box = el.closest("div");
-                if (box && box !== sd && !box.querySelector("#gpBioLockBtn")) box.classList.add("hidden");
-              }
-            });
-          }
-        } catch (_) {}
+        window.__gpPaintSrcSwitch = applyApkOnlyUi;
+        applyApkOnlyUi();
       })();
 
       // ===== APK: header me seedha 👆 Fingerprint button (option dhoondhna na pade) =====
@@ -2569,6 +2664,6 @@
         gpTriggerNextFetchBySpace();
       }, true);
 
-      gpBridgeHealth(6000);
+      if (!gpPhoneAvailable()) gpBridgeHealth(6000);
       window.renderPortalPage();
     })();

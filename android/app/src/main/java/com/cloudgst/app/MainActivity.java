@@ -93,6 +93,7 @@ public class MainActivity extends FragmentActivity {
     private static final int MAX_SLOTS = 5;
     private final PhoneFetch[] phoneFetches = new PhoneFetch[MAX_SLOTS];
     private final PhoneLogin[] phoneLogins = new PhoneLogin[MAX_SLOTS];
+    private final StringBuilder[] uploadBuffers = new StringBuilder[MAX_SLOTS];
     private final Map<String, String> phonePayloads = Collections.synchronizedMap(
             new LinkedHashMap<String, String>(64, 0.75f, false) {
                 @Override
@@ -870,6 +871,52 @@ public class MainActivity extends FragmentActivity {
         return id;
     }
 
+    void initPhoneUploadSlot(final int rawSlot) {
+        final int slot = clampSlot(rawSlot);
+        synchronized (uploadBuffers) {
+            uploadBuffers[slot] = new StringBuilder(65536);
+        }
+    }
+
+    void appendPhoneUploadSlot(final int rawSlot, final String chunk) {
+        final int slot = clampSlot(rawSlot);
+        if (chunk == null || chunk.isEmpty()) return;
+        synchronized (uploadBuffers) {
+            if (uploadBuffers[slot] == null) uploadBuffers[slot] = new StringBuilder(65536);
+            // Cap upload JSON base64 buffer at 30MB to prevent OOM
+            if (uploadBuffers[slot].length() + chunk.length() <= 30 * 1024 * 1024) {
+                uploadBuffers[slot].append(chunk);
+            }
+        }
+    }
+
+    String startPhoneUploadGstr1Slot(final int rawSlot, final String fyLabel, final String monLabel, final String fileName) {
+        final int slot = clampSlot(rawSlot);
+        final String b64;
+        synchronized (uploadBuffers) {
+            b64 = uploadBuffers[slot] == null ? "" : uploadBuffers[slot].toString();
+            uploadBuffers[slot] = null;
+        }
+        final String id = "pu_" + slot + "_" + System.currentTimeMillis() + "_" + (int) (Math.random() * 9000 + 1000);
+        final String fy = fyLabel == null ? "" : fyLabel;
+        final String mon = monLabel == null ? "" : monLabel;
+        final String fname = fileName == null ? "GSTR1.json" : fileName;
+        runOnUiThread(() -> {
+            try {
+                if (phoneFetches[slot] == null) {
+                    phoneFetches[slot] = new PhoneFetch(this, slot, (rid, payload) -> runOnUiThread(
+                            () -> deliverPhonePayload(rid, payload)));
+                }
+                phoneFetches[slot].startUploadGstr1(id, fy, mon, fname, b64, rootView);
+            } catch (Throwable t) {
+                Log.e(TAG, "phone upload start fail slot=" + slot, t);
+                deliverPhonePayload(id, "{\"ok\":false,\"source\":\"phone\",\"code\":\"start_failed\","
+                        + "\"error\":\"Phone mode GSTR-1 upload Tab " + (slot + 1) + " start nahi ho paya (" + String.valueOf(t.getMessage()) + ").\"}");
+            }
+        });
+        return id;
+    }
+
     void deliverPhonePayload(String id, String payload) {
         try {
             if (id == null || id.isEmpty()) return;
@@ -1137,6 +1184,40 @@ public class MainActivity extends FragmentActivity {
         public String phoneFetch2bSlot(final int slot, final String fyLabel, final String monLabel) {
             try {
                 return act.startPhoneFetchSlot(slot, fyLabel, monLabel);
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public boolean phoneUploadAvailable() {
+            return true;
+        }
+
+        @JavascriptInterface
+        public boolean phoneUploadInit(final int slot) {
+            try {
+                act.initPhoneUploadSlot(slot);
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public boolean phoneUploadAppend(final int slot, final String b64Chunk) {
+            try {
+                act.appendPhoneUploadSlot(slot, b64Chunk);
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public String phoneUploadGstr1Slot(final int slot, final String fyLabel, final String monLabel, final String fileName) {
+            try {
+                return act.startPhoneUploadGstr1Slot(slot, fyLabel, monLabel, fileName);
             } catch (Exception e) {
                 return "";
             }

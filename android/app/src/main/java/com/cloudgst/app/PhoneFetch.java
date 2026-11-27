@@ -1,6 +1,7 @@
 package com.cloudgst.app;
 
 import android.app.Activity;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
@@ -8,6 +9,8 @@ import android.util.Log;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -18,6 +21,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -27,7 +32,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * 📱 Phone mode 100% hidden background fetch (GSTR-2B + E-Commerce/TCS) — Multi-Profile (5 parallel slots).
+ * 📱 Phone mode 100% hidden background fetch (GSTR-2B + E-Commerce/TCS) & GSTR-1 JSON Upload
+ * — Multi-Profile (5 parallel slots).
  * Har slot (0..4) apne hi WebView Profile ("gst_slot_N") ki isolated cookies use karta hai.
  */
 public class PhoneFetch {
@@ -62,6 +68,10 @@ public class PhoneFetch {
     private String lastToken = "";
     private volatile String stage = "idle";
     private JSONObject lastDiag = null;
+    private boolean uploadMode = false;
+    private String uploadFileName = "GSTR1.json";
+    private String uploadJsonB64 = "";
+    private File uploadTempFile = null;
 
     public PhoneFetch(Activity act, int slot, Callback cb) {
         this.act = act;
@@ -99,6 +109,10 @@ public class PhoneFetch {
         finished = false;
         retriedDirect = false;
         netRetried = false;
+        uploadMode = false;
+        uploadFileName = "GSTR1.json";
+        uploadJsonB64 = "";
+        cleanupUploadTemp();
         stage = "load";
         lastToken = "";
         lastDiag = null;
@@ -107,10 +121,93 @@ public class PhoneFetch {
         h.postDelayed(timeoutRun, HARD_TIMEOUT_MS);
     }
 
+    public void startUploadGstr1(String id, String fy, String mon, String fileName, String jsonBase64, ViewGroup host) {
+        if (isBusy()) {
+            final String busyId = id;
+            h.post(() -> {
+                try {
+                    if (cb != null) cb.done(busyId, err("busy", "Tab " + (slot + 1) + " par kaam pehle se chal raha hai."));
+                } catch (Exception ignored) { }
+            });
+            return;
+        }
+        if (jsonBase64 == null || jsonBase64.trim().isEmpty()) {
+            final String emptyId = id;
+            h.post(() -> {
+                try {
+                    if (cb != null) cb.done(emptyId, err("bad_json", "GSTR-1 JSON content missing hai."));
+                } catch (Exception ignored) { }
+            });
+            return;
+        }
+        reqId = id;
+        fyLabel = fy == null ? "" : fy.trim();
+        String m = mon == null ? "" : mon.trim().toUpperCase(Locale.US);
+        int cut = m.indexOf('(');
+        if (cut > 0) m = m.substring(0, cut).trim();
+        monFull = m;
+        monShort = m.length() >= 3 ? m.substring(0, 3) : m;
+        ticks = 0;
+        clicked = false;
+        finished = false;
+        retriedDirect = false;
+        netRetried = false;
+        uploadMode = true;
+        uploadFileName = sanitizeJsonName(fileName);
+        uploadJsonB64 = jsonBase64.trim();
+        cleanupUploadTemp();
+        try {
+            byte[] rawBytes = Base64.decode(uploadJsonB64, Base64.DEFAULT);
+            File f = new File(act.getCacheDir(), "gstr1_s" + slot + "_" + System.currentTimeMillis() + "_" + uploadFileName);
+            try (FileOutputStream fos = new FileOutputStream(f)) {
+                fos.write(rawBytes);
+            }
+            uploadTempFile = f;
+        } catch (Throwable t) {
+            Log.w(TAG, "upload temp file write fail", t);
+            uploadTempFile = null;
+        }
+        stage = "upload_load";
+        lastToken = "";
+        lastDiag = null;
+        ensureWeb(host);
+        wv.loadUrl(AUTH_DASHBOARD);
+        h.postDelayed(timeoutRun, HARD_TIMEOUT_MS);
+    }
+
+    private static String sanitizeJsonName(String raw) {
+        String n = raw == null ? "" : raw.trim().replaceAll("[^A-Za-z0-9._-]", "_");
+        if (n.isEmpty()) n = "GSTR1.json";
+        if (!n.toLowerCase(Locale.US).endsWith(".json")) n += ".json";
+        if (n.length() > 80) n = n.substring(n.length() - 80);
+        return n;
+    }
+
+    private void cleanupUploadTemp() {
+        try {
+            if (uploadTempFile != null && uploadTempFile.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                uploadTempFile.delete();
+            }
+        } catch (Throwable ignored) { }
+        uploadTempFile = null;
+    }
+
     private final Runnable timeoutRun = new Runnable() {
         @Override
         public void run() {
             if (finished) return;
+            if (uploadMode) {
+                if (clicked) {
+                    deliver(reqId, err("upload_timeout",
+                            "Phone mode: GSTR-1 JSON bhej di gayi par portal ka jawab nahi aaya. Portal par status check karein."));
+                } else {
+                    deliver(reqId, err("timeout",
+                            "Phone mode: GSTR-1 upload page nahi khula (" + Math.round(HARD_TIMEOUT_MS / 1000)
+                                    + "s)" + diagText() + "."));
+                }
+                return;
+            }
             if (clicked) {
                 deliver(reqId, err("download_timeout",
                         "Phone mode: download shuru hui par file nahi aayi. Dobara try karein."));
@@ -181,8 +278,21 @@ public class PhoneFetch {
             @Override
             public void onDownloadStart(String url, String userAgent, String disposition,
                                         String mime, long size) {
-                if (finished) return;
+                if (finished || uploadMode) return;
                 onClickedDownload(url, userAgent);
+            }
+        });
+        v.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> filePathCallback,
+                                             FileChooserParams fileChooserParams) {
+                if (uploadMode && uploadTempFile != null && uploadTempFile.exists()) {
+                    try {
+                        filePathCallback.onReceiveValue(new Uri[]{ Uri.fromFile(uploadTempFile) });
+                        return true;
+                    } catch (Throwable ignored) { }
+                }
+                return false;
             }
         });
         v.setAlpha(0f);
@@ -225,18 +335,20 @@ public class PhoneFetch {
         public void run() {
             if (finished || wv == null) return;
             ticks++;
-            wv.evaluateJavascript(buildTickScript(), value -> {
+            wv.evaluateJavascript(uploadMode ? buildUploadTickScript() : buildTickScript(), value -> {
                 String raw = decodeJsString(value);
                 String tok = raw;
+                JSONObject parsed = null;
                 try {
                     JSONObject d = new JSONObject(raw);
+                    parsed = d;
                     tok = d.optString("t", "");
                     if (d.has("u") || d.has("b")) lastDiag = d;
                 } catch (Exception e) {
                     tok = raw.replace("\"", "").trim();
                 }
                 lastToken = tok;
-                stage = "poll:" + tok;
+                stage = (uploadMode ? "up:" : "poll:") + tok;
                 if (finished) return;
                 if (tok.startsWith("ERR:")) {
                     deliver(reqId, err("script_error",
@@ -245,8 +357,36 @@ public class PhoneFetch {
                 }
                 if ("LOGIN".equals(tok)) {
                     deliver(reqId, err("login_required",
-                            "Is client ka GST portal login expire ho gaya — dobara Re-Fetch dabayein."));
+                            "Is client ka GST portal login expire ho gaya — dobara try karein."));
                     return;
+                }
+                if ("UP_ERR".equals(tok)) {
+                    String msg = parsed == null ? "" : parsed.optString("msg", "");
+                    deliver(reqId, err("upload_failed",
+                            "Portal ne GSTR-1 upload me error diya: " + (msg.isEmpty() ? "Upload reject hua" : msg)));
+                    return;
+                }
+                if ("UP_OK".equals(tok)) {
+                    boolean verified = parsed != null && parsed.optBoolean("verified", false);
+                    String alertText = parsed == null ? "" : parsed.optString("msg", "");
+                    JSONArray rowArr = parsed == null ? null : parsed.optJSONArray("row");
+                    JSONObject p = baseOk();
+                    try {
+                        p.put("uploaded", true);
+                        p.put("verified", verified);
+                        p.put("message", verified
+                                ? "GSTR-1 JSON phone se portal par upload ho gayi (portal ne confirm kiya). Ab portal par summary check karke Submit & File (EVC/DSC) karein."
+                                : "⚠️ GSTR-1 JSON portal ko bhej di gayi, par portal ki taraf se confirmation message padh nahi paya. Portal par upload status zaroor check karein.");
+                        JSONObject ps = new JSONObject();
+                        ps.put("alertText", alertText);
+                        ps.put("latestRow", rowArr != null ? rowArr : new JSONArray());
+                        p.put("portalStatus", ps);
+                    } catch (Exception ignored) { }
+                    deliver(reqId, p.toString());
+                    return;
+                }
+                if ("UPLOADED_FILE".equals(tok)) {
+                    clicked = true;
                 }
                 if ("NOTGEN".equals(tok)) {
                     JSONObject p = baseOk();
@@ -267,13 +407,81 @@ public class PhoneFetch {
                 }
                 if (ticks >= 60) {
                     deliver(reqId, err("timeout",
-                            "Phone mode: portal ne data nahi diya (aakhri: " + lastToken + ")" + diagText()));
+                            "Phone mode: portal ne jawab nahi diya (aakhri: " + lastToken + ")" + diagText()));
                     return;
                 }
                 h.postDelayed(tickRun, TICK_MS);
             });
         }
     };
+
+    /** Phone mode: GSTR-1 PREPARE OFFLINE JSON upload automation script. */
+    private String buildUploadTickScript() {
+        return "(function(){"
+                + "var out=function(t,extra){var b='';try{b=String((document.body&&document.body.innerText)||'').replace(/\\s+/g,' ').trim().slice(0,140);}catch(x){}"
+                + "var o={t:t,u:String(location.href||'').slice(0,120),b:b};"
+                + "if(extra)for(var k in extra)o[k]=extra[k];return JSON.stringify(o);};"
+                + "var vis=function(e){return !!(e&&e.offsetParent!==null);},"
+                + "flat=function(e){return String((e&&(e.innerText||e.textContent))||'').replace(/\\s+/g,' ').trim();};"
+                + "try{var FY=" + JSONObject.quote(fyLabel) + ",MONF=" + JSONObject.quote(monFull) + ",MONS=" + JSONObject.quote(monShort)
+                + ",FNAME=" + JSONObject.quote(uploadFileName) + ",B64=" + JSONObject.quote(uploadJsonB64) + ";"
+                + "var href=String(location.href||'').toLowerCase(),W=window,D=document,Q=(s,r)=>[...(r||D).querySelectorAll(s)],"
+                + "F=flat,V=vis,O=out,cl=e=>(e.click(),O('OPENING')),fv=(a,r)=>a.find(e=>V(e)&&r.test(F(e))),sv;"
+                + "if(href.includes('/login')||D.querySelector('[type=password]'))return O('LOGIN');"
+                + "var B=F(D.body);"
+                + "if(/access.?denied/i.test(href+B))return !W.__cA?(W.__cA=1,location='/services/auth/dashboard',O('OPENING')):O('LOGIN');"
+                + "Q('.modal button').forEach(b=>V(b)&&/REMIND|SKIP|CLOSE/i.test(F(b))&&b.click());"
+                // 1) Offline Upload page: input[type=file] present
+                + "var fi=D.querySelector('input[type=\"file\"]');"
+                + "if(fi){"
+                + "  if(!W.__cgUpSent){"
+                + "    var tr0=D.querySelector('table tbody tr');W.__cgUpPrevRow=tr0?F(tr0):'';"
+                + "    var bin=atob(B64),bytes=new Uint8Array(bin.length);"
+                + "    for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);"
+                + "    var file=new File([bytes],FNAME,{type:'application/json'});"
+                + "    var dt=new DataTransfer();dt.items.add(file);fi.files=dt.files;"
+                + "    fi.dispatchEvent(new Event('input',{bubbles:true}));"
+                + "    fi.dispatchEvent(new Event('change',{bubbles:true}));"
+                + "    W.__cgUpSent=1;W.__cgUpTicks=0;return O('UPLOADED_FILE');"
+                + "  }"
+                + "  W.__cgUpTicks=(W.__cgUpTicks||0)+1;"
+                + "  if(W.__cgUpTicks<2)return O('UP_WAIT');"
+                + "  var alerts=Q('.alert-success,.alert-info,.alert-danger,.err,.text-danger,.alert-warning').filter(V).map(F).filter(Boolean);"
+                + "  var alertText=alerts.join(' | ');"
+                + "  var tr=D.querySelector('table tbody tr');"
+                + "  var rowArr=tr?[...tr.querySelectorAll('td')].map(F):[];"
+                + "  var rowStr=tr?F(tr):'';"
+                + "  var ERR_RE=/\\b(error|failed|invalid|unable|reject|corrupt|mismatch|not\\s+valid|already\\s+filed|cannot\\s+be\\s+uploaded|something\\s+went\\s+wrong)\\b/i;"
+                + "  var OK_RE=/\\b(success|uploaded|processed|in\\s+progress|accepted|reference|received|queued)\\b/i;"
+                + "  if(alertText&&ERR_RE.test(alertText))return O('UP_ERR',{msg:alertText,row:rowArr});"
+                + "  var comb=alertText+' '+rowStr;"
+                + "  if(OK_RE.test(comb)&&(alertText||(rowStr&&rowStr!==W.__cgUpPrevRow)))return O('UP_OK',{verified:true,msg:alertText,row:rowArr});"
+                + "  if(W.__cgUpTicks>=8)return O('UP_OK',{verified:false,msg:alertText,row:rowArr});"
+                + "  return O('UP_WAIT');"
+                + "}"
+                // 2) Returns Dashboard: GSTR-1 PREPARE OFFLINE button (skip GSTR-1A)
+                + "var bs=Q('button,a'),al=Q('a,button,span,li');"
+                + "for(var b of bs){if(!V(b))continue;var t=F(b);"
+                + "  if(/PREPARE\\s+OFFLINE/i.test(t)){"
+                + "    for(var p=b.parentNode,h=0;p&&h<6;p=p.parentNode,h++){"
+                + "      var pt=F(p);if(pt.length>1200)break;"
+                + "      if(/GSTR-?1(?!A)\\b/i.test(pt)&&!/GSTR-?1A/i.test(pt))return !W.__cgUpPo?(W.__cgUpPo=1,b.click(),O('OPENING')):O('DASH');"
+                + "    }"
+                + "  }"
+                + "}"
+                // 3) Select FY / Quarter / Month + SEARCH
+                + "var P=ss=>{if(!ss.length)return '';var ch=0,qn=('APRMAYJUNJULAUGSEPOCTNOVDECJANFEBMAR'.indexOf(MONS)/9|0)+1,"
+                + "qR=[0,/APR/,/JUL/,/OCT/,/JAN/],mR=MONS.length>2?new RegExp('(^|[^A-Z])'+MONS+'([^A-Z]|$)'):0;"
+                + "ss.forEach(sl=>{var ops=sl.options,at=F(sl).toUpperCase(),iF=/20\\d{2}/.test(at),iQ=/QUARTER|APR.*JUN/.test(at);"
+                + "for(var o=0;o<ops.length;o++){var ot=ops[o].text.toUpperCase().trim();if(/^$|SELECT/.test(ot))continue;"
+                + "if((iF&&ot.includes(FY))||(iQ&&qn&&(ot.includes('QUARTER '+qn)||qR[qn].test(ot)))||(!iF&&!iQ&&(ot.includes(MONF)||(mR&&mR.test(ot))))){"
+                + "if(sl.selectedIndex-o)sl.selectedIndex=o,sl.dispatchEvent(new Event('change',{bubbles:1})),ch=1;break;}}});"
+                + "return ch?O('SETTING'):(sv=fv(bs,/^SEARCH$/i))?(sv.click(),O('SEARCHED')):O('DASH');};"
+                + "if(href.includes('/returns')&&(sv=P(Q('select'))))return sv;"
+                + "if(sv=D.querySelector('a[href*=\"/returns/auth/dash\"]'))return cl(sv);"
+                + "return (sv=fv(al,/^RETURNS? DASHBOARD$/i)||fv(al,/^(RETURNS|SERVICES)$/i))?cl(sv):O('NONE');"
+                + "}catch(e){return O('ERR:'+e);}})()";
+    }
 
     private String diagText() {
         JSONObject d = lastDiag;
@@ -507,6 +715,8 @@ public class PhoneFetch {
     private void deliver(final String id, final String payload) {
         if (finished) return;
         finished = true;
+        uploadJsonB64 = "";
+        cleanupUploadTemp();
         h.removeCallbacks(tickRun);
         h.removeCallbacks(timeoutRun);
         final String rid = id == null ? reqId : id;
@@ -521,6 +731,8 @@ public class PhoneFetch {
 
     public void destroy() {
         finished = true;
+        uploadJsonB64 = "";
+        cleanupUploadTemp();
         h.removeCallbacksAndMessages(null);
         if (wv != null) {
             try {
