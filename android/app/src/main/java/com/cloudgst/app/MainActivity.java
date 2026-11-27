@@ -8,17 +8,25 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Color;
+import android.hardware.input.InputManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.InputDevice;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -89,6 +97,9 @@ public class MainActivity extends FragmentActivity {
                 }
             });
     private SharedPreferences prefs;
+    private InputManager inputManager;
+    private InputManager.InputDeviceListener inputDeviceListener;
+    private volatile boolean externalKeyboardConnected = false;
 
     /** Storage permission ke baad pending save (sirf Android 7/8 ke liye). */
     private String pendingName, pendingB64;
@@ -152,6 +163,7 @@ public class MainActivity extends FragmentActivity {
                         "window.document.documentElement.classList.add('native-app');",
                         null);
                 injectDownloadBridge(view);
+                injectExternalKeyboardGuard(view);
                 if (bioUnlocked) {
                     view.evaluateJavascript(
                             "(window.cloudGstNativeUnlocked&&window.cloudGstNativeUnlocked())", null);
@@ -223,6 +235,33 @@ public class MainActivity extends FragmentActivity {
         } else {
             loadApp();
         }
+
+        // ---- external physical/Bluetooth/USB keyboard detection -> suppress on-screen keyboard ----
+        try {
+            inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
+            if (inputManager != null) {
+                inputDeviceListener = new InputManager.InputDeviceListener() {
+                    @Override
+                    public void onInputDeviceAdded(int deviceId) {
+                        syncExternalKeyboardState();
+                    }
+
+                    @Override
+                    public void onInputDeviceRemoved(int deviceId) {
+                        syncExternalKeyboardState();
+                    }
+
+                    @Override
+                    public void onInputDeviceChanged(int deviceId) {
+                        syncExternalKeyboardState();
+                    }
+                };
+                inputManager.registerInputDeviceListener(inputDeviceListener, new Handler(Looper.getMainLooper()));
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "inputDeviceListener init fail", t);
+        }
+        syncExternalKeyboardState();
     }
 
     private void loadApp() {
@@ -253,6 +292,155 @@ public class MainActivity extends FragmentActivity {
                 + "}catch(e){}return oc.call(this);};"
                 + "})();";
         view.evaluateJavascript(js, null);
+    }
+
+    // ================= external keyboard: hide on-screen soft keyboard =================
+
+    private boolean detectExternalKeyboard() {
+        try {
+            Configuration cfg = getResources().getConfiguration();
+            if (cfg.keyboard != Configuration.KEYBOARD_NOKEYS
+                    && cfg.hardKeyboardHidden == Configuration.HARDKEYBOARDHIDDEN_NO) {
+                return true;
+            }
+        } catch (Throwable ignored) { }
+        try {
+            for (int id : InputDevice.getDeviceIds()) {
+                InputDevice dev = InputDevice.getDevice(id);
+                if (dev == null || dev.isVirtual()) continue;
+                int src = dev.getSources();
+                if ((src & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD
+                        && dev.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) { }
+        return false;
+    }
+
+    boolean isExternalKeyboardConnected() {
+        return externalKeyboardConnected;
+    }
+
+    private void syncExternalKeyboardState() {
+        final boolean detected = detectExternalKeyboard();
+        externalKeyboardConnected = detected;
+        runOnUiThread(() -> applyExternalKeyboardMode(detected));
+    }
+
+    private void applyExternalKeyboardMode(final boolean connected) {
+        try {
+            if (connected) {
+                getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+                        | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+                hideSoftKeyboard();
+            } else {
+                getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
+                        | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            }
+        } catch (Throwable ignored) { }
+        if (web != null) {
+            try {
+                web.evaluateJavascript(
+                        "(function(){try{if(window.__cgExtKbChanged)window.__cgExtKbChanged("
+                                + (connected ? "true" : "false") + ");}catch(e){}})()",
+                        null);
+            } catch (Throwable ignored) { }
+        }
+    }
+
+    void hideSoftKeyboard() {
+        try {
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm == null) return;
+            View v = getCurrentFocus();
+            if (v == null) v = web;
+            if (v == null) v = rootView;
+            if (v != null && v.getWindowToken() != null) {
+                imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    private void injectExternalKeyboardGuard(WebView view) {
+        String js = "(function(){"
+                + "if(window.__cgExtKbInit){"
+                + "  try{if(window.__cgExtKbChanged&&window.CloudGSTNative&&CloudGSTNative.hasExternalKeyboard)"
+                + "    window.__cgExtKbChanged(!!CloudGSTNative.hasExternalKeyboard());}catch(e){}"
+                + "  return;}"
+                + "window.__cgExtKbInit=1;"
+                + "window.__cgExtKb=false;"
+                + "function applyEl(el,on){"
+                + "  if(!el||!el.tagName)return;"
+                + "  var tg=el.tagName.toUpperCase();"
+                + "  if(tg!=='INPUT'&&tg!=='TEXTAREA')return;"
+                + "  var ty=(el.type||'text').toLowerCase();"
+                + "  if(ty==='checkbox'||ty==='radio'||ty==='button'||ty==='submit'||ty==='file'||ty==='hidden')return;"
+                + "  if(on){"
+                + "    if(!el.hasAttribute('data-cg-im-saved'))el.setAttribute('data-cg-im-saved',el.getAttribute('inputmode')||'');"
+                + "    el.setAttribute('inputmode','none');"
+                + "  }else if(el.hasAttribute('data-cg-im-saved')){"
+                + "    var orig=el.getAttribute('data-cg-im-saved');"
+                + "    el.removeAttribute('data-cg-im-saved');"
+                + "    if(orig)el.setAttribute('inputmode',orig);else el.removeAttribute('inputmode');"
+                + "  }"
+                + "}"
+                + "function applyAll(on){try{document.querySelectorAll('input,textarea').forEach(function(el){applyEl(el,on);});}catch(e){}}"
+                + "window.__cgExtKbChanged=function(on){"
+                + "  window.__cgExtKb=!!on;applyAll(window.__cgExtKb);"
+                + "  if(window.__cgExtKb&&window.CloudGSTNative&&CloudGSTNative.hideSoftKeyboard){try{CloudGSTNative.hideSoftKeyboard();}catch(e){}}"
+                + "};"
+                + "document.addEventListener('pointerdown',function(ev){if(window.__cgExtKb)applyEl(ev.target,true);},true);"
+                + "document.addEventListener('focusin',function(ev){"
+                + "  if(!window.__cgExtKb)return;applyEl(ev.target,true);"
+                + "  if(window.CloudGSTNative&&CloudGSTNative.hideSoftKeyboard){try{CloudGSTNative.hideSoftKeyboard();}catch(e){}}"
+                + "},true);"
+                + "try{"
+                + "  var mo=new MutationObserver(function(muts){"
+                + "    if(!window.__cgExtKb)return;"
+                + "    muts.forEach(function(m){if(!m.addedNodes)return;m.addedNodes.forEach(function(n){"
+                + "      if(n.nodeType!==1)return;applyEl(n,true);"
+                + "      if(n.querySelectorAll)n.querySelectorAll('input,textarea').forEach(function(el){applyEl(el,true);});"
+                + "    });});"
+                + "  });"
+                + "  if(document.body)mo.observe(document.body,{childList:true,subtree:true});"
+                + "}catch(e){}"
+                + "try{if(window.CloudGSTNative&&CloudGSTNative.hasExternalKeyboard)"
+                + "  window.__cgExtKbChanged(!!CloudGSTNative.hasExternalKeyboard());}catch(e){}"
+                + "})();";
+        view.evaluateJavascript(js, null);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        syncExternalKeyboardState();
+    }
+
+    @Override
+    public void onConfigurationChanged(@NonNull Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        syncExternalKeyboardState();
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        try {
+            if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
+                InputDevice dev = event.getDevice();
+                if (dev != null && !dev.isVirtual()
+                        && (dev.getSources() & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD
+                        && dev.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+                    if (!externalKeyboardConnected) {
+                        externalKeyboardConnected = true;
+                        applyExternalKeyboardMode(true);
+                    } else {
+                        hideSoftKeyboard();
+                    }
+                }
+            }
+        } catch (Throwable ignored) { }
+        return super.dispatchKeyEvent(event);
     }
 
     // ================= back handling =================
@@ -541,6 +729,11 @@ public class MainActivity extends FragmentActivity {
 
     @Override
     protected void onDestroy() {
+        try {
+            if (inputManager != null && inputDeviceListener != null) {
+                inputManager.unregisterInputDeviceListener(inputDeviceListener);
+            }
+        } catch (Exception ignored) { }
         try {
             for (int i = 0; i < MAX_SLOTS; i++) {
                 if (phoneFetches[i] != null) phoneFetches[i].destroy();
@@ -913,6 +1106,16 @@ public class MainActivity extends FragmentActivity {
         @JavascriptInterface
         public boolean phoneFetchAvailable() {
             return true;
+        }
+
+        @JavascriptInterface
+        public boolean hasExternalKeyboard() {
+            return act.isExternalKeyboardConnected();
+        }
+
+        @JavascriptInterface
+        public void hideSoftKeyboard() {
+            act.runOnUiThread(() -> act.hideSoftKeyboard());
         }
 
         @JavascriptInterface
