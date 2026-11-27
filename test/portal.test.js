@@ -607,6 +607,32 @@ test("waitForReturnsSelectsSmart: exits early on access_denied without waiting f
   assert.ok(waits <= 3, `expected <=3 waits on early exit, got ${waits}`);
 });
 
+test("waitForReturnsSelectsSmart: exits fast on nothing_clicked and stalled_on_auth_dashboard", async () => {
+  let waits1 = 0;
+  const noClickPage = {
+    url: () => "https://services.gst.gov.in/services/auth/dashboard",
+    waitForSelector: async () => { throw new Error("timeout"); },
+    waitForTimeout: async () => { waits1++; },
+    evaluate: async () => ({ url: "https://services.gst.gov.in/services/auth/dashboard", title: "Dashboard", text: "Welcome", buttons: [] })
+  };
+  const r1 = await waitForReturnsSelectsSmart(noClickPage, null, 0, 20000, { clicked: false });
+  assert.equal(r1.ok, false);
+  assert.equal(r1.earlyReason, "nothing_clicked");
+  assert.ok(waits1 <= 4, `expected fast exit when clicked:false, got ${waits1}`);
+
+  let waits2 = 0;
+  const stalledPage = {
+    url: () => "https://services.gst.gov.in/services/auth/dashboard",
+    waitForSelector: async () => { throw new Error("timeout"); },
+    waitForTimeout: async () => { waits2++; },
+    evaluate: async () => ({ url: "https://services.gst.gov.in/services/auth/dashboard", title: "Dashboard", text: "Welcome", buttons: [] })
+  };
+  const r2 = await waitForReturnsSelectsSmart(stalledPage, null, 0, 25000, { clicked: true });
+  assert.equal(r2.ok, false);
+  assert.equal(r2.earlyReason, "stalled_on_auth_dashboard");
+  assert.ok(waits2 <= 9, `expected fast exit when stalled on auth dashboard, got ${waits2}`);
+});
+
 test("dismissModals: Escape key sirf open modal dikhne par dabata hai", async () => {
   let escPressed = 0;
   let visibleMap = {};
@@ -623,7 +649,7 @@ test("dismissModals: Escape key sirf open modal dikhne par dabata hai", async ()
     },
     async waitForTimeout() {},
     keyboard: { async press(k) { if (k === "Escape") escPressed++; } },
-    async evaluate() { return hasModal; }
+    async evaluate() { return { hasAnyModal: hasModal, hasOpenModal: hasModal }; }
   });
   await dismissModals(mockModalPage(false));
   assert.equal(escPressed, 0);

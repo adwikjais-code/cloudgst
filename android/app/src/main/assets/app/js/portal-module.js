@@ -1332,7 +1332,7 @@
           const deadline = Date.now() + 900000;
           while (Date.now() < deadline) {
             if (ctrl.signal.aborted) { const ea = new Error("Aapne cancel kiya."); ea.aborted = true; throw ea; }
-            await new Promise(r => setTimeout(r, 2500));
+            await new Promise(r => setTimeout(r, 1200));
             if (ctrl.signal.aborted) { const ea = new Error("Aapne cancel kiya."); ea.aborted = true; throw ea; }
             const pr = await gpCallBridge("/api/gst/fetch-status?sessionId=" + encodeURIComponent(_progSid), null, {
               timeoutMs: 10000, signal: ctrl.signal,
