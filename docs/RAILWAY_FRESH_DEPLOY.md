@@ -37,7 +37,7 @@ Naya domain milega (jaise `cloudgst-bridge-production-a1b2.up.railway.app`) — 
 | Key | Value |
 |---|---|
 | `API_SECRET` | `<your-strong-secret-here>` *(ek strong random token daalein, app Settings me bhi wahi dalein — public me kabhi share na karein)* |
-| `ALLOWED_ORIGIN` | `https://still-flower-aeed.taxandgstconsultancy.workers.dev,https://rough-sunset-e174.adwikjais.workers.dev,https://adwikjais-code.github.io` |
+| `ALLOWED_ORIGIN` | `https://still-flower-aeed.taxandgstconsultancy.workers.dev,https://rough-sunset-e174.adwikjais.workers.dev,https://adwikjais-code.github.io,https://appassets.androidplatform.net` |
 | `NODE_ENV` | `production` |
 | `MEM_LIMIT_MB` | `1200` *(RAM isse badhi to server khud sessions+Chromium band karega, girayega nahi)* |
 | `MAX_SESSIONS` | `6` |

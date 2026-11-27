@@ -1282,10 +1282,13 @@
           st.phase = "error";
           st.note = e.message;
           gpErrLogAdd(clientKey, e.message);
-          st.cooldownUntil = Date.now() + 90000;
-          gpEnsureCooldownTicker();
+          const _netFail = !!(e && e.network);
+          st.cooldownUntil = _netFail ? 0 : (Date.now() + 90000);
+          if (!_netFail) gpEnsureCooldownTicker();
           gpRenderSerialList();
-          gpToast("❌ Captcha load fail: " + e.message + " — 90s baad dobara try karein.");
+          gpToast(_netFail
+            ? ("☁️ Captcha load fail: " + e.message)
+            : ("❌ Captcha load fail: " + e.message + " — 90s baad dobara try karein."));
         }
       }
 
@@ -1309,7 +1312,7 @@
         st.progressText = st.sessionId === "PHONE" ? "📱 Phone se 2B la rahe hain (cloud nahi, screen band rakh sakte hain)…" : "Shuru ho raha hai…";
         const _progSid = st.sessionId;
         const _phoneMode = gpPhoneModeNow();
-        const _progPoll = _phoneMode ? null : setInterval(() => {
+        let _progPoll = _phoneMode ? null : setInterval(() => {
           if (st.phase !== "fetching" && st.phase !== "saving") return;
           gpCallBridge("/api/gst/fetch-status?sessionId=" + encodeURIComponent(_progSid), null, { timeoutMs: 8000 })
             .then(pr => {
@@ -1339,12 +1342,41 @@
               throw e;
             }
           }
-          return _phoneMode
-            ? gpPhoneFetch2b(fy, (typeof gpGetSelectedMonthDisplay === "function" ? gpGetSelectedMonthDisplay() : ""))
-            : gpCallBridge("/api/gst/fetch-all", { sessionId: st.sessionId, fy, month, autoClose: true, options }, {
-                signal: ctrl.signal, timeoutMs: 900000, retry: false,
-                onRetry: (n) => { st.progressText = `⏳ Connection toota — retry ${n}…`; gpRenderSerialList(); }
-              });
+          if (_phoneMode) {
+            return gpPhoneFetch2b(fy, (typeof gpGetSelectedMonthDisplay === "function" ? gpGetSelectedMonthDisplay() : ""));
+          }
+          const initial = await gpCallBridge("/api/gst/fetch-all", { sessionId: st.sessionId, fy, month, autoClose: true, options, async: true }, {
+            signal: ctrl.signal, timeoutMs: 900000, retry: false,
+            onRetry: (n) => { st.progressText = `⏳ Connection toota — retry ${n}…`; gpRenderSerialList(); }
+          });
+          if (!(initial && initial.pending)) return initial;
+
+          // Async background job: Railway/Safari 60s idle proxy drop se bachne ke liye short polls par result lo
+          if (_progPoll) { try { clearInterval(_progPoll); } catch (_) {} _progPoll = null; }
+          const deadline = Date.now() + 900000;
+          while (Date.now() < deadline) {
+            if (ctrl.signal.aborted) { const ea = new Error("Aapne cancel kiya."); ea.aborted = true; throw ea; }
+            await new Promise(r => setTimeout(r, 2500));
+            if (ctrl.signal.aborted) { const ea = new Error("Aapne cancel kiya."); ea.aborted = true; throw ea; }
+            const pr = await gpCallBridge("/api/gst/fetch-status?sessionId=" + encodeURIComponent(_progSid), null, {
+              timeoutMs: 10000, signal: ctrl.signal,
+              onRetry: (n) => { st.progressText = `⏳ Connection check — retry ${n}…`; gpRenderSerialList(); }
+            });
+            const msg = pr && pr.progress && pr.progress.message;
+            if (msg && msg !== st.progressText) { st.progressText = msg; gpRenderSerialList(); }
+            if (pr && pr.done) {
+              const finalRes = pr.result;
+              if (!finalRes || !finalRes.ok) {
+                const ef = new Error((finalRes && finalRes.error) || "Fetch fail hua.");
+                ef.data = finalRes;
+                throw ef;
+              }
+              return finalRes;
+            }
+          }
+          const et = new Error("Bridge ne 15 min me jawab nahi diya (timeout). Dobara try karein.");
+          et.aborted = true;
+          throw et;
         };
         _runFetch()
           .then(async (data) => {
@@ -1371,10 +1403,10 @@
               st.note = err.message;
               gpErrLogAdd(c.clientKey, err.message);
               const _needLogin = err && err.code === "login_required";
-              const _bridgeDown = err && err.code === "bridge_down";
+              const _bridgeDown = !!(err && (err.code === "bridge_down" || err.network));
               st.cooldownUntil = (_needLogin || _bridgeDown) ? 0 : Date.now() + 90000;
               if (_bridgeDown) gpBridgeMark(false);
-              if (!_needLogin) gpEnsureCooldownTicker();
+              if (!_needLogin && !_bridgeDown) gpEnsureCooldownTicker();
               gpToast(_bridgeDown
                 ? `☁️ ${c.clientName}: ${err.message}`
                 : (_needLogin

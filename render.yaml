@@ -12,7 +12,7 @@ services:
       - key: API_SECRET
         sync: false        # Render dashboard me apna secret daalein (Railway wala hi chalega)
       - key: ALLOWED_ORIGIN
-        value: https://still-flower-aeed.taxandgstconsultancy.workers.dev,https://rough-sunset-e174.adwikjais.workers.dev,https://adwikjais-code.github.io
+        value: https://still-flower-aeed.taxandgstconsultancy.workers.dev,https://rough-sunset-e174.adwikjais.workers.dev,https://adwikjais-code.github.io,https://appassets.androidplatform.net
       - key: ALLOW_NO_SECRET
         value: "false"
       - key: NODE_ENV

@@ -147,6 +147,26 @@ test("CORS: strict ALLOWED_ORIGIN enforcement — unknown workers.dev reject, ex
     const ok = await fetch(base + "/api/gst/ping", auth({ headers: { "x-api-secret": SECRET, origin: "https://my-proxy.username.workers.dev" } }));
     assert.equal(ok.headers.get("access-control-allow-origin"), "https://my-proxy.username.workers.dev");
   });
+  // When ALLOWED_ORIGIN is unset, defaults allow our exact worker/GitHub/Android WebView origins while rejecting arbitrary workers.dev
+  await withServer({ API_SECRET: SECRET, ALLOWED_ORIGIN: "" }, async (base) => {
+    const workerOk = await fetch(base + "/api/gst/ping", auth({ headers: { "x-api-secret": SECRET, origin: "https://still-flower-aeed.taxandgstconsultancy.workers.dev" } }));
+    assert.equal(workerOk.headers.get("access-control-allow-origin"), "https://still-flower-aeed.taxandgstconsultancy.workers.dev");
+
+    const androidOk = await fetch(base + "/api/gst/ping", auth({ headers: { "x-api-secret": SECRET, origin: "https://appassets.androidplatform.net" } }));
+    assert.equal(androidOk.headers.get("access-control-allow-origin"), "https://appassets.androidplatform.net");
+
+    const randReject = await fetch(base + "/api/gst/ping", auth({ headers: { "x-api-secret": SECRET, origin: "https://random-other.workers.dev" } }));
+    assert.equal(randReject.headers.get("access-control-allow-origin"), null);
+  });
+});
+
+test("fetch-all: async flag validates session/period before 202", async () => {
+  await withServer({ API_SECRET: SECRET }, async (base) => {
+    const rBadPer = await fetch(base + "/api/gst/fetch-all", auth({ method: "POST", body: JSON.stringify({ sessionId: "xyz", fy: "2026-27", month: "13", async: true }) }));
+    assert.equal(rBadPer.status, 400);
+    const rNoSess = await fetch(base + "/api/gst/fetch-all", auth({ method: "POST", body: JSON.stringify({ sessionId: "xyz", fy: "2026-27", month: "10", async: true }) }));
+    assert.equal(rNoSess.status, 401);
+  });
 });
 
 test("fetch-all: session ke bina 401 (0 data save na ho)", async () => {

@@ -1164,7 +1164,13 @@ function startServer() {
   const PORT = process.env.PORT || 3000;
   const API_SECRET = (process.env.API_SECRET || "").trim();
   const ALLOW_NO_SECRET = process.env.ALLOW_NO_SECRET === "1";
-  const ALLOWED_ORIGIN = (process.env.ALLOWED_ORIGIN || "https://adwikjais-code.github.io").trim();
+  const DEFAULT_ALLOWED_ORIGIN = [
+    "https://still-flower-aeed.taxandgstconsultancy.workers.dev",
+    "https://rough-sunset-e174.adwikjais.workers.dev",
+    "https://adwikjais-code.github.io",
+    "https://appassets.androidplatform.net"
+  ].join(",");
+  const ALLOWED_ORIGIN = (process.env.ALLOWED_ORIGIN || DEFAULT_ALLOWED_ORIGIN).trim();
 
   if (!API_SECRET && !ALLOW_NO_SECRET) {
     console.warn("⚠️  API_SECRET set nahi hai — health ke alawa saare endpoints band rahenge. Railway / Render Environment variables me API_SECRET daalein.");
@@ -1223,7 +1229,19 @@ function startServer() {
     return prev.then(() => release);
   }
   const SESSION_TTL_MS = 20 * 60 * 1000;
+  const FINISHED_FETCH_TTL_MS = 10 * 60 * 1000;
+  const finishedFetches = new Map();
   let lastDebug = { message: "No fetch run yet." };
+
+  function saveFinishedFetch(sessionId, payload) {
+    const sid = String(sessionId || "");
+    if (!sid) return;
+    finishedFetches.set(sid, { payload, expiresAt: Date.now() + FINISHED_FETCH_TTL_MS });
+    while (finishedFetches.size > 20) {
+      const oldestKey = finishedFetches.keys().next().value;
+      finishedFetches.delete(oldestKey);
+    }
+  }
 
   async function closeSession(sessionId) {
     const s = sessions.get(sessionId);
@@ -1234,6 +1252,7 @@ function startServer() {
   const cleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [id, s] of sessions.entries()) if (now - s.lastActive > SESSION_TTL_MS && !s.busy) closeSession(id);
+    for (const [id, fin] of finishedFetches.entries()) if (now > fin.expiresAt) finishedFetches.delete(id);
   }, 60 * 1000);
   if (typeof cleanupTimer.unref === "function") cleanupTimer.unref();
 
@@ -1303,11 +1322,30 @@ function startServer() {
   app.get("/api/gst/ping", (req, res) => res.json({ ok: true, version: VERSION }));
   app.get("/debug", (req, res) => res.type("text/plain").send(JSON.stringify(lastDebug, null, 2)));
 
-  // Chal rahe fetch ka step (app har 5s par poochhta hai) — session chala gaya to 404
+  // Chal rahe fetch ka step (app poll karta hai) — async mode me finish hone par result bhi yahi se milta hai
   app.get("/api/gst/fetch-status", (req, res) => {
-    const s = sessions.get(String((req.query && req.query.sessionId) || ""));
-    if (!s) return res.status(404).json({ ok: false, error: "Session nahi mila (khatam ho gaya)." });
-    res.json({ ok: true, busy: !!s.busy, progress: s.progress || null });
+    const sid = String((req.query && req.query.sessionId) || "");
+    const s = sessions.get(sid);
+    if (s) {
+      return res.json({
+        ok: true,
+        busy: !!s.busy,
+        done: !!s.fetchDone,
+        progress: s.progress || null,
+        result: s.fetchDone ? (s.fetchResult || null) : undefined
+      });
+    }
+    const fin = finishedFetches.get(sid);
+    if (fin && Date.now() <= fin.expiresAt) {
+      return res.json({
+        ok: true,
+        busy: false,
+        done: true,
+        progress: { key: "done", message: "Ho gaya." },
+        result: fin.payload
+      });
+    }
+    return res.status(404).json({ ok: false, error: "Session nahi mila (khatam ho gaya)." });
   });
 
   app.post("/api/gst/init-login", async (req, res) => {
@@ -1546,7 +1584,8 @@ function startServer() {
   const shortErr = e => String((e && e.message) || e).split("\n")[0].slice(0, 200);
 
   app.post("/api/gst/fetch-all", async (req, res) => {
-    const { sessionId, fy, month, autoClose, options } = req.body || {};
+    const { sessionId, fy, month, autoClose, options, async: wantAsyncFlag } = req.body || {};
+    const wantAsync = !!wantAsyncFlag;
     const opts = { gstr2b: options?.gstr2b !== false, tcs: options?.tcs !== false, notices: !!options?.notices };
     // Galat FY/month par portal se kuch bhi fetch na ho (chupchaap October ka data na aa jaye)
     const per = normalizePeriod(fy, month);
@@ -1556,6 +1595,9 @@ function startServer() {
     if (s.busy) return res.status(429).json({ ok: false, error: "Pichhla request chal raha hai, thoda wait karein." });
 
     s.busy = true;
+    s.fetchDone = false;
+    s.fetchResult = null;
+    finishedFetches.delete(String(sessionId || ""));
     setProgress(s, "start", "Returns Dashboard khol rahe hain…");
     let page = s.page; // popup tab adopt ho sakta hai -> naya page wapas milta hai
     const dbg = { timestamp: new Date().toISOString(), version: VERSION, fy: per.fy, month: per.month, steps: {} };
@@ -1588,8 +1630,10 @@ function startServer() {
       if (state === "failed" || state === "uncertain") result.warnings.push(`[${key}] ${message}`);
     };
 
-    const release = await acquireFetchSlot();
-    try {
+    const runFetchAllJob = async () => {
+      const release = await acquireFetchSlot();
+      let payload = null;
+      try {
       // --- STEP 1: GSTR-2B ---
       if (!opts.gstr2b) { result.status.gstr2b = { state: "skipped", message: "Option off tha." }; } else try {
         page = await openReturnsDashboardAndSearch(page, result.fy, result.month, dbg, "gstr2b");
@@ -1905,7 +1949,8 @@ function startServer() {
       setProgress(s, "done", outcome.allFailed ? "Fetch fail hua." : "Ho gaya.");
       if (outcome.allFailed) {
         dbg.status = result.status; dbg.warnings = result.warnings; lastDebug = dbg;
-        return res.json(Object.assign({}, result, { ok: false, error: "Data fetch nahi hua (Sheet me save nahi kiya) -> " + outcome.failed.join(" | ") }));
+        payload = Object.assign({}, result, { ok: false, error: "Data fetch nahi hua (Sheet me save nahi kiya) -> " + outcome.failed.join(" | ") });
+        return payload;
       }
       if (outcome.partial) {
         result.partial = outcome.partial;
@@ -1915,12 +1960,31 @@ function startServer() {
       dbg.warnings = result.warnings;
       if (result.partial) dbg.partial = result.partial;
       lastDebug = dbg;
-      res.json(result);
-    } finally {
-      s.busy = false;
-      release();
-      if (autoClose) await closeSession(sessionId);
+      payload = result;
+      return payload;
+      } catch (fatalErr) {
+        dbg.fatalError = shortErr(fatalErr);
+        lastDebug = dbg;
+        setProgress(s, "done", "Fetch fail hua.");
+        payload = Object.assign({}, result, { ok: false, error: shortErr(fatalErr) });
+        return payload;
+      } finally {
+        if (!payload) payload = Object.assign({}, result, { ok: false, error: "Fetch adhoora raha." });
+        s.fetchResult = payload;
+        s.fetchDone = true;
+        saveFinishedFetch(sessionId, payload);
+        s.busy = false;
+        release();
+        if (autoClose) await closeSession(sessionId);
+      }
+    };
+
+    if (wantAsync) {
+      Promise.resolve().then(runFetchAllJob).catch(() => {});
+      return res.status(202).json({ ok: true, pending: true, sessionId });
     }
+    const finalPayload = await runFetchAllJob();
+    return res.json(finalPayload);
   });
 
   app.post("/api/gst/upload-gstr1", async (req, res) => {
