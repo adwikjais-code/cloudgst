@@ -1137,8 +1137,8 @@
           <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
             <div class="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-2 bg-slate-900 text-white">
               <div class="min-w-0">
-                <div class="text-sm font-bold truncate">📥 Shared File — Client Chunein</div>
-                <div class="text-[11px] text-slate-300">Document folder me save karein ya Etsy CSV upload karein</div>
+                <div class="text-sm font-bold truncate">📥 Shared File — Kya Karna Hai?</div>
+                <div class="text-[11px] text-slate-300">Document save, Etsy CSV upload, ya GST paper se Naya Client add karein</div>
               </div>
               <button id="shareInboxCloseBtn" type="button" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold">✕</button>
             </div>
@@ -1149,11 +1149,11 @@
               </div>
               <div>
                 <div class="flex items-center justify-between mb-1.5">
-                  <label for="shareInboxSearchInp" class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Client Select Karein</label>
+                  <label for="shareInboxSearchInp" class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Existing Client Select Karein</label>
                   <span id="shareInboxSelectedBadge" class="text-[11px] font-semibold text-indigo-700 truncate max-w-[60%]">Koi client chuna nahi</span>
                 </div>
                 <input id="shareInboxSearchInp" type="text" placeholder="🔍 Client name, firm ya GSTIN search karein..." class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs outline-none focus:border-indigo-500 mb-2" />
-                <div id="shareInboxClientsList" class="max-h-52 overflow-y-auto rounded-xl border border-slate-200 divide-y divide-slate-100 bg-slate-50/40"></div>
+                <div id="shareInboxClientsList" class="max-h-48 overflow-y-auto rounded-xl border border-slate-200 divide-y divide-slate-100 bg-slate-50/40"></div>
               </div>
               <div id="shareInboxStatus" class="hidden rounded-xl px-3 py-2 text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200"></div>
             </div>
@@ -1166,8 +1166,11 @@
                   📊 Etsy CSV (Master + Doc)
                 </button>
               </div>
+              <button id="shareInboxAddClientBtn" type="button" class="w-full px-3 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-bold transition shadow-xs">
+                🆕 Naya Client Add Karein (GST Paper + Doc Save)
+              </button>
               <div class="text-[10px] text-slate-500 text-center">
-                Document: Client ke Drive &gt; Documents folder me • Etsy CSV: Master Etsy Sheet + Documents dono me
+                Document / Etsy CSV ke liye upar client chunein • Naya Client Add ke liye client chunna zaroori nahi
               </div>
             </div>
           </div>`;
@@ -1182,6 +1185,7 @@
         document.getElementById("shareInboxSearchInp").addEventListener("input", renderShareClients);
         document.getElementById("shareInboxDocBtn").addEventListener("click", () => runShareUpload("docs"));
         document.getElementById("shareInboxEtsyBtn").addEventListener("click", () => runShareUpload("etsy"));
+        document.getElementById("shareInboxAddClientBtn").addEventListener("click", runShareAddNewClient);
         return ov;
       }
 
@@ -1272,10 +1276,149 @@
       function updateShareButtons() {
         const docBtn = document.getElementById("shareInboxDocBtn");
         const etsyBtn = document.getElementById("shareInboxEtsyBtn");
+        const addBtn = document.getElementById("shareInboxAddClientBtn");
         const c = (Array.isArray(clients) ? clients : []).find(x => String(x.sr) === String(shareSelectedSr));
         if (docBtn) docBtn.disabled = shareBusy || !c || !shareFiles.length;
         if (etsyBtn) etsyBtn.disabled = shareBusy || !c || !shareFiles.length;
+        if (addBtn) addBtn.disabled = shareBusy || !shareFiles.length;
       }
+
+      async function extractGstFromSharedFiles(files) {
+        const list = Array.isArray(files) ? files : [];
+        const target = list.find(f => {
+          const nm = String((f && f.name) || "").toLowerCase();
+          const mt = String((f && f.mime) || "").toLowerCase();
+          return nm.endsWith(".pdf") || mt.includes("pdf");
+        }) || list[0];
+        if (!target) return { extracted: null, parsedFromPdf: false, fileName: "" };
+
+        let text = "";
+        let extracted = { gstin: "", client: "", firm: "", address: "", pin: "", rDate: typeof formatDdmmyyyyMon === "function" ? formatDdmmyyyyMon(new Date()) : "" };
+        const isPdf = String(target.mime || "").toLowerCase().includes("pdf") || String(target.name || "").toLowerCase().endsWith(".pdf");
+        try {
+          if (isPdf && window.pdfjsLib) {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
+            const fileObj = b64ToFile(target);
+            const buf = await fileObj.arrayBuffer();
+            const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+            for (let i = 1; i <= Math.min(pdf.numPages, 3); i++) {
+              const page = await pdf.getPage(i);
+              const content = await page.getTextContent();
+              text += content.items.map(it => it.str).join(" ") + "\n";
+            }
+          }
+        } catch (err) {
+          console.warn("Shared GST PDF parse warning:", err);
+        }
+        if (typeof parseGstCertificateText === "function") {
+          extracted = parseGstCertificateText(text, target.name || "GST_Certificate.pdf");
+        }
+        const parsedFromPdf = Boolean(
+          text && text.trim().length > 20 &&
+          (extracted.gstin || (extracted.client && !String(extracted.client).startsWith("NEW CLIENT")))
+        );
+        return { extracted, parsedFromPdf, fileName: target.name || "" };
+      }
+
+      async function runShareAddNewClient() {
+        if (shareBusy) return;
+        if (!shareFiles.length) { setShareStatus("⚠️ Koi shared file nahi mili.", "err"); return; }
+
+        shareBusy = true;
+        updateShareButtons();
+        const addBtn = document.getElementById("shareInboxAddClientBtn");
+        const oldLbl = addBtn ? addBtn.innerHTML : "";
+        if (addBtn) addBtn.innerHTML = "⏳ GST Paper padha ja raha hai...";
+        setShareStatus("⏳ GST paper se details nikali ja rahi hain...", "info");
+
+        try {
+          const { extracted, parsedFromPdf } = await extractGstFromSharedFiles(shareFiles);
+          const clientName = String((extracted && extracted.client) || "").trim();
+          const firm = String((extracted && extracted.firm) || "").trim();
+          const gstin = String((extracted && extracted.gstin) || "").trim().toUpperCase();
+
+          // Duplicate check by GSTIN or parsed Legal Name
+          const existing = (Array.isArray(clients) ? clients : []).find(c =>
+            (gstin && String(c.gstin || "").trim().toUpperCase() === gstin) ||
+            (parsedFromPdf && clientName && !clientName.startsWith("NEW CLIENT") && String(c.client || "").trim().toUpperCase() === clientName.toUpperCase())
+          );
+          if (existing) {
+            shareSelectedSr = String(existing.sr);
+            renderShareClients();
+            updateShareButtons();
+            setShareStatus(`⚠️ '${existing.client}' (${existing.gstin || existing.firm}) pehle se list me maujood hai — unko select kar diya hai. Chahein to '📎 Client Document me Save' dabayein.`, "warn");
+            return;
+          }
+
+          // Save copy of shared files before closeShareModal() clears shareFiles
+          const filesCopy = shareFiles.slice();
+          closeShareModal();
+
+          if (typeof openAddModal === "function") {
+            openAddModal();
+          } else {
+            const ov = document.getElementById("clientModalOverlay");
+            if (ov) ov.classList.remove("hidden");
+          }
+          // Attach shared files AFTER openAddModal() so saving also uploads the GST paper to Drive > Documents
+          window.__cloudGstPendingNewClientDocs = filesCopy;
+
+          const titleEl = document.getElementById("modalTitle");
+          const subEl = document.getElementById("modalSubtitle");
+          if (titleEl) titleEl.textContent = "🆕 Naya Client Add (Shared GST Paper)";
+          if (subEl) {
+            subEl.textContent = parsedFromPdf
+              ? "GST Certificate se details auto-fill ho gayi — verify karke Save karein (paper Documents me bhi save hoga)"
+              : "Photo/Scan se text nahi padha gaya — details bharke Save karein (paper Documents me bhi save hoga)";
+          }
+
+          const isPlaceholder = !clientName || clientName.startsWith("NEW CLIENT");
+          const cleanName = parsedFromPdf ? clientName : (isPlaceholder ? "" : clientName);
+          const cleanFirm = parsedFromPdf ? firm : (isPlaceholder ? "" : firm);
+          const firstWord = cleanName.split(" ")[0].replace(/[^A-Za-z]/g, "");
+          const cleanWord = firstWord ? firstWord.charAt(0).toUpperCase() + firstWord.slice(1).toLowerCase() : "";
+          const autoId = cleanWord ? `Ad${cleanWord}${new Date().getFullYear()}` : "";
+
+          const setVal = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+          setVal("formCategory", "PAID CLINTS");
+          setVal("formClientType", (cleanFirm.includes("RUGS") || cleanFirm.includes("CARPET")) ? "Etsy Client" : "Regular Client");
+          setVal("formStatus", "Active");
+          setVal("formClientName", cleanName);
+          setVal("formFirm", cleanFirm);
+          setVal("formGstin", gstin);
+          if (autoId) setVal("formClientId", autoId);
+          if (extracted && extracted.rDate) setVal("formRDate", extracted.rDate);
+          if (extracted && (extracted.address || extracted.pin)) {
+            setVal("formAddress", extracted.address || `PIN: ${extracted.pin}`);
+          }
+
+          showToast(parsedFromPdf
+            ? "✅ GST Paper se details bhar gayi! Verify karke Save karein."
+            : "📄 Details bharke Save karein — GST paper apne aap Documents me save ho jayega.");
+        } catch (err) {
+          setShareStatus("❌ GST paper padhne me error: " + (err && err.message ? err.message : err), "err");
+        } finally {
+          shareBusy = false;
+          if (addBtn) addBtn.innerHTML = oldLbl;
+          updateShareButtons();
+        }
+      }
+
+      window.cloudGstUploadSharedDocsToClient = async function(clientObj, files) {
+        const list = Array.isArray(files) ? files : [];
+        let ok = 0;
+        const failed = [];
+        for (let i = 0; i < list.length; i++) {
+          const f = list[i];
+          try {
+            await uploadOneDocToClient(clientObj, f);
+            ok++;
+          } catch (err) {
+            failed.push((f && f.name ? f.name : "file") + ": " + (err && err.message ? err.message : err));
+          }
+        }
+        return { ok, total: list.length, failed };
+      };
 
       async function uploadOneDocToClient(c, f) {
         if ((Number(f.size) || 0) > DOC_MAX_BYTES) {

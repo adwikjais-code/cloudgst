@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 env:
-  RELEASE_TAG: android-v6.2.0
+  RELEASE_TAG: android-v6.2.1
 
 jobs:
   build:
@@ -111,7 +111,7 @@ jobs:
           } > verify.md
           cat verify.md
           cat > notes.md <<'EOF'
-          ## CloudGST Android APK (v6.2.0)
+          ## CloudGST Android APK (v6.2.1)
 
           Install kaise karein:
           1. Neeche **CloudGST.apk** download karein.
@@ -119,19 +119,19 @@ jobs:
           3. Icon **J&A (CloudGST)** kholein. Pehle se install hai to seedha update ho jayega
              (data/settings safe rahenge).
 
-          Naya kya hai (v6.2.0):
-          - 📤 **Android Share Sheet Support (WhatsApp / Files / Gallery → CloudGST)**: Ab WhatsApp ya phone se koi bhi file (CSV, Excel, PDF, Image) Share karne par **CloudGST** option dikhega!
-          - Share karte hi app me client select karke **2 direct options** milenge:
-            1. **📎 Client Document me Save** — file seedha us client ke **Drive > Documents** folder me upload ho jayegi.
-            2. **📊 Etsy CSV (Master + Doc)** — Etsy CSV ka month-wise data **Master Etsy Sheet** me jayega **aur** file bhi us client ke **Drive > Documents** folder me save ho jayegi.
+          Naya kya hai (v6.2.1):
+          - 📤 **Android Share Sheet (WhatsApp / Files / Gallery → CloudGST)** me ab **3 direct options**:
+            1. **📎 Client Document me Save** — shared file(s) seedha us client ke **Drive > Documents** folder me upload hongi.
+            2. **📊 Etsy CSV (Master + Doc)** — Etsy CSV ka month-wise data **Master Etsy Sheet** me jayega **aur** file bhi client ke **Drive > Documents** folder me save hogi.
+            3. **🆕 Naya Client Add Karein (GST Paper + Doc Save)** — Naye client ka **GST Certificate PDF / Paper** share karte hi details (GSTIN, Legal Name, Firm Name, Reg Date, Address) auto-fill hokar Add Client form khulega; Save karte hi naya client Sheet me add hoga **aur** GST paper bhi uske **Drive > Documents** folder me save ho jayega!
           - Phone Mode GSTR-1 Upload, APK Mobile-Only UI, External Keyboard Soft-IME suppression, Spacebar shortcut, aur 5-Tab Parallel Fetch sab intact.
           EOF
-          (cd android/app/src/main/assets && zip -r9 "$GITHUB_WORKSPACE/CloudGST_web_v6_2_0.zip" app)
-          ls -lh "CloudGST_web_v6_2_0.zip"
+          (cd android/app/src/main/assets && zip -r9 "$GITHUB_WORKSPACE/CloudGST_web_v6_2_1.zip" app)
+          ls -lh "CloudGST_web_v6_2_1.zip"
           cat verify.md >> notes.md
           gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
           git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
-          gh release create "$RELEASE_TAG" "CloudGST.apk" "CloudGST_web_v6_2_0.zip" \
+          gh release create "$RELEASE_TAG" "CloudGST.apk" "CloudGST_web_v6_2_1.zip" \
             --target "$GITHUB_SHA" \
-            --title "CloudGST Android v6.2.0 (APK + Web Bundle)" \
+            --title "CloudGST Android v6.2.1 (APK + Web Bundle)" \
             --notes-file notes.md
