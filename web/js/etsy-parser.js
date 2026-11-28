@@ -1081,4 +1081,409 @@
     });
 
     // ===================================================================================
+    // 📥 ANDROID SHARE INBOX (WhatsApp / Files / Gallery -> Client Document OR Etsy CSV + Document)
+    // ===================================================================================
+    (function initShareInbox() {
+      let shareFiles = [];
+      let shareSelectedSr = null;
+      let shareBusy = false;
+
+      function escHtml(s) {
+        return String(s == null ? "" : s).replace(/[&<>"']/g, ch => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+        }[ch]));
+      }
+
+      function fmtBytes(n) {
+        const b = Number(n) || 0;
+        if (b >= 1024 * 1024) return (b / (1024 * 1024)).toFixed(2) + " MB";
+        if (b >= 1024) return Math.round(b / 1024) + " KB";
+        return b + " B";
+      }
+
+      function isSpreadsheetFile(f) {
+        const nm = String((f && f.name) || "").toLowerCase();
+        const mt = String((f && f.mime) || "").toLowerCase();
+        return /\.(csv|xlsx|xlsm|xls)$/i.test(nm)
+          || mt.includes("csv")
+          || mt.includes("excel")
+          || mt.includes("spreadsheet")
+          || mt === "text/plain";
+      }
+
+      function fileIcon(f) {
+        const nm = String((f && f.name) || "").toLowerCase();
+        const mt = String((f && f.mime) || "").toLowerCase();
+        if (isSpreadsheetFile(f)) return "📊";
+        if (mt.startsWith("image/") || /\.(png|jpe?g|webp|gif|heic)$/i.test(nm)) return "🖼️";
+        if (mt.includes("pdf") || nm.endsWith(".pdf")) return "📕";
+        return "📎";
+      }
+
+      function b64ToFile(f) {
+        const bin = atob(String(f.b64 || ""));
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new File([bytes], f.name || "shared_file", { type: f.mime || "application/octet-stream" });
+      }
+
+      function ensureShareModal() {
+        let ov = document.getElementById("shareInboxModalOverlay");
+        if (ov) return ov;
+        ov = document.createElement("div");
+        ov.id = "shareInboxModalOverlay";
+        ov.className = "fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 hidden";
+        ov.innerHTML = `
+          <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+            <div class="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-2 bg-slate-900 text-white">
+              <div class="min-w-0">
+                <div class="text-sm font-bold truncate">📥 Shared File — Client Chunein</div>
+                <div class="text-[11px] text-slate-300">Document folder me save karein ya Etsy CSV upload karein</div>
+              </div>
+              <button id="shareInboxCloseBtn" type="button" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold">✕</button>
+            </div>
+            <div class="p-3.5 space-y-3 overflow-y-auto flex-1">
+              <div>
+                <div class="text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">Shared Files</div>
+                <div id="shareInboxFilesList" class="space-y-1.5"></div>
+              </div>
+              <div>
+                <div class="flex items-center justify-between mb-1.5">
+                  <label for="shareInboxSearchInp" class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Client Select Karein</label>
+                  <span id="shareInboxSelectedBadge" class="text-[11px] font-semibold text-indigo-700 truncate max-w-[60%]">Koi client chuna nahi</span>
+                </div>
+                <input id="shareInboxSearchInp" type="text" placeholder="🔍 Client name, firm ya GSTIN search karein..." class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs outline-none focus:border-indigo-500 mb-2" />
+                <div id="shareInboxClientsList" class="max-h-52 overflow-y-auto rounded-xl border border-slate-200 divide-y divide-slate-100 bg-slate-50/40"></div>
+              </div>
+              <div id="shareInboxStatus" class="hidden rounded-xl px-3 py-2 text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200"></div>
+            </div>
+            <div class="p-3.5 border-t border-slate-100 bg-slate-50 space-y-2">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button id="shareInboxDocBtn" type="button" class="w-full px-3 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold transition shadow-xs">
+                  📎 Client Document me Save
+                </button>
+                <button id="shareInboxEtsyBtn" type="button" class="w-full px-3 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold transition shadow-xs">
+                  📊 Etsy CSV (Master + Doc)
+                </button>
+              </div>
+              <div class="text-[10px] text-slate-500 text-center">
+                Document: Client ke Drive &gt; Documents folder me • Etsy CSV: Master Etsy Sheet + Documents dono me
+              </div>
+            </div>
+          </div>`;
+        document.body.appendChild(ov);
+
+        ov.addEventListener("click", (e) => {
+          if (e.target === ov && !shareBusy) closeShareModal();
+        });
+        document.getElementById("shareInboxCloseBtn").addEventListener("click", () => {
+          if (!shareBusy) closeShareModal();
+        });
+        document.getElementById("shareInboxSearchInp").addEventListener("input", renderShareClients);
+        document.getElementById("shareInboxDocBtn").addEventListener("click", () => runShareUpload("docs"));
+        document.getElementById("shareInboxEtsyBtn").addEventListener("click", () => runShareUpload("etsy"));
+        return ov;
+      }
+
+      function closeShareModal() {
+        const ov = document.getElementById("shareInboxModalOverlay");
+        if (ov) ov.classList.add("hidden");
+        shareFiles = [];
+        shareSelectedSr = null;
+      }
+
+      function setShareStatus(msg, tone) {
+        const el = document.getElementById("shareInboxStatus");
+        if (!el) return;
+        if (!msg) { el.classList.add("hidden"); el.textContent = ""; return; }
+        el.classList.remove("hidden", "bg-slate-100", "text-slate-700", "border-slate-200",
+          "bg-emerald-50", "text-emerald-800", "border-emerald-200",
+          "bg-rose-50", "text-rose-800", "border-rose-200",
+          "bg-amber-50", "text-amber-800", "border-amber-200");
+        if (tone === "ok") el.classList.add("bg-emerald-50", "text-emerald-800", "border-emerald-200");
+        else if (tone === "err") el.classList.add("bg-rose-50", "text-rose-800", "border-rose-200");
+        else if (tone === "warn") el.classList.add("bg-amber-50", "text-amber-800", "border-amber-200");
+        else el.classList.add("bg-slate-100", "text-slate-700", "border-slate-200");
+        el.textContent = msg;
+      }
+
+      function renderShareFiles() {
+        const box = document.getElementById("shareInboxFilesList");
+        if (!box) return;
+        box.innerHTML = shareFiles.map(f => `
+          <div class="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="text-base leading-none">${fileIcon(f)}</span>
+              <span class="text-xs font-semibold text-slate-800 truncate" title="${escHtml(f.name)}">${escHtml(f.name)}</span>
+            </div>
+            <span class="text-[10px] font-mono text-slate-500 shrink-0">${fmtBytes(f.size)}</span>
+          </div>`).join("");
+      }
+
+      function renderShareClients() {
+        const box = document.getElementById("shareInboxClientsList");
+        const q = String(document.getElementById("shareInboxSearchInp")?.value || "").trim().toLowerCase();
+        const badge = document.getElementById("shareInboxSelectedBadge");
+        if (!box) return;
+        const hasSheetFile = shareFiles.some(isSpreadsheetFile);
+        const list = (Array.isArray(clients) ? clients.slice() : []).filter(c => {
+          if (!q) return true;
+          const hay = [c.client, c.firm, c.gstin, c.mobile, c.category, c.clientType].join(" ").toLowerCase();
+          return hay.includes(q);
+        });
+        if (hasSheetFile) {
+          list.sort((a, b) => {
+            const ae = a.clientType === "Etsy Client" ? 0 : 1;
+            const be = b.clientType === "Etsy Client" ? 0 : 1;
+            return ae - be || (Number(a.sr) - Number(b.sr));
+          });
+        }
+        const selClient = (Array.isArray(clients) ? clients : []).find(x => String(x.sr) === String(shareSelectedSr));
+        if (badge) {
+          badge.textContent = selClient ? ("✓ " + selClient.client) : "Koi client chuna nahi";
+        }
+        if (!list.length) {
+          box.innerHTML = '<div class="p-3 text-center text-xs text-slate-400">Koi client nahi mila</div>';
+          return;
+        }
+        box.innerHTML = list.map(c => {
+          const active = shareSelectedSr != null && String(c.sr) === String(shareSelectedSr);
+          const isEtsy = c.clientType === "Etsy Client";
+          return `<button type="button" data-share-sr="${escHtml(c.sr)}" class="w-full px-3 py-2 text-left flex items-center justify-between gap-2 transition ${active ? "bg-indigo-50 ring-1 ring-inset ring-indigo-300" : "bg-white hover:bg-slate-50"}">
+            <div class="min-w-0">
+              <div class="text-xs font-bold ${active ? "text-indigo-900" : "text-slate-800"} truncate">${escHtml(c.client)}</div>
+              <div class="text-[10px] text-slate-500 truncate">${escHtml(c.firm && c.firm !== "-" ? c.firm : (c.gstin || c.category || ""))}</div>
+            </div>
+            <div class="flex items-center gap-1 shrink-0">
+              ${isEtsy ? '<span class="px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-bold">Etsy</span>' : ""}
+              ${active ? '<span class="text-indigo-600 text-xs font-bold">✓</span>' : ""}
+            </div>
+          </button>`;
+        }).join("");
+        box.querySelectorAll("[data-share-sr]").forEach(btn => {
+          btn.addEventListener("click", () => {
+            shareSelectedSr = btn.getAttribute("data-share-sr");
+            renderShareClients();
+            updateShareButtons();
+          });
+        });
+      }
+
+      function updateShareButtons() {
+        const docBtn = document.getElementById("shareInboxDocBtn");
+        const etsyBtn = document.getElementById("shareInboxEtsyBtn");
+        const c = (Array.isArray(clients) ? clients : []).find(x => String(x.sr) === String(shareSelectedSr));
+        if (docBtn) docBtn.disabled = shareBusy || !c || !shareFiles.length;
+        if (etsyBtn) etsyBtn.disabled = shareBusy || !c || !shareFiles.length;
+      }
+
+      async function uploadOneDocToClient(c, f) {
+        if ((Number(f.size) || 0) > DOC_MAX_BYTES) {
+          throw new Error(f.name + " (20 MB se badi hai)");
+        }
+        const res = await callAppsScript({
+          action: "uploadDocument",
+          client: c.client,
+          category: c.category,
+          fileName: f.name,
+          mimeType: f.mime || "application/octet-stream",
+          data: f.b64
+        });
+        if (res && res.status === "ok" && res.uploaded) return true;
+        if (res && res.status === "error") throw new Error(res.message || "Document upload error");
+        throw new Error("Apps Script purani hai — nayi AppSync.gs deploy karein.");
+      }
+
+      async function runShareUpload(mode) {
+        if (shareBusy) return;
+        const c = (Array.isArray(clients) ? clients : []).find(x => String(x.sr) === String(shareSelectedSr));
+        if (!c) { setShareStatus("⚠️ Pehle list me se client select karein.", "warn"); return; }
+        if (!scriptUrl) { setShareStatus("⚠️ Sheet Sync URL set nahi hai — ⚙️ Setup me 'Save & Sync' karein.", "err"); return; }
+        if (!shareFiles.length) { setShareStatus("⚠️ Koi shared file nahi mili.", "err"); return; }
+
+        if (mode === "etsy") {
+          if (c.clientType !== "Etsy Client") {
+            setShareStatus("⚠️ '" + c.client + "' Etsy Client nahi hai — Etsy CSV sirf Etsy Client ke liye upload hoti hai. Document ke liye neela button dabayein.", "warn");
+            return;
+          }
+          const csvFiles = shareFiles.filter(isSpreadsheetFile);
+          if (!csvFiles.length) {
+            setShareStatus("⚠️ Shared file CSV/Excel nahi lag rahi — Document save karne ke liye '📎 Client Document me Save' dabayein.", "warn");
+            return;
+          }
+        }
+
+        shareBusy = true;
+        updateShareButtons();
+        const docBtn = document.getElementById("shareInboxDocBtn");
+        const etsyBtn = document.getElementById("shareInboxEtsyBtn");
+        const oldDocLbl = docBtn ? docBtn.innerHTML : "";
+        const oldEtsyLbl = etsyBtn ? etsyBtn.innerHTML : "";
+        if (mode === "docs" && docBtn) docBtn.innerHTML = "⏳ Uploading...";
+        if (mode === "etsy" && etsyBtn) etsyBtn.innerHTML = "⏳ Uploading...";
+
+        try {
+          if (mode === "docs") {
+            let ok = 0;
+            const failed = [];
+            for (let i = 0; i < shareFiles.length; i++) {
+              const f = shareFiles[i];
+              setShareStatus(`⏳ ${c.client}: Document ${i + 1}/${shareFiles.length} upload ho raha hai — ${f.name}`, "info");
+              try {
+                await uploadOneDocToClient(c, f);
+                ok++;
+              } catch (err) {
+                failed.push(f.name + ": " + (err && err.message ? err.message : err));
+              }
+            }
+            const summary = ok
+              ? `✅ ${ok}/${shareFiles.length} file ${c.client} ke Drive > Documents folder me save ho gayi!` + (failed.length ? " ⚠️ " + failed.join(" | ") : "")
+              : "❌ Upload fail: " + failed.join(" | ");
+            setShareStatus(summary, ok && !failed.length ? "ok" : (ok ? "warn" : "err"));
+            showStickyToast(summary, failed.length ? 8000 : 5000);
+            if (ok && !failed.length) {
+              setTimeout(() => { if (!shareBusy) closeShareModal(); }, 1200);
+            }
+            return;
+          }
+
+          // mode === "etsy": 1) Parse CSV/Excel -> push to Master Etsy Sheet, 2) ALSO save file(s) to Client Drive > Documents
+          const csvFiles = shareFiles.filter(isSpreadsheetFile);
+          const masterNotes = [];
+          const masterErrors = [];
+          let lastRov = null;
+
+          for (let i = 0; i < csvFiles.length; i++) {
+            const f = csvFiles[i];
+            setShareStatus(`⏳ ${c.client}: Etsy CSV (${i + 1}/${csvFiles.length}) padh kar Master Etsy Sheet me bhej raha hoon — ${f.name}`, "info");
+            try {
+              const fileObj = b64ToFile(f);
+              const parsed = parseEtsyStatement(await etsyFileToRows(fileObj));
+              if (!parsed.months || !parsed.months.length) {
+                throw new Error("Is file me koi order ya fee nahi mili.");
+              }
+              let taxableTotal = 0;
+              (parsed.flat || []).forEach(o => { taxableTotal += etsyTaxable(o); });
+              const res = await callAppsScript({
+                action: "etsyStatement",
+                client: c.client,
+                category: c.category,
+                rov: taxableTotal,
+                months: parsed.months
+              });
+              if (!res || res.status !== "ok") {
+                throw new Error((res && res.message) || "Master Etsy Sheet me save nahi hua.");
+              }
+              if (!res.results) {
+                throw new Error("Apps Script purani hai — nayi AppSync.gs deploy karein.");
+              }
+              const parts = res.results.map(x => x.error
+                ? `${x.tab}: ❌ ${x.error}`
+                : `${x.tab}: ${x.added} naye, ${x.skipped} pehle se${x.feesUpdated ? ", fees ✓" : ""}`);
+              masterNotes.push(parts.join(" | "));
+              lastRov = taxableTotal;
+            } catch (err) {
+              masterErrors.push(f.name + ": " + (err && err.message ? err.message : err));
+            }
+          }
+
+          if (lastRov !== null) {
+            c.rov = lastRov;
+            c._rovLocal = true;
+            c._rovTs = Date.now();
+            saveClients();
+            renderApp();
+          }
+
+          // Step 2: Save shared file(s) to Client Drive > Documents folder as well
+          let docOk = 0;
+          const docFailed = [];
+          for (let i = 0; i < shareFiles.length; i++) {
+            const f = shareFiles[i];
+            setShareStatus(`⏳ ${c.client}: File Drive > Documents me save ho rahi hai (${i + 1}/${shareFiles.length}) — ${f.name}`, "info");
+            try {
+              await uploadOneDocToClient(c, f);
+              docOk++;
+            } catch (err) {
+              docFailed.push(f.name + ": " + (err && err.message ? err.message : err));
+            }
+          }
+
+          const allParts = [];
+          if (masterNotes.length) allParts.push("✅ Master Etsy: " + masterNotes.join(" ; "));
+          if (masterErrors.length) allParts.push("❌ Master Etsy Error: " + masterErrors.join(" | "));
+          if (docOk) allParts.push(`✅ Documents: ${docOk}/${shareFiles.length} file saved`);
+          if (docFailed.length) allParts.push("❌ Documents Error: " + docFailed.join(" | "));
+          const finalMsg = allParts.join("  •  ");
+          const allGood = !masterErrors.length && !docFailed.length && masterNotes.length > 0 && docOk > 0;
+          setShareStatus(finalMsg, allGood ? "ok" : ((masterNotes.length || docOk) ? "warn" : "err"));
+          showStickyToast(finalMsg, allGood ? 6000 : 9000);
+          if (allGood) {
+            setTimeout(() => { if (!shareBusy) closeShareModal(); }, 1500);
+          }
+        } finally {
+          shareBusy = false;
+          if (docBtn) docBtn.innerHTML = oldDocLbl;
+          if (etsyBtn) etsyBtn.innerHTML = oldEtsyLbl;
+          updateShareButtons();
+        }
+      }
+
+      function readNativeSharedFiles() {
+        const native = window.CloudGSTNative;
+        if (!native || !native.getPendingShareMeta || !native.getPendingShareChunk) return [];
+        let meta = [];
+        try {
+          meta = JSON.parse(String(native.getPendingShareMeta() || "[]")) || [];
+        } catch (_) {
+          meta = [];
+        }
+        if (!Array.isArray(meta) || !meta.length) return [];
+        const out = [];
+        const CH = 200000;
+        for (const m of meta) {
+          let b64 = "";
+          let off = 0;
+          let guard = 0;
+          while (guard++ < 200) {
+            const part = String(native.getPendingShareChunk(Number(m.idx), off, CH) || "");
+            if (!part) break;
+            b64 += part;
+            off += part.length;
+            if (part.length < CH) break;
+          }
+          if (b64) {
+            out.push({
+              name: String(m.name || "Shared_File"),
+              mime: String(m.mime || "application/octet-stream"),
+              size: Number(m.size) || 0,
+              b64
+            });
+          }
+        }
+        try { if (native.clearPendingShare) native.clearPendingShare(); } catch (_) {}
+        return out;
+      }
+
+      function openShareInboxFromNative() {
+        const incoming = readNativeSharedFiles();
+        if (!incoming.length) return false;
+        shareFiles = incoming;
+        shareSelectedSr = null;
+        const ov = ensureShareModal();
+        const searchInp = document.getElementById("shareInboxSearchInp");
+        if (searchInp) searchInp.value = "";
+        setShareStatus("", "");
+        renderShareFiles();
+        renderShareClients();
+        updateShareButtons();
+        ov.classList.remove("hidden");
+        return true;
+      }
+
+      window.cloudGstHandleSharedFiles = openShareInboxFromNative;
+      setTimeout(() => { try { openShareInboxFromNative(); } catch (_) {} }, 400);
+    })();
+
+    // ===================================================================================
     // MULTI-PAGE ROUTER + PAGE 2 (FEE MANAGEMENT & TRACKER) + PAGE 3 (GST JSON GENERATOR)
