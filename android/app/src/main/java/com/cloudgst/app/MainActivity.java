@@ -3,12 +3,14 @@ package com.cloudgst.app;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.DownloadManager;
+import android.content.ClipData;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.hardware.input.InputManager;
 import android.net.Uri;
@@ -18,6 +20,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
+import android.provider.OpenableColumns;
 import android.util.Base64;
 import android.util.Log;
 import android.view.Gravity;
@@ -33,6 +36,7 @@ import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.MimeTypeMap;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -55,13 +59,20 @@ import androidx.core.content.FileProvider;
 import androidx.fragment.app.FragmentActivity;
 import androidx.webkit.WebViewAssetLoader;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * CloudGST — Android wrapper (v6.0.0 — 5-Tab Parallel Multi-Profile Phone Mode).
@@ -106,6 +117,23 @@ public class MainActivity extends FragmentActivity {
     private InputManager.InputDeviceListener inputDeviceListener;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile boolean externalKeyboardConnected = false;
+
+    private static final int MAX_SHARE_BYTES = 20 * 1024 * 1024;
+    private static final int MAX_SHARE_FILES = 10;
+    private static final class PendingShareFile {
+        final String name;
+        final String mime;
+        final int size;
+        final String b64;
+        PendingShareFile(String name, String mime, int size, String b64) {
+            this.name = name;
+            this.mime = mime;
+            this.size = size;
+            this.b64 = b64;
+        }
+    }
+    private final List<PendingShareFile> pendingShares = new ArrayList<>();
+    private volatile boolean pageFinished = false;
 
     /** Storage permission ke baad pending save (sirf Android 7/8 ke liye). */
     private String pendingName, pendingB64;
@@ -185,6 +213,7 @@ public class MainActivity extends FragmentActivity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                pageFinished = true;
                 view.evaluateJavascript(
                         "window.document.documentElement.classList.add('native-app');",
                         null);
@@ -194,6 +223,7 @@ public class MainActivity extends FragmentActivity {
                     view.evaluateJavascript(
                             "(window.cloudGstNativeUnlocked&&window.cloudGstNativeUnlocked())", null);
                 }
+                notifyPendingShareToWeb();
             }
         });
 
@@ -261,6 +291,7 @@ public class MainActivity extends FragmentActivity {
         } else {
             loadApp();
         }
+        captureSharedIntent(getIntent());
 
         // ---- external physical/Bluetooth/USB keyboard detection -> suppress on-screen keyboard ----
         try {
@@ -698,6 +729,175 @@ public class MainActivity extends FragmentActivity {
         }
         loadApp();
         syncExternalKeyboardState();
+        notifyPendingShareToWeb();
+    }
+
+    // ================= incoming Android Share (WhatsApp / Files / Gallery -> CloudGST) =================
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        captureSharedIntent(intent);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void captureSharedIntent(final Intent intent) {
+        if (intent == null) return;
+        final String action = intent.getAction();
+        if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) return;
+
+        final List<Uri> uris = new ArrayList<>();
+        try {
+            if (Intent.ACTION_SEND.equals(action)) {
+                Uri u = Build.VERSION.SDK_INT >= 33
+                        ? intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class)
+                        : intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                if (u != null) uris.add(u);
+            } else {
+                ArrayList<Uri> list = Build.VERSION.SDK_INT >= 33
+                        ? intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri.class)
+                        : intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+                if (list != null) {
+                    for (Uri u : list) {
+                        if (u != null) uris.add(u);
+                    }
+                }
+            }
+            if (uris.isEmpty() && intent.getClipData() != null) {
+                ClipData cd = intent.getClipData();
+                for (int i = 0; i < cd.getItemCount(); i++) {
+                    Uri u = cd.getItemAt(i).getUri();
+                    if (u != null) uris.add(u);
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "captureSharedIntent parse fail", t);
+        }
+        if (uris.isEmpty()) return;
+
+        final String fallbackMime = intent.getType();
+        final List<Uri> limited = uris.size() > MAX_SHARE_FILES ? uris.subList(0, MAX_SHARE_FILES) : uris;
+        // Read bytes immediately while temporary URI permission grant is valid (off UI thread)
+        new Thread(() -> {
+            final List<PendingShareFile> loaded = new ArrayList<>();
+            int skippedLarge = 0;
+            for (Uri u : limited) {
+                try {
+                    PendingShareFile pf = readSharedUri(u, fallbackMime);
+                    if (pf != null) loaded.add(pf);
+                    else skippedLarge++;
+                } catch (Throwable t) {
+                    Log.w(TAG, "readSharedUri fail: " + u, t);
+                }
+            }
+            if (loaded.isEmpty()) {
+                if (skippedLarge > 0) toastUi("⚠️ Shared file 20 MB se badi hai — upload nahi ho sakti.");
+                else toastUi("⚠️ Shared file padh nahi paye.");
+                return;
+            }
+            synchronized (pendingShares) {
+                pendingShares.clear();
+                pendingShares.addAll(loaded);
+            }
+            if (skippedLarge > 0) {
+                toastUi("⚠️ " + skippedLarge + " file 20 MB se badi thi, skip kar di gayi.");
+            }
+            runOnUiThread(this::notifyPendingShareToWeb);
+        }).start();
+    }
+
+    private PendingShareFile readSharedUri(Uri uri, String fallbackMime) throws Exception {
+        String mime = null;
+        try { mime = getContentResolver().getType(uri); } catch (Throwable ignored) { }
+        if ((mime == null || mime.isEmpty() || "*/*".equals(mime)) && fallbackMime != null && !"*/*".equals(fallbackMime)) {
+            mime = fallbackMime;
+        }
+        String name = null;
+        try (Cursor c = getContentResolver().query(uri, new String[]{ OpenableColumns.DISPLAY_NAME }, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (idx >= 0) name = c.getString(idx);
+            }
+        } catch (Throwable ignored) { }
+        if (name == null || name.trim().isEmpty()) {
+            String seg = uri.getLastPathSegment();
+            name = (seg != null && !seg.trim().isEmpty()) ? seg.replaceAll(".*/", "") : ("Shared_" + System.currentTimeMillis());
+        }
+        name = name.trim();
+        if (!name.contains(".") && mime != null) {
+            String ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
+            if (ext != null && !ext.isEmpty()) name = name + "." + ext;
+        }
+        if (mime == null || mime.isEmpty()) {
+            String lower = name.toLowerCase();
+            if (lower.endsWith(".csv")) mime = "text/csv";
+            else if (lower.endsWith(".xlsx")) mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+            else if (lower.endsWith(".xls")) mime = "application/vnd.ms-excel";
+            else mime = guessMime(name);
+        }
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        int total = 0;
+        byte[] buf = new byte[16384];
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) return null;
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                total += n;
+                if (total > MAX_SHARE_BYTES) return null;
+                bos.write(buf, 0, n);
+            }
+        }
+        byte[] data = bos.toByteArray();
+        String b64 = Base64.encodeToString(data, Base64.NO_WRAP);
+        return new PendingShareFile(name, mime, data.length, b64);
+    }
+
+    private void notifyPendingShareToWeb() {
+        if (lockView != null || web == null || !pageFinished) return;
+        boolean has;
+        synchronized (pendingShares) {
+            has = !pendingShares.isEmpty();
+        }
+        if (!has) return;
+        web.evaluateJavascript(
+                "(function(){try{if(window.cloudGstHandleSharedFiles)window.cloudGstHandleSharedFiles();}catch(e){}})()",
+                null);
+    }
+
+    String getPendingShareMetaJson() {
+        JSONArray arr = new JSONArray();
+        synchronized (pendingShares) {
+            for (int i = 0; i < pendingShares.size(); i++) {
+                PendingShareFile f = pendingShares.get(i);
+                try {
+                    JSONObject o = new JSONObject();
+                    o.put("idx", i);
+                    o.put("name", f.name);
+                    o.put("mime", f.mime);
+                    o.put("size", f.size);
+                    o.put("b64Len", f.b64.length());
+                    arr.put(o);
+                } catch (Exception ignored) { }
+            }
+        }
+        return arr.toString();
+    }
+
+    String getPendingShareChunk(int idx, int offset, int len) {
+        synchronized (pendingShares) {
+            if (idx < 0 || idx >= pendingShares.size()) return "";
+            String s = pendingShares.get(idx).b64;
+            if (offset < 0 || offset >= s.length()) return "";
+            int end = Math.min(s.length(), offset + Math.max(1, len));
+            return s.substring(offset, end);
+        }
+    }
+
+    void clearPendingShare() {
+        synchronized (pendingShares) {
+            pendingShares.clear();
+        }
     }
 
     // ================= downloads =================
@@ -1286,6 +1486,21 @@ public class MainActivity extends FragmentActivity {
         @JavascriptInterface
         public void hideSoftKeyboard() {
             act.runOnUiThread(() -> act.hideSoftKeyboard());
+        }
+
+        @JavascriptInterface
+        public String getPendingShareMeta() {
+            return act.getPendingShareMetaJson();
+        }
+
+        @JavascriptInterface
+        public String getPendingShareChunk(final int idx, final int offset, final int len) {
+            return act.getPendingShareChunk(idx, offset, len);
+        }
+
+        @JavascriptInterface
+        public void clearPendingShare() {
+            act.clearPendingShare();
         }
 
         @JavascriptInterface

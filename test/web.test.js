@@ -299,8 +299,8 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
 
   const gradle = fs.readFileSync(path.join(ROOT, "android", "app", "build.gradle"), "utf8");
   const vcMatch = gradle.match(/versionCode\s+(\d+)/);
-  assert.ok(vcMatch && Number(vcMatch[1]) >= 86, "versionCode must be >= 86 to upgrade cleanly over v6.0.3 (85)");
-  assert.match(gradle, /versionName\s+'6\.1\.0'/);
+  assert.ok(vcMatch && Number(vcMatch[1]) >= 87, "versionCode must be >= 87 to upgrade cleanly over v6.1.0 (86)");
+  assert.match(gradle, /versionName\s+'6\.2\.0'/);
 
   // Portal checkboxes default OFF (GSTR-2B, E-Com, Auto-Next, Drive) & no auto-expand dropdown on fetch completion
   const webHtml = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
@@ -342,4 +342,18 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
   assert.match(portalJs, /function gpPhoneUploadGstr1\(/, "portal-module must implement gpPhoneUploadGstr1()");
   assert.match(portalJs, /if \(!gpPhoneAvailable\(\)\) gpBridgeHealth\(6000\);/, "APK must not ping Cloud Bridge on startup");
   assert.match(portalJs, /if \(!isApk\) return;/, "Web App must keep PC/Cloud options visible while APK hides them");
+
+  // v6.2.0: Android Share Sheet (ACTION_SEND / ACTION_SEND_MULTIPLE) -> Client Document OR Etsy CSV (Master + Doc)
+  assert.match(manifest, /android\.intent\.action\.SEND"/, "AndroidManifest must accept ACTION_SEND shares");
+  assert.match(manifest, /android\.intent\.action\.SEND_MULTIPLE"/, "AndroidManifest must accept ACTION_SEND_MULTIPLE shares");
+  assert.match(manifest, /android:launchMode="singleTask"/, "MainActivity should use singleTask for clean incoming share handling");
+  assert.match(mainAct, /captureSharedIntent/, "MainActivity must capture incoming shared files");
+  assert.match(mainAct, /public String getPendingShareMeta\(\)/, "CloudGSTNative must expose getPendingShareMeta()");
+  assert.match(mainAct, /public String getPendingShareChunk\(/, "CloudGSTNative must expose chunked getPendingShareChunk()");
+  assert.match(mainAct, /public void clearPendingShare\(\)/, "CloudGSTNative must expose clearPendingShare()");
+  const etsyJs = fs.readFileSync(path.join(WEB_DIR, "js", "etsy-parser.js"), "utf8");
+  assert.match(etsyJs, /window\.cloudGstHandleSharedFiles\s*=/, "etsy-parser must register window.cloudGstHandleSharedFiles");
+  assert.match(etsyJs, /shareInboxModalOverlay/, "etsy-parser must render shareInboxModalOverlay");
+  assert.match(etsyJs, /shareInboxDocBtn/, "Share inbox modal must provide Client Document Upload option");
+  assert.match(etsyJs, /shareInboxEtsyBtn/, "Share inbox modal must provide Etsy CSV (Master + Doc) upload option");
 });
