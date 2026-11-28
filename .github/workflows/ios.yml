@@ -1,0 +1,146 @@
+name: iOS / iPadOS IPA
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'ios/**'
+      - 'web/**'
+      - 'scripts/build-web.js'
+      - 'APPS_SCRIPT_AppSync.gs'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ios-v6.2.1
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build web assets & run tests
+        run: |
+          npm ci --ignore-scripts
+          npm run build:web
+          npm test
+
+      - name: Stage web bundle & generate 1024x1024 opaque AppIcon
+        run: |
+          rm -rf ios/CloudGST/app
+          cp -R android/app/src/main/assets/app ios/CloudGST/app
+          swift - <<'SWIFT'
+          import AppKit
+          import Foundation
+
+          let srcPath = "android/app/src/main/res/drawable-nodpi/splash_logo.png"
+          let dstPath = "ios/CloudGST/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
+          let size = NSSize(width: 1024, height: 1024)
+          guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 1024, pixelsHigh: 1024,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+          ) else { fatalError("bitmap alloc failed") }
+          NSGraphicsContext.saveGraphicsState()
+          NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+          NSColor(red: 0x12/255.0, green: 0x26/255.0, blue: 0x5C/255.0, alpha: 1.0).setFill()
+          NSRect(origin: .zero, size: size).fill()
+          if let logo = NSImage(contentsOfFile: srcPath) {
+            let inset: CGFloat = 92
+            logo.draw(in: NSRect(x: inset, y: inset, width: 1024 - inset*2, height: 1024 - inset*2))
+          }
+          NSGraphicsContext.restoreGraphicsState()
+          // Flatten alpha for App Store / iOS icon compatibility
+          guard let cg = rep.cgImage else { fatalError("cgImage nil") }
+          let ctx = CGContext(
+            data: nil, width: 1024, height: 1024, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+          )!
+          ctx.draw(cg, in: CGRect(x: 0, y: 0, width: 1024, height: 1024))
+          let opaque = NSBitmapImageRep(cgImage: ctx.makeImage()!)
+          let png = opaque.representation(using: .png, properties: [:])!
+          try png.write(to: URL(fileURLWithPath: dstPath))
+          print("Generated AppIcon-1024.png:", png.count, "bytes")
+          SWIFT
+
+      - name: Install XcodeGen & generate Xcode project
+        run: |
+          brew install xcodegen
+          cd ios
+          xcodegen generate
+
+      - name: Build unsigned Release iphoneos app
+        run: |
+          cd ios
+          xcodebuild \
+            -project CloudGST.xcodeproj \
+            -scheme CloudGST \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package CloudGST.ipa & verify
+        run: |
+          APP_PATH="ios/build/Build/Products/Release-iphoneos/CloudGST.app"
+          test -d "$APP_PATH"
+          test -f "$APP_PATH/app/index.html"
+          test -f "$APP_PATH/app/js/portal-module.js"
+          test -f "$APP_PATH/app/js/etsy-parser.js"
+          rm -rf Payload CloudGST.ipa
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/CloudGST.app
+          zip -r9 CloudGST.ipa Payload
+          ls -lh CloudGST.ipa
+          {
+            echo "### IPA verify"
+            echo '```'
+            shasum -a 256 CloudGST.ipa
+            echo "app/index.html bytes: $(wc -c < Payload/CloudGST.app/app/index.html)"
+            echo "js modules count: $(ls Payload/CloudGST.app/app/js/*.js | wc -l)"
+            echo "CFBundleShortVersionString: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Payload/CloudGST.app/Info.plist)"
+            echo "CFBundleVersion: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Payload/CloudGST.app/Info.plist)"
+            echo '```'
+          } > verify_ios.md
+          cat verify_ios.md
+
+      - name: Publish GitHub Release with CloudGST.ipa
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat > notes_ios.md <<'EOF'
+          ## CloudGST iPad / iPhone IPA (v6.2.1)
+
+          ### iPad par SideStore se install kaise karein:
+          1. iPad par Safari me neeche **`CloudGST.ipa`** par tap karke Download karein.
+          2. **`LocalDevVPN`** khol kar **Connect** karein (status bar me VPN dikhna chahiye).
+          3. **`SideStore`** kholein → **My Apps** → upar left **`+`** par tap karein → Downloads se **`CloudGST.ipa`** select karein!
+          4. Install hote hi Home Screen par **CloudGST** icon aa jayega (har 7 din me SideStore me **Refresh All** dabana hoga).
+
+          ### Features (Android v6.2.1 ke barabar):
+          - 📱 **5-Tab Parallel Phone/iPad Mode**: Bina Cloud ya PC bridge ke seedha iPad se 5 clients parallel GST Portal Login + GSTR-2B + E-Commerce/TCS fetch!
+          - 📤 **GSTR-1 JSON Direct Upload**: Seedha iPad se GST Portal par `PREPARE OFFLINE` JSON upload.
+          - 📥 **Share / Open in CloudGST**: WhatsApp / Files / Safari se CSV, Excel, PDF ya Image share karke 3 options — (1) Client Document Save, (2) Etsy CSV Master + Doc Upload, (3) GST Paper se Naya Client Add + Doc Save.
+          - 🔐 **Touch ID / Face ID App Lock** + Native iPad Share/Save sheet for Branded PDFs & CSVs.
+          - ⌨️ Full iPad landscape/portrait & Split View + Physical Keyboard (Spacebar next Fetch) support.
+          EOF
+          cat verify_ios.md >> notes_ios.md
+          gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
+          git push origin ":refs/tags/$RELEASE_TAG" 2>/dev/null || true
+          gh release create "$RELEASE_TAG" "CloudGST.ipa" \
+            --target "$GITHUB_SHA" \
+            --title "CloudGST iPad / iPhone v6.2.1 (IPA)" \
+            --notes-file notes_ios.md

@@ -360,4 +360,16 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
   assert.match(etsyJs, /runShareAddNewClient/, "Share inbox must parse shared GST PDF and open pre-filled Add Client modal");
   const trackerSyncJs = fs.readFileSync(path.join(WEB_DIR, "js", "tracker-and-sync.js"), "utf8");
   assert.match(trackerSyncJs, /__cloudGstPendingNewClientDocs/, "Adding a client from shared GST paper must also upload the paper to Drive Documents");
+
+  // iOS / iPadOS native wrapper structural integrity
+  const iosYml = fs.readFileSync(path.join(ROOT, "ios", "project.yml"), "utf8");
+  const iosPlist = fs.readFileSync(path.join(ROOT, "ios", "CloudGST", "Info.plist"), "utf8");
+  const iosMain = fs.readFileSync(path.join(ROOT, "ios", "CloudGST", "MainViewController.swift"), "utf8");
+  const iosFetch = fs.readFileSync(path.join(ROOT, "ios", "CloudGST", "PhoneFetch.swift"), "utf8");
+  assert.match(iosYml, /PRODUCT_BUNDLE_IDENTIFIER:\s*com\.cloudgst\.app/);
+  assert.match(iosPlist, /CFBundleDocumentTypes/, "iOS Info.plist must declare CFBundleDocumentTypes for Share/Open-In");
+  assert.match(iosPlist, /NSAllowsLocalNetworking/, "iOS Info.plist must allow 127.0.0.1 loopback asset server");
+  assert.match(iosMain, /window\.CloudGSTNative\s*=/, "iOS MainViewController must inject synchronous window.CloudGSTNative bridge");
+  assert.match(iosMain, /WKWebsiteDataStore\.nonPersistent\(\)/, "iOS MainViewController must isolate 5 parallel slots via nonPersistent WKWebsiteDataStore");
+  assert.match(iosFetch, /startUploadGstr1/, "iOS PhoneFetch must support GSTR-1 JSON direct upload");
 });
