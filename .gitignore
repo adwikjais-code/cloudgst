@@ -3,6 +3,7 @@ npm-debug.log*
 .env
 *.log
 CloudGST.apk
+CloudGST.ipa
 CloudGST_web_*.zip
 verify.md
 notes.md
@@ -10,3 +11,7 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+ios/CloudGST.xcodeproj/
+ios/CloudGST/app/
+ios/build/
+ios/CloudGST/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png
