@@ -1388,6 +1388,7 @@
 
     function openAddModal() {
       updateReferenceSuggestions();
+      window.__cloudGstPendingNewClientDocs = null;
       document.getElementById("modalTitle").textContent = "+ Add New GST Client";
       document.getElementById("modalSubtitle").textContent = "Naye client ki details bharein";
       document.getElementById("formClientSr").value = "";
@@ -1441,6 +1442,7 @@
 
     function closeClientModal() {
       document.getElementById("clientModalOverlay").classList.add("hidden");
+      window.__cloudGstPendingNewClientDocs = null;
     }
 
     document.getElementById("openAddModalBtn").addEventListener("click", openAddModal);
@@ -1582,6 +1584,11 @@
         okMsg = `Naya client ${clientName} Sheet me add ho gaya!`;
       }
 
+      const pendingSharedDocs = (!srVal && Array.isArray(window.__cloudGstPendingNewClientDocs) && window.__cloudGstPendingNewClientDocs.length)
+        ? window.__cloudGstPendingNewClientDocs.slice()
+        : null;
+      window.__cloudGstPendingNewClientDocs = null;
+
       try {
         saveClients();
         closeClientModal();
@@ -1589,8 +1596,23 @@
         if (typeof renderPortalPage === "function") renderPortalPage();
         if (pendingPushAction && pendingPushObj) {
           const syncRes = await pushClientToSheet(pendingPushAction, pendingPushObj, { silent: true });
-          if (syncRes.ok) showToast(`✅ ${okMsg}`);
-          else showToast(`⚠️ ${clientName} browser me save hua, par Sheet Sync FAIL (${syncRes.message})!`);
+          if (pendingSharedDocs && typeof window.cloudGstUploadSharedDocsToClient === "function") {
+            if (!scriptUrl) {
+              showToast(`✅ ${clientName} add ho gaya (Document upload ke liye Sheet Sync URL set karein)`);
+            } else {
+              showToast(`⏳ ${clientName} add ho gaya — GST paper Drive > Documents me upload ho raha hai...`);
+              const up = await window.cloudGstUploadSharedDocsToClient(pendingPushObj, pendingSharedDocs);
+              const sheetPart = syncRes.ok ? `✅ ${okMsg}` : `⚠️ ${clientName} browser me save hua (Sheet Sync FAIL: ${syncRes.message})`;
+              const docPart = up.ok && !up.failed.length
+                ? `📎 ${up.ok}/${up.total} GST paper Drive > Documents me save!`
+                : `⚠️ Document upload: ${up.ok}/${up.total} saved${up.failed.length ? " (" + up.failed.join(" | ") + ")" : ""}`;
+              showStickyToast(`${sheetPart} • ${docPart}`, up.failed.length || !syncRes.ok ? 8000 : 5500);
+            }
+          } else if (syncRes.ok) {
+            showToast(`✅ ${okMsg}`);
+          } else {
+            showToast(`⚠️ ${clientName} browser me save hua, par Sheet Sync FAIL (${syncRes.message})!`);
+          }
         } else {
           showToast("✅ Save ho gaya");
         }

@@ -299,8 +299,8 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
 
   const gradle = fs.readFileSync(path.join(ROOT, "android", "app", "build.gradle"), "utf8");
   const vcMatch = gradle.match(/versionCode\s+(\d+)/);
-  assert.ok(vcMatch && Number(vcMatch[1]) >= 87, "versionCode must be >= 87 to upgrade cleanly over v6.1.0 (86)");
-  assert.match(gradle, /versionName\s+'6\.2\.0'/);
+  assert.ok(vcMatch && Number(vcMatch[1]) >= 88, "versionCode must be >= 88 to upgrade cleanly over v6.2.0 (87)");
+  assert.match(gradle, /versionName\s+'6\.2\.1'/);
 
   // Portal checkboxes default OFF (GSTR-2B, E-Com, Auto-Next, Drive) & no auto-expand dropdown on fetch completion
   const webHtml = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
@@ -356,4 +356,8 @@ test("android & portal-module: 100% hidden phone mode preserves security/stabili
   assert.match(etsyJs, /shareInboxModalOverlay/, "etsy-parser must render shareInboxModalOverlay");
   assert.match(etsyJs, /shareInboxDocBtn/, "Share inbox modal must provide Client Document Upload option");
   assert.match(etsyJs, /shareInboxEtsyBtn/, "Share inbox modal must provide Etsy CSV (Master + Doc) upload option");
+  assert.match(etsyJs, /shareInboxAddClientBtn/, "Share inbox modal must provide Add New Client from GST Paper option");
+  assert.match(etsyJs, /runShareAddNewClient/, "Share inbox must parse shared GST PDF and open pre-filled Add Client modal");
+  const trackerSyncJs = fs.readFileSync(path.join(WEB_DIR, "js", "tracker-and-sync.js"), "utf8");
+  assert.match(trackerSyncJs, /__cloudGstPendingNewClientDocs/, "Adding a client from shared GST paper must also upload the paper to Drive Documents");
 });
